@@ -1,0 +1,722 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Client {{ client_id }}</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; }
+    .box { border: 1px solid #ddd; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .error { background: #ffecec; border: 1px solid #ffb3b3; padding: 10px; border-radius: 6px; margin-bottom: 12px; }
+    .success { border-color:#b7e3b7; background:#f2fff2; }
+    .warn { background:#fff4cc; border:1px solid #ffd666; padding:10px; border-radius:6px; margin-bottom:12px; }
+    code { background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
+    input, select, textarea { padding: 8px; width: 100%; box-sizing: border-box; }
+    textarea { min-height: 84px; }
+    button, .btn {
+      padding: 8px 12px; cursor: pointer; text-decoration: none; display: inline-block;
+      border: 1px solid #ccc; border-radius: 6px; background: white; color: black;
+    }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #eee; padding: 8px; text-align: left; vertical-align: top; }
+    .compact th, .compact td { padding: 6px; font-size: 13px; }
+    .row { margin-bottom: 10px; }
+    .muted { color:#666; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+    .tabs { display:flex; gap:8px; flex-wrap:wrap; margin: 14px 0 18px; }
+    .tab {
+      padding: 8px 12px; border: 1px solid #ccc; border-radius: 999px; text-decoration: none;
+      color: black; background: #f7f7f7;
+    }
+    .tab.active { background: #111; color: white; border-color: #111; }
+    .label { font-weight: bold; }
+    .subgrid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  </style>
+</head>
+<body>
+  <a href="/">← Back</a>
+  <h1>Client Workspace</h1>
+  <p><b>Client ID:</b> <code>{{ client_id }}</code></p>
+
+  <div class="actions">
+    <a class="btn" href="/ui/client/{{ client_id }}/edit">Edit Profile</a>
+  </div>
+
+  {% if profile.get("pending_payment") %}
+    <div class="warn"><b>PENDING PAYMENT WARNING:</b> this record is flagged. Review before processing.</div>
+  {% endif %}
+
+  {% if message %}
+    <div class="box success">{{ message }}</div>
+  {% endif %}
+
+  {% if error %}
+    <div class="error">{{ error }}</div>
+  {% endif %}
+
+  <div class="tabs">
+    {% for key, label in tabs %}
+      <a class="tab {% if active_tab == key %}active{% endif %}" href="/ui/client/{{ client_id }}?tab={{ key }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+
+  {% if active_tab == 'overview' %}
+    <div class="grid">
+      <div class="box">
+        <h3>Basic Client Info</h3>
+        <div class="row"><span class="label">Name:</span> {{ profile.get("first_name") }} {{ profile.get("middle_name") }} {{ profile.get("last_name") }} {% if profile.get("suffix") %}{{ profile.get("suffix") }}{% endif %}</div>
+        <div class="row"><span class="label">Status:</span> {{ profile.get("lifecycle_status") }}</div>
+        <div class="row"><span class="label">Active:</span> {{ "Yes" if profile.get("is_active") else "No" }}</div>
+        <div class="row"><span class="label">DOB:</span> {{ profile.get("date_of_birth") or "—" }}</div>
+        <div class="row"><span class="label">SSN:</span> {% if profile.get("ssn_last4") %}***-**-{{ profile.get("ssn_last4") }}{% else %}—{% endif %}</div>
+        <div class="row"><span class="label">Primary phone:</span> {{ profile.get("phone") or "—" }} ({{ profile.get("primary_phone_type") or "cell" }})</div>
+        <div class="row"><span class="label">Secondary phone:</span> {{ profile.get("secondary_phone") or "—" }} ({{ profile.get("secondary_phone_type") or "other" }})</div>
+        <div class="row"><span class="label">Primary email:</span> {{ profile.get("primary_email") or "—" }}</div>
+        <div class="row"><span class="label">Secondary email:</span> {{ profile.get("secondary_email") or "—" }}</div>
+        <div class="row"><span class="label">Preferred email:</span> {{ profile.get("preferred_email_choice") or "primary" }}{% if profile.get("send_to_both_emails") %} + send to both{% endif %}</div>
+        <div class="row"><span class="label">Address:</span>
+          {{ profile.get("address_line1") or "" }}{% if profile.get("apt_unit") %}, Unit {{ profile.get("apt_unit") }}{% endif %}{% if profile.get("address_line2") %}, {{ profile.get("address_line2") }}{% endif %},
+          {{ profile.get("city") or "" }}, {{ profile.get("state") or "" }} {{ profile.get("zip") or "" }}
+        </div>
+        <div class="row"><span class="label">Referred by:</span> {{ profile.get("referred_by_partner_name") or "—" }}</div>
+        <div class="row"><span class="label">Referral reason:</span> {{ profile.get("referral_reason") or "—" }}</div>
+      </div>
+
+      <div class="box">
+        <h3>Fees / Billing Snapshot</h3>
+        <div class="row"><span class="label">Consultation fee:</span> {{ profile.get("consultation_fee") or "100.00" }}</div>
+        <div class="row"><span class="label">Pricing plan:</span> {{ profile.get("pricing_plan") or "standard program" }}</div>
+        <div class="row"><span class="label">Startup fee:</span> {{ profile.get("initial_fee") or "175.00" }}</div>
+        <div class="row"><span class="label">Monthly fee:</span> {{ profile.get("monthly_fee") or "125.00" }}</div>
+        <div class="row"><span class="label">Signup date:</span> {{ profile.get("signup_date") or "—" }}</div>
+        <div class="row"><span class="label">First payment date:</span> {{ profile.get("first_payment_date") or "—" }}</div>
+        <div class="row"><span class="label">Billing group:</span> {{ profile.get("billing_group") or "15th" }}{% if profile.get("custom_billing_day") %} ({{ profile.get("custom_billing_day") }}){% endif %}</div>
+        <div class="row"><span class="label">Preferred payment method:</span> {{ profile.get("preferred_payment_method") or "zelle" }}</div>
+        <div class="row"><span class="label">Start date:</span> {{ profile.get("start_date") or "—" }}</div>
+        <div class="row"><span class="label">Cancelled date:</span> {{ profile.get("cancelled_date") or "—" }}</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="box">
+        <h3>Latest Scores</h3>
+        <div class="row"><span class="label">Credit Karma TU:</span> {{ dashboard.get("creditkarma_transunion_vantage") or "—" }} ({{ dashboard.get("creditkarma_date") or "—" }})</div>
+        <div class="row"><span class="label">Credit Karma EQ:</span> {{ dashboard.get("creditkarma_equifax_vantage") or "—" }} ({{ dashboard.get("creditkarma_date") or "—" }})</div>
+        <div class="row"><span class="label">TU Site:</span> {{ dashboard.get("transunion_site_vantage") or "—" }} ({{ dashboard.get("transunion_site_date") or "—" }})</div>
+        <div class="row"><span class="label">EQ Site:</span> {{ dashboard.get("equifax_site_vantage") or "—" }} ({{ dashboard.get("equifax_site_date") or "—" }})</div>
+        <div class="row"><span class="label">Experian Site:</span> {{ dashboard.get("experian_site_fico8") or "—" }} ({{ dashboard.get("experian_site_date") or "—" }})</div>
+        <div class="row"><span class="label">MyFICO Free:</span>
+          EX {{ dashboard.get("myfico_free_experian_fico8") or "—" }},
+          TU {{ dashboard.get("myfico_free_transunion_fico8") or "—" }},
+          EQ {{ dashboard.get("myfico_free_equifax_fico8") or "—" }}
+          ({{ dashboard.get("myfico_free_date") or "—" }})
+        </div>
+      </div>
+
+      <div class="box">
+        <h3>Quick Workflow Snapshot</h3>
+        <div class="row"><span class="label">Last letter:</span> {{ dashboard.get("last_letter_subject") or "—" }}</div>
+        <div class="row"><span class="label">Last communication:</span> {{ dashboard.get("last_comm_subject") or "—" }}</div>
+        <div class="row"><span class="label">Last inbound email:</span> {{ dashboard.get("last_inbound_email_subject") or "—" }}</div>
+        <div class="row"><span class="label">Upcoming appointments:</span> {{ appointments|length }}</div>
+        <div class="row"><span class="label">Negative items tracked:</span> {{ negative_items|length }}</div>
+        <div class="row"><span class="label">Personal-info errors tracked:</span> {{ personal_info_errors|length }}</div>
+        <div class="row"><span class="label">Credit products tracked:</span> {{ credit_products|length }}</div>
+      </div>
+    </div>
+  {% endif %}
+
+  {% if active_tab == 'profile' %}
+    <div class="box">
+      <h3>Profile</h3>
+      <p class="muted">Use Edit Profile to update identity, contact, address, status, and billing fields.</p>
+      <div class="actions"><a class="btn" href="/ui/client/{{ client_id }}/edit">Open Edit Profile</a></div>
+      <table class="compact">
+        <tr><th>Field</th><th>Value</th></tr>
+        <tr><td>Name</td><td>{{ profile.get("first_name") }} {{ profile.get("middle_name") }} {{ profile.get("last_name") }} {{ profile.get("suffix") }}</td></tr>
+        <tr><td>Primary phone</td><td>{{ profile.get("phone") or '—' }} ({{ profile.get("primary_phone_type") or 'cell' }})</td></tr>
+        <tr><td>Secondary phone</td><td>{{ profile.get("secondary_phone") or '—' }} ({{ profile.get("secondary_phone_type") or 'other' }})</td></tr>
+        <tr><td>Primary email</td><td>{{ profile.get("primary_email") or '—' }}</td></tr>
+        <tr><td>Secondary email</td><td>{{ profile.get("secondary_email") or '—' }}</td></tr>
+        <tr><td>Lifecycle status</td><td>{{ profile.get("lifecycle_status") }}</td></tr>
+        <tr><td>Pending payment</td><td>{{ 'Yes' if profile.get('pending_payment') else 'No' }}</td></tr>
+        <tr><td>Address</td><td>{{ profile.get("address_line1") or '' }}{% if profile.get("apt_unit") %}, Unit {{ profile.get("apt_unit") }}{% endif %}{% if profile.get("address_line2") %}, {{ profile.get("address_line2") }}{% endif %}, {{ profile.get("city") or '' }}, {{ profile.get("state") or '' }} {{ profile.get("zip") or '' }}</td></tr>
+      </table>
+    </div>
+  {% endif %}
+
+  {% if active_tab == 'notes' %}
+    <div class="box">
+      <h3>Notes</h3>
+      <form method="post" action="/ui/add-note">
+        <input type="hidden" name="client_id" value="{{ client_id }}">
+        <input type="hidden" name="active_tab" value="notes">
+        <div class="row">
+          <label>Note type</label>
+          <select name="note_type">
+            <option value="appointment">appointment</option>
+            <option value="billing">billing</option>
+            <option value="consultation">consultation</option>
+            <option value="dispute">dispute</option>
+            <option value="document">document</option>
+            <option value="follow-up">follow-up</option>
+            <option value="general" selected>general</option>
+            <option value="intake">intake</option>
+            <option value="referral">referral</option>
+          </select>
+        </div>
+        <div class="row"><label>Note</label><textarea name="note_text" required></textarea></div>
+        <button type="submit">Add Note</button>
+      </form>
+    </div>
+
+    <div class="box">
+      <h3>Latest Notes</h3>
+      {% if notes %}
+        <table class="compact">
+          <tr><th>When</th><th>Type</th><th>Note</th><th>By</th><th>Delete</th></tr>
+          {% for n in notes %}
+          <tr>
+            <td>{{ n.created_at }}</td>
+            <td>{{ n.note_type }}</td>
+            <td>{{ n.note_text }}</td>
+            <td>{{ n.created_by }}</td>
+            <td>
+              <form method="post" action="/ui/delete-note" style="margin:0;">
+                <input type="hidden" name="client_id" value="{{ client_id }}">
+                <input type="hidden" name="note_id" value="{{ n.id }}">
+                <input type="hidden" name="active_tab" value="notes">
+                <button type="submit">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+      {% else %}
+        <p>No notes yet.</p>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {% if active_tab == 'appointments' %}
+    <div class="grid">
+      <div class="box">
+        <h3>Appointments / Ticklers</h3>
+        <form method="post" action="/ui/add-appointment">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="appointments">
+          <div class="row"><label>Mode</label><select name="appointment_mode">{% for m in appointment_modes %}<option value="{{ m }}">{{ m }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Date</label><input type="date" name="appointment_date" required></div>
+          <div class="row"><label>Time</label><input type="time" name="appointment_time" required></div>
+          <div class="row"><label>Consultation fee</label><select name="consultation_fee">{% for f in consultation_fees %}<option value="{{ f }}" {% if f == 100 %}selected{% endif %}>{{ f }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Location name</label><input name="location_name" value="Carlos G Suarez"></div>
+          <div class="row"><label>Address line 1</label><input name="address_line1" value="8345 SW 41st Ter"></div>
+          <div class="row"><label>Apt / Unit</label><input name="apt_unit"></div>
+          <div class="row"><label>Address line 2</label><input name="address_line2"></div>
+          <div class="row"><label>City</label><input name="city" value="Miami"></div>
+          <div class="row"><label>State</label><input name="state" value="FL"></div>
+          <div class="row"><label>ZIP</label><input name="zip_code" value="33155"></div>
+          <div class="row"><label>Phone to call (if phone consult)</label><input name="phone_to_call" value="{{ profile.get('phone') or '' }}"></div>
+          <div class="row"><label>Meeting link (if virtual)</label><input name="meeting_link"></div>
+          <div class="row"><label><input type="checkbox" name="email_enabled" checked> Send email confirmation/reminders</label></div>
+          <div class="row"><label><input type="checkbox" name="sms_enabled"> Send SMS confirmation/reminders</label></div>
+          <div class="row"><label><input type="checkbox" name="sms_opt_in"> SMS opt-in obtained</label></div>
+          <div class="row"><label>Notes</label><input name="notes"></div>
+          <button type="submit">Save Appointment</button>
+        </form>
+      </div>
+
+      <div class="box">
+        <h3>Appointments</h3>
+        {% if appointments %}
+          <table class="compact">
+            <tr><th>Date</th><th>Time</th><th>Mode</th><th>Fee</th><th>Location / Phone</th><th>Delete</th></tr>
+            {% for a in appointments %}
+            <tr>
+              <td>{{ a.appointment_date }}</td>
+              <td>{{ a.appointment_time }}</td>
+              <td>{{ a.appointment_mode }}</td>
+              <td>{{ a.consultation_fee }}</td>
+              <td>
+                {% if a.appointment_mode == 'phone' %}
+                  {{ a.phone_to_call or '—' }}
+                {% elif a.appointment_mode == 'virtual' %}
+                  {{ a.meeting_link or '—' }}
+                {% else %}
+                  {{ a.location_name or '' }}<br>
+                  {{ a.address_line1 }} {% if a.apt_unit %}Unit {{ a.apt_unit }}{% endif %}<br>
+                  {% if a.address_line2 %}{{ a.address_line2 }}<br>{% endif %}
+                  {{ a.city }}, {{ a.state }} {{ a.zip }}
+                {% endif %}
+              </td>
+              <td>
+                <form method="post" action="/ui/delete-appointment" style="margin:0;">
+                  <input type="hidden" name="client_id" value="{{ client_id }}">
+                  <input type="hidden" name="appointment_id" value="{{ a.id }}">
+                  <input type="hidden" name="active_tab" value="appointments">
+                  <button type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p>No appointments yet.</p>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+
+  {% if active_tab == 'credentials' %}
+    <div class="grid">
+      <div class="box">
+        <h3>Portal Credentials (Client Logins)</h3>
+        <p class="muted">Masked by default. Use Reveal only when needed.</p>
+        <form method="post" action="/ui/save-credential">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="credentials">
+          <div class="row"><label>Provider</label><select name="provider">{% for p in providers %}<option value="{{ p }}">{{ p }}</option>{% endfor %}</select></div>
+          <div class="subgrid">
+            <div>
+              <div class="row"><label>Username</label><input name="username"></div>
+              <div class="row"><label>Password</label><input name="password"></div>
+              <div class="row"><label>Notes</label><input name="note"></div>
+            </div>
+            <div>
+              <div class="row"><label>PIN</label><input name="pin"></div>
+              <div class="row"><label>Security question</label><input name="security_question"></div>
+              <div class="row"><label>Security answer</label><input name="security_answer"></div>
+            </div>
+          </div>
+          <button type="submit">Save Credential</button>
+        </form>
+
+        <h4>Saved Credentials</h4>
+        {% if credentials %}
+          <table class="compact">
+            <tr><th>Provider</th><th>Username</th><th>Password</th><th>PIN</th><th>Q/A</th><th>Actions</th></tr>
+            {% for c in credentials %}
+            <tr>
+              <td>{{ c.provider }}</td>
+              <td>{{ c.username or '—' }}</td>
+              <td>{% if c.revealed %}<code>{{ c.password or '—' }}</code>{% else %}••••••••{% endif %}</td>
+              <td>{% if c.revealed %}<code>{{ c.pin or '—' }}</code>{% else %}—{% endif %}</td>
+              <td>
+                {% if c.revealed %}
+                  <div><b>Q:</b> {{ c.security_question or '—' }}</div>
+                  <div><b>A:</b> <code>{{ c.security_answer or '—' }}</code></div>
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>
+                <form method="post" action="/ui/reveal-credential" style="margin:0 0 6px 0;">
+                  <input type="hidden" name="client_id" value="{{ client_id }}">
+                  <input type="hidden" name="credential_id" value="{{ c.id }}">
+                  <input type="hidden" name="active_tab" value="credentials">
+                  <button type="submit">Reveal</button>
+                </form>
+                <form method="post" action="/ui/delete-credential" style="margin:0;">
+                  <input type="hidden" name="client_id" value="{{ client_id }}">
+                  <input type="hidden" name="credential_id" value="{{ c.id }}">
+                  <input type="hidden" name="active_tab" value="credentials">
+                  <button type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p>No credentials saved yet.</p>
+        {% endif %}
+      </div>
+
+      <div class="box">
+        <h3>Latest Scores</h3>
+        <div class="row"><span class="label">Credit Karma TU:</span> {{ dashboard.get("creditkarma_transunion_vantage") or "—" }} ({{ dashboard.get("creditkarma_date") or "—" }})</div>
+        <div class="row"><span class="label">Credit Karma EQ:</span> {{ dashboard.get("creditkarma_equifax_vantage") or "—" }} ({{ dashboard.get("creditkarma_date") or "—" }})</div>
+        <div class="row"><span class="label">TU Site:</span> {{ dashboard.get("transunion_site_vantage") or "—" }} ({{ dashboard.get("transunion_site_date") or "—" }})</div>
+        <div class="row"><span class="label">EQ Site:</span> {{ dashboard.get("equifax_site_vantage") or "—" }} ({{ dashboard.get("equifax_site_date") or "—" }})</div>
+        <div class="row"><span class="label">Experian Site:</span> {{ dashboard.get("experian_site_fico8") or "—" }} ({{ dashboard.get("experian_site_date") or "—" }})</div>
+
+        <h4>Add Score Snapshot</h4>
+        <form method="post" action="/ui/add-score">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="credentials">
+          <div class="row"><label>Date</label><input type="date" name="report_date" required></div>
+          <div class="row"><label>Bureau</label><select name="bureau">{% for b in negative_item_bureaus %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Source</label><select name="source"><option value="creditkarma">creditkarma</option><option value="equifax_site">equifax_site</option><option value="experian_site">experian_site</option><option value="manual">manual</option><option value="myfico_free">myfico_free</option><option value="transunion_site">transunion_site</option></select></div>
+          <div class="row"><label>Model</label><input name="model" value="FICO 8"></div>
+          <div class="row"><label>Score</label><input type="number" name="score" min="300" max="850" required></div>
+          <button type="submit">Save Score</button>
+        </form>
+
+        <h4>Add MyFICO (one entry)</h4>
+        <form method="post" action="/ui/add-myfico">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="credentials">
+          <div class="row"><label>Date</label><input type="date" name="report_date" required></div>
+          <div class="row"><label>Experian</label><input type="number" name="experian_score" min="300" max="850" required></div>
+          <div class="row"><label>TransUnion</label><input type="number" name="transunion_score" min="300" max="850" required></div>
+          <div class="row"><label>Equifax</label><input type="number" name="equifax_score" min="300" max="850" required></div>
+          <button type="submit">Save MyFICO Scores</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>Score History (grouped)</h3>
+      {% set groups = score_groups or {} %}
+      {% for title, key in [('Experian Site','experian_site'), ('Equifax Site','equifax_site'), ('TransUnion Site','transunion_site'), ('Credit Karma','creditkarma'), ('MyFICO Free','myfico_free'), ('Manual','manual')] %}
+        <h4>{{ title }}</h4>
+        {% set rows = groups.get(key, []) %}
+        {% if rows %}
+          <table class="compact">
+            <tr>
+              <th>Date</th>
+              <th>Entered</th>
+              {% if key in ['creditkarma','myfico_free','manual'] %}<th>Bureau</th>{% endif %}
+              <th>Model</th>
+              <th>Score</th>
+              <th>Delete</th>
+            </tr>
+            {% for s in rows %}
+            <tr>
+              <td>{{ s.report_date }}</td>
+              <td>{{ s.entered_at }}</td>
+              {% if key in ['creditkarma','myfico_free','manual'] %}<td>{{ s.bureau }}</td>{% endif %}
+              <td>{{ s.model }}</td>
+              <td>{{ s.score }}</td>
+              <td>
+                <form method="post" action="/ui/delete-score" style="margin:0;">
+                  <input type="hidden" name="client_id" value="{{ client_id }}">
+                  <input type="hidden" name="snapshot_id" value="{{ s.id }}">
+                  <input type="hidden" name="active_tab" value="credentials">
+                  <button type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p class="muted">No entries.</p>
+        {% endif %}
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  {% if active_tab == 'disputes' %}
+    <div class="grid">
+      <div class="box">
+        <h3>Negative Items</h3>
+        <form method="post" action="/ui/add-negative-item">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="disputes">
+          <div class="row"><label>Bureau</label><select name="bureau">{% for b in negative_item_bureaus %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Creditor name</label><input name="creditor_name" list="creditor_names" required></div>
+          <datalist id="creditor_names">{% for c in creditor_names %}<option value="{{ c }}"></option>{% endfor %}</datalist>
+          <div class="row"><label>Account number</label><input name="account_number"></div>
+          <div class="row"><label>Account type</label><input name="account_type"></div>
+          <div class="row"><label>Dispute reason</label><select name="dispute_reason">{% for r in negative_item_reasons %}<option value="{{ r }}">{{ r }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Status</label><select name="current_status">{% for s in negative_item_statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
+          <button type="submit">Add Negative Item</button>
+        </form>
+
+        <h4>Tracked Negative Items</h4>
+        {% if negative_items %}
+          <table class="compact">
+            <tr><th>Bureau</th><th>Creditor</th><th>Account #</th><th>Reason</th><th>Status</th><th>Delete</th></tr>
+            {% for item in negative_items %}
+            <tr>
+              <td>{{ item.bureau }}</td>
+              <td>{{ item.creditor_name }}</td>
+              <td>{{ item.account_number }}</td>
+              <td>{{ item.dispute_reason }}</td>
+              <td>{{ item.current_status }}</td>
+              <td>
+                <form method="post" action="/ui/delete-negative-item" style="margin:0;">
+                  <input type="hidden" name="client_id" value="{{ client_id }}">
+                  <input type="hidden" name="item_id" value="{{ item.id }}">
+                  <input type="hidden" name="active_tab" value="disputes">
+                  <button type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p>No negative items yet.</p>
+        {% endif %}
+      </div>
+
+      <div class="box">
+        <h3>Personal Information Errors</h3>
+        <form method="post" action="/ui/add-personal-error">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="disputes">
+          <div class="row"><label>Bureau</label><select name="bureau"><option value="all">all</option>{% for b in negative_item_bureaus %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Error type</label><select name="error_type">{% for e in personal_error_types %}<option value="{{ e }}">{{ e }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Reported value</label><input name="reported_value" required></div>
+          <div class="row"><label>Correct value (if known)</label><input name="correct_value"></div>
+          <div class="row"><label>Status</label><select name="status"><option value="open">open</option><option value="disputed">disputed</option><option value="removed">removed</option><option value="verified">verified</option></select></div>
+          <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
+          <button type="submit">Add Personal-Info Error</button>
+        </form>
+
+        <h4>Tracked Personal-Info Errors</h4>
+        {% if personal_info_errors %}
+          <table class="compact">
+            <tr><th>Bureau</th><th>Type</th><th>Reported</th><th>Correct</th><th>Status</th><th>Delete</th></tr>
+            {% for item in personal_info_errors %}
+            <tr>
+              <td>{{ item.bureau }}</td>
+              <td>{{ item.error_type }}</td>
+              <td>{{ item.reported_value }}</td>
+              <td>{{ item.correct_value }}</td>
+              <td>{{ item.status }}</td>
+              <td>
+                <form method="post" action="/ui/delete-personal-error" style="margin:0;">
+                  <input type="hidden" name="client_id" value="{{ client_id }}">
+                  <input type="hidden" name="error_id" value="{{ item.id }}">
+                  <input type="hidden" name="active_tab" value="disputes">
+                  <button type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p>No personal-info errors yet.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="box">
+        <h3>Recent Dispute Letters</h3>
+        {% if recent_letters %}
+          <table class="compact">
+            <tr><th>Generated</th><th>Bureau</th><th>Subject</th></tr>
+            {% for l in recent_letters %}
+              <tr><td>{{ l.generated_at }}</td><td>{{ l.bureau }}</td><td>{{ l.subject }}</td></tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p>No letters yet.</p>
+        {% endif %}
+      </div>
+
+      <div class="box">
+        <h3>Process Round + Generate PDFs</h3>
+        <form method="post" action="/ui/process-round-with-pdfs">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <div class="row"><label>Round number</label><input name="round_number" type="number" min="1" max="12" required></div>
+          <div class="row"><label>Client email (for logging update email)</label><input name="client_email" type="email" value="{{ profile.get('primary_email') or '' }}" required></div>
+          <div class="row"><label><input name="include_personal_info" type="checkbox"> Include personal info disputes</label></div>
+          <button type="submit">Run Round + PDFs</button>
+        </form>
+      </div>
+    </div>
+  {% endif %}
+
+  {% if active_tab == 'credit' %}
+    <div class="grid">
+      <div class="box">
+        <h3>Credit Products Obtained</h3>
+        <form method="post" action="/ui/add-credit-product">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="credit">
+          <div class="row"><label>Lender name</label><input name="lender_name" required></div>
+          <div class="row"><label>Credit type</label><select name="credit_type">{% for t in credit_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Limit / amount</label><input type="number" step="0.01" name="credit_limit"></div>
+          <div class="row"><label>Due date (day of month)</label><input type="number" min="1" max="31" name="due_date"></div>
+          <div class="row"><label>Cutoff date (day of month)</label><input type="number" min="1" max="31" name="cutoff_date"></div>
+          <div class="row"><label>Secured deposit amount</label><input type="number" step="0.01" name="secured_deposit_amount"></div>
+          <div class="row"><label>Origination date</label><input type="date" name="origination_date"></div>
+          <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
+          <button type="submit">Save Credit Product</button>
+        </form>
+      </div>
+
+      <div class="box">
+        <h3>Tracked Credit Products</h3>
+        {% if credit_products %}
+          <table class="compact">
+            <tr><th>Lender</th><th>Type</th><th>Limit</th><th>Due</th><th>Cutoff</th><th>Opened</th><th>Delete</th></tr>
+            {% for p in credit_products %}
+            <tr>
+              <td>{{ p.lender_name }}</td>
+              <td>{{ p.credit_type }}</td>
+              <td>{{ p.credit_limit or '—' }}</td>
+              <td>{{ p.due_date or '—' }}</td>
+              <td>{{ p.cutoff_date or '—' }}</td>
+              <td>{{ p.origination_date or '—' }}</td>
+              <td>
+                <form method="post" action="/ui/delete-credit-product" style="margin:0;">
+                  <input type="hidden" name="client_id" value="{{ client_id }}">
+                  <input type="hidden" name="product_id" value="{{ p.id }}">
+                  <input type="hidden" name="active_tab" value="credit">
+                  <button type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p>No credit products recorded yet.</p>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+
+  {% if active_tab == 'referrals' %}
+    <div class="grid">
+      <div class="box">
+        <h3>Add Referral Partner</h3>
+        <form method="post" action="/ui/add-referral-partner">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="referrals">
+          <div class="row"><label>Name</label><input name="name" required></div>
+          <div class="row"><label>Company name</label><input name="company_name"></div>
+          <div class="row"><label>Partner type</label><select name="partner_type">{% for t in partner_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Phone</label><input name="phone"></div>
+          <div class="row"><label>Email</label><input type="email" name="email"></div>
+          <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
+          <button type="submit">Save Referral Partner</button>
+        </form>
+      </div>
+
+      <div class="box">
+        <h3>Referral Partners</h3>
+        {% if referral_partners %}
+          <table class="compact">
+            <tr><th>Name</th><th>Company</th><th>Type</th><th>Phone</th><th>Email</th></tr>
+            {% for rp in referral_partners %}
+            <tr>
+              <td>{{ rp.name }}</td>
+              <td>{{ rp.company_name }}</td>
+              <td>{{ rp.partner_type }}</td>
+              <td>{{ rp.phone }}</td>
+              <td>{{ rp.email }}</td>
+            </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p>No referral partners yet.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="box">
+        <h3>Inbound Referrals</h3>
+        <form method="post" action="/ui/add-inbound-referral">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="referrals">
+          <div class="row"><label>Referral partner</label><select name="referral_partner_id" required><option value="">—</option>{% for rp in referral_partners %}<option value="{{ rp.id }}">{{ rp.name }}{% if rp.company_name %} — {{ rp.company_name }}{% endif %}</option>{% endfor %}</select></div>
+          <div class="row"><label>Referral date</label><input type="date" name="referral_date"></div>
+          <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
+          <button type="submit">Log Inbound Referral</button>
+        </form>
+        {% if inbound_referrals %}
+          <table class="compact">
+            <tr><th>Date</th><th>Partner</th><th>Type</th><th>Notes</th><th>Delete</th></tr>
+            {% for r in inbound_referrals %}
+            <tr>
+              <td>{{ r.referral_date }}</td>
+              <td>{{ r.partner_name }}{% if r.company_name %}<br><span class="muted">{{ r.company_name }}</span>{% endif %}</td>
+              <td>{{ r.partner_type }}</td>
+              <td>{{ r.notes }}</td>
+              <td>
+                <form method="post" action="/ui/delete-inbound-referral" style="margin:0;">
+                  <input type="hidden" name="client_id" value="{{ client_id }}">
+                  <input type="hidden" name="referral_id" value="{{ r.id }}">
+                  <input type="hidden" name="active_tab" value="referrals">
+                  <button type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p>No inbound referrals logged yet.</p>
+        {% endif %}
+      </div>
+
+      <div class="box">
+        <h3>Outbound Referrals</h3>
+        <form method="post" action="/ui/add-outbound-referral">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="referrals">
+          <div class="row"><label>Referral partner</label><select name="referral_partner_id" required><option value="">—</option>{% for rp in referral_partners %}<option value="{{ rp.id }}">{{ rp.name }}{% if rp.company_name %} — {{ rp.company_name }}{% endif %}</option>{% endfor %}</select></div>
+          <div class="row"><label>Referral date</label><input type="date" name="referral_date"></div>
+          <div class="row"><label>Referral reason</label><input name="referral_reason"></div>
+          <div class="row"><label>Status</label><select name="status">{% for s in outbound_referral_statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
+          <button type="submit">Log Outbound Referral</button>
+        </form>
+        {% if outbound_referrals %}
+          <table class="compact">
+            <tr><th>Date</th><th>Partner</th><th>Reason</th><th>Status</th><th>Delete</th></tr>
+            {% for r in outbound_referrals %}
+            <tr>
+              <td>{{ r.referral_date }}</td>
+              <td>{{ r.partner_name }}{% if r.company_name %}<br><span class="muted">{{ r.company_name }}</span>{% endif %}</td>
+              <td>{{ r.referral_reason }}</td>
+              <td>{{ r.status }}</td>
+              <td>
+                <form method="post" action="/ui/delete-outbound-referral" style="margin:0;">
+                  <input type="hidden" name="client_id" value="{{ client_id }}">
+                  <input type="hidden" name="referral_id" value="{{ r.id }}">
+                  <input type="hidden" name="active_tab" value="referrals">
+                  <button type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p>No outbound referrals logged yet.</p>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+
+  {% if active_tab == 'documents' %}
+    <div class="box">
+      <h3>Documents / Attachments</h3>
+      <p class="muted">Document upload center and client upload links are planned for the next phase. For now, recent generated dispute letters are listed here.</p>
+      {% if recent_letters %}
+        <table class="compact">
+          <tr><th>Generated</th><th>Bureau</th><th>Subject</th></tr>
+          {% for l in recent_letters %}
+          <tr><td>{{ l.generated_at }}</td><td>{{ l.bureau }}</td><td>{{ l.subject }}</td></tr>
+          {% endfor %}
+        </table>
+      {% else %}
+        <p>No letters/documents yet.</p>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {% if active_tab == 'billing' %}
+    <div class="grid">
+      <div class="box">
+        <h3>Billing Snapshot</h3>
+        <div class="row"><span class="label">Consultation fee:</span> {{ profile.get("consultation_fee") or "100.00" }}</div>
+        <div class="row"><span class="label">Pricing plan:</span> {{ profile.get("pricing_plan") or "standard program" }}</div>
+        <div class="row"><span class="label">Startup fee:</span> {{ profile.get("initial_fee") or "175.00" }}</div>
+        <div class="row"><span class="label">Monthly fee:</span> {{ profile.get("monthly_fee") or "125.00" }}</div>
+        <div class="row"><span class="label">Billing group:</span> {{ profile.get("billing_group") or "15th" }}</div>
+        <div class="row"><span class="label">First payment date:</span> {{ profile.get("first_payment_date") or "—" }}</div>
+        <div class="row"><span class="label">Preferred payment method:</span> {{ profile.get("preferred_payment_method") or "zelle" }}</div>
+      </div>
+      <div class="box">
+        <h3>Planned next step</h3>
+        <p>Phase 3 will add invoices, payments, open invoices, day-by-day expected collections, and payment history tied to this client.</p>
+      </div>
+    </div>
+  {% endif %}
+</body>
+</html>
