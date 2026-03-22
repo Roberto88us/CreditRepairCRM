@@ -66,15 +66,12 @@ DISPUTE_REASONS = ["never late", "not included in bankruptcy", "not mine", "othe
 NEGATIVE_ITEM_STATUSES = ["corrected", "disputed", "open", "removed", "verified"]
 PERSONAL_ERROR_TYPES = ["address", "associated person", "employer", "name", "other", "phone", "ssn variation"]
 PERSONAL_ERROR_STATUSES = ["corrected", "disputed", "open", "removed", "verified"]
-REQUESTED_ACTIONS = ["delete", "correct", "update", "investigate"]
-INQUIRY_DISPUTE_REASONS = ["not my inquiry", "did not apply", "unauthorized pull", "other"]
-INQUIRY_REQUESTED_ACTIONS = ["delete", "investigate"]
 CREDIT_TYPES = ["auto loan", "car loan", "credit card", "other", "personal loan", "secured credit card", "secured loan", "store card"]
 OUTBOUND_REFERRAL_STATUSES = ["completed", "contacted", "declined", "referred"]
 REFERRAL_PARTNER_TYPES = ["accountant", "ADP", "banker", "bankruptcy attorney", "client", "estate attorney", "insurance agent", "lender", "mortgage lender", "other", "realtor", "title company"]
 FOLLOWUP_TYPES = ["call back", "document reminder", "general", "payment follow-up", "redispute", "review bureau response", "send docs", "waiting on IDs"]
 FOLLOWUP_STATUSES = ["done", "open", "waiting"]
-DOCUMENT_CATEGORIES = ["contract", "credit_report", "bureau_response", "prior_dispute_letter", "supporting_document", "id_back", "id_front", "other", "proof_address", "statement"]
+DOCUMENT_CATEGORIES = ["contract", "id_back", "id_front", "other", "proof_address", "statement"]
 DOC_REVIEW_STATUSES = ["approved", "needs_update", "pending", "rejected"]
 
 
@@ -470,251 +467,39 @@ def fetch_referral_partners(cur):
     ]
 
 
-def fetch_account_disputes(cur, client_id: str, limit: int = 200):
-    cur.execute("""
-        SELECT id::text,
-               COALESCE(bureau, ''),
-               COALESCE(creditor_name, ''),
-               COALESCE(account_number_last4, ''),
-               COALESCE(dispute_reason, ''),
-               COALESCE(requested_action, ''),
-               COALESCE(status, 'open'),
-               COALESCE(notes, ''),
-               COALESCE(is_active, TRUE),
-               first_seen_date,
-               removed_date,
-               COALESCE(round_added, 1),
-               last_included_round,
-               removed_round,
-               created_at
-        FROM client_account_disputes
-        WHERE client_id = %s
-        ORDER BY COALESCE(is_active, TRUE) DESC,
-                 lower(COALESCE(creditor_name,'')),
-                 created_at DESC
-        LIMIT %s
-    """, (client_id, limit))
-    rows = cur.fetchall()
-    return [{
-        "id": r[0], "bureau": r[1], "creditor_name": r[2], "account_number_last4": r[3],
-        "dispute_reason": r[4], "requested_action": r[5], "status": r[6], "notes": r[7],
-        "is_active": bool(r[8]), "first_seen_date": str(r[9]) if r[9] else '',
-        "removed_date": str(r[10]) if r[10] else '', "round_added": r[11] or 1,
-        "last_included_round": r[12], "removed_round": r[13], "created_at": str(r[14]) if r[14] else ''
-    } for r in rows]
-
-
-def fetch_personal_info_disputes(cur, client_id: str, limit: int = 200):
-    cur.execute("""
-        SELECT id::text,
-               COALESCE(bureau, ''),
-               COALESCE(info_type, ''),
-               COALESCE(reported_value, ''),
-               COALESCE(correct_value, ''),
-               COALESCE(requested_action, ''),
-               COALESCE(notes, ''),
-               COALESCE(is_active, TRUE),
-               created_at,
-               removed_date,
-               COALESCE(round_added, 1),
-               last_included_round,
-               removed_round
-        FROM client_personal_info_disputes
-        WHERE client_id = %s
-        ORDER BY COALESCE(is_active, TRUE) DESC,
-                 lower(COALESCE(info_type,'')),
-                 created_at DESC
-        LIMIT %s
-    """, (client_id, limit))
-    rows = cur.fetchall()
-    return [{
-        "id": r[0], "bureau": r[1], "info_type": r[2], "reported_value": r[3],
-        "correct_value": r[4], "requested_action": r[5], "notes": r[6],
-        "is_active": bool(r[7]), "created_at": str(r[8]) if r[8] else '',
-        "removed_date": str(r[9]) if r[9] else '', "round_added": r[10] or 1,
-        "last_included_round": r[11], "removed_round": r[12]
-    } for r in rows]
-
-
-def fetch_inquiry_disputes(cur, client_id: str, limit: int = 200):
-    cur.execute("""
-        SELECT id::text,
-               COALESCE(bureau, ''),
-               COALESCE(furnisher_name, ''),
-               inquiry_date,
-               COALESCE(dispute_reason, ''),
-               COALESCE(requested_action, 'delete'),
-               COALESCE(notes, ''),
-               COALESCE(is_active, TRUE),
-               created_at,
-               removed_date,
-               COALESCE(round_added, 1),
-               last_included_round,
-               removed_round
-        FROM client_inquiry_disputes
-        WHERE client_id = %s
-        ORDER BY COALESCE(is_active, TRUE) DESC,
-                 inquiry_date DESC NULLS LAST,
-                 lower(COALESCE(furnisher_name,'')),
-                 created_at DESC
-        LIMIT %s
-    """, (client_id, limit))
-    rows = cur.fetchall()
-    return [{
-        "id": r[0], "bureau": r[1], "furnisher_name": r[2],
-        "inquiry_date": str(r[3]) if r[3] else '', "dispute_reason": r[4],
-        "requested_action": r[5], "notes": r[6], "is_active": bool(r[7]),
-        "created_at": str(r[8]) if r[8] else '', "removed_date": str(r[9]) if r[9] else '',
-        "round_added": r[10] or 1, "last_included_round": r[11], "removed_round": r[12]
-    } for r in rows]
-
-
-def fetch_account_name_options(cur, client_id: str, limit: int = 300):
-    cur.execute("""
-        SELECT DISTINCT creditor_name
-        FROM client_account_disputes
-        WHERE client_id = %s
-          AND NULLIF(TRIM(COALESCE(creditor_name, '')), '') IS NOT NULL
-        ORDER BY creditor_name
-        LIMIT %s
-    """, (client_id, limit))
-    return [r[0] for r in cur.fetchall()]
-
-
-def fetch_saved_letters(cur, client_id: str, limit: int = 100):
-    cur.execute("""
-        SELECT l.id::text,
-               COALESCE(meta.round_number, NULL),
-               l.bureau::text,
-               COALESCE(l.subject, ''),
-               l.generated_at,
-               COALESCE(meta.include_accounts, TRUE),
-               COALESCE(meta.include_personal_info, FALSE),
-               COALESCE(meta.include_inquiries, FALSE),
-               COALESCE(meta.letter_instructions, ''),
-               COALESCE(l.round_run_id::text, '')
-        FROM letters l
-        LEFT JOIN round_run_dispute_meta meta ON meta.round_run_id = l.round_run_id
-        WHERE l.client_id = %s
-        ORDER BY l.generated_at DESC
-        LIMIT %s
-    """, (client_id, limit))
-    rows = cur.fetchall()
-    out = []
-    for r in rows:
-        categories = []
-        if r[5]:
-            categories.append('Accounts')
-        if r[6]:
-            categories.append('Personal Info')
-        if r[7]:
-            categories.append('Inquiries')
-        category_label = ' + '.join(categories) if categories else 'Legacy Letter'
-        title = f"Dispute Letter - Round {r[1]} - {r[2].title()} - {category_label}" if r[1] else (r[3] or f"Dispute Letter - {r[2].title()}")
-        out.append({
-            'id': r[0], 'round_number': r[1], 'bureau': r[2], 'subject': r[3],
-            'generated_at': str(r[4]) if r[4] else '', 'include_accounts': bool(r[5]),
-            'include_personal_info': bool(r[6]), 'include_inquiries': bool(r[7]),
-            'letter_instructions': r[8], 'round_run_id': r[9], 'title': title,
-        })
-    return out
-
-
-def fetch_dispute_round_defaults(cur, client_id: str):
-    round_number = 1
-    try:
-        cur.execute("SELECT COALESCE(MAX(round_number), 0) FROM round_runs WHERE client_id = %s", (client_id,))
-        row = cur.fetchone()
-        if row and row[0]:
-            round_number = int(row[0]) + 1
-    except Exception:
-        conn = getattr(cur, 'connection', None)
-        if conn is not None:
-            conn.rollback()
-        cur.execute("SELECT COALESCE(MAX(round_number), 0) FROM round_run_dispute_meta WHERE client_id = %s", (client_id,))
-        row = cur.fetchone()
-        if row and row[0]:
-            round_number = int(row[0]) + 1
-    cur.execute("""
-        SELECT COALESCE(letter_instructions, '')
-        FROM round_run_dispute_meta
-        WHERE client_id = %s
-        ORDER BY created_at DESC
-        LIMIT 1
-    """, (client_id,))
-    row = cur.fetchone()
-    return {
-        'current_round_number': round_number,
-        'last_letter_instructions': row[0] if row and row[0] else ''
-    }
-
-
-def fetch_dispute_metrics(cur, client_id: str):
-    metrics = {}
-    cur.execute("""
-        SELECT
-            COUNT(*) FILTER (WHERE COALESCE(round_added, 1) = 1) AS started_count,
-            COUNT(*) FILTER (WHERE COALESCE(is_active, TRUE) = TRUE) AS current_count,
-            COUNT(*) FILTER (WHERE COALESCE(is_active, TRUE) = FALSE) AS removed_count,
-            COUNT(*) FILTER (WHERE COALESCE(round_added, 1) > 1 AND COALESCE(is_active, TRUE) = TRUE) AS new_count
-        FROM client_account_disputes
-        WHERE client_id = %s
-    """, (client_id,))
-    row = cur.fetchone() or (0, 0, 0, 0)
-    metrics['accounts'] = {'started': int(row[0] or 0), 'current': int(row[1] or 0), 'removed': int(row[2] or 0), 'new': int(row[3] or 0)}
-
-    cur.execute("""
-        SELECT
-            COUNT(*) FILTER (WHERE COALESCE(round_added, 1) = 1) AS started_count,
-            COUNT(*) FILTER (WHERE COALESCE(is_active, TRUE) = TRUE) AS current_count,
-            COUNT(*) FILTER (WHERE COALESCE(is_active, TRUE) = FALSE) AS removed_count,
-            COUNT(*) FILTER (WHERE COALESCE(round_added, 1) > 1 AND COALESCE(is_active, TRUE) = TRUE) AS new_count
-        FROM client_personal_info_disputes
-        WHERE client_id = %s
-    """, (client_id,))
-    row = cur.fetchone() or (0, 0, 0, 0)
-    metrics['personal_info'] = {'started': int(row[0] or 0), 'current': int(row[1] or 0), 'removed': int(row[2] or 0), 'new': int(row[3] or 0)}
-
-    cur.execute("""
-        SELECT
-            COUNT(*) FILTER (WHERE COALESCE(round_added, 1) = 1) AS started_count,
-            COUNT(*) FILTER (WHERE COALESCE(is_active, TRUE) = TRUE) AS current_count,
-            COUNT(*) FILTER (WHERE COALESCE(is_active, TRUE) = FALSE) AS removed_count,
-            COUNT(*) FILTER (WHERE COALESCE(round_added, 1) > 1 AND COALESCE(is_active, TRUE) = TRUE) AS new_count
-        FROM client_inquiry_disputes
-        WHERE client_id = %s
-    """, (client_id,))
-    row = cur.fetchone() or (0, 0, 0, 0)
-    metrics['inquiries'] = {'started': int(row[0] or 0), 'current': int(row[1] or 0), 'removed': int(row[2] or 0), 'new': int(row[3] or 0)}
-    return metrics
-
-
-def build_dispute_round_summary(cur, client_id: str, round_number: int, include_personal_info: bool, include_inquiries: bool):
-    metrics = fetch_dispute_metrics(cur, client_id)
-    parts = [
-        f"Round {round_number} processed.",
-        f"Accounts: started {metrics['accounts']['started']}, current {metrics['accounts']['current']}, removed {metrics['accounts']['removed']}, new since round 1 {metrics['accounts']['new']}."
-    ]
-    if include_personal_info:
-        parts.append(
-            f"Personal info: started {metrics['personal_info']['started']}, current {metrics['personal_info']['current']}, removed {metrics['personal_info']['removed']}, new since round 1 {metrics['personal_info']['new']}."
-        )
-    if include_inquiries:
-        parts.append(
-            f"Inquiries tracked: started {metrics['inquiries']['started']}, current {metrics['inquiries']['current']}, removed {metrics['inquiries']['removed']}, new since round 1 {metrics['inquiries']['new']}."
-        )
-        parts.append("Note: inquiry disputes are tracked in the CRM in this build, but the legacy generator does not yet merge them into the generated letters.")
-    return ' '.join(parts)
-
-
-# backward-compatible aliases used elsewhere in the Phase 3 code/template
-
 def fetch_negative_items(cur, client_id: str, limit: int = 200):
-    return fetch_account_disputes(cur, client_id, limit)
+    cur.execute("""
+        SELECT id::text, bureau, creditor_name, COALESCE(account_number, ''), COALESCE(account_type, ''),
+               COALESCE(dispute_reason, ''), COALESCE(current_status, 'open'), COALESCE(notes, ''),
+               created_at, updated_at
+        FROM client_negative_items
+        WHERE client_id = %s
+        ORDER BY lower(COALESCE(creditor_name,'')), created_at DESC
+        LIMIT %s
+    """, (client_id, limit))
+    rows = cur.fetchall()
+    return [{
+        "id": r[0], "bureau": r[1], "creditor_name": r[2], "account_number": r[3], "account_type": r[4],
+        "dispute_reason": r[5], "current_status": r[6], "notes": r[7],
+        "created_at": str(r[8]) if r[8] else '', "updated_at": str(r[9]) if r[9] else ''
+    } for r in rows]
 
 
 def fetch_personal_info_errors(cur, client_id: str, limit: int = 200):
-    return fetch_personal_info_disputes(cur, client_id, limit)
+    cur.execute("""
+        SELECT id::text, COALESCE(bureau, ''), error_type, value_text, COALESCE(dispute_action, ''),
+               COALESCE(current_status, 'open'), COALESCE(notes, ''), created_at, updated_at
+        FROM client_personal_info_errors
+        WHERE client_id = %s
+        ORDER BY lower(COALESCE(error_type,'')), created_at DESC
+        LIMIT %s
+    """, (client_id, limit))
+    rows = cur.fetchall()
+    return [{
+        "id": r[0], "bureau": r[1], "error_type": r[2], "value_text": r[3], "dispute_action": r[4],
+        "current_status": r[5], "notes": r[6], "created_at": str(r[7]) if r[7] else '',
+        "updated_at": str(r[8]) if r[8] else ''
+    } for r in rows]
 
 
 def fetch_credit_products(cur, client_id: str, limit: int = 200):
@@ -838,22 +623,12 @@ def load_client_workspace_context(cur, client_id: str, reveal_cred_id: Optional[
     documents = fetch_documents(cur, client_id, 200)
     upload_requests = fetch_upload_requests(cur, client_id, 50)
     referral_partners = fetch_referral_partners(cur)
-    account_disputes = fetch_account_disputes(cur, client_id, 200)
-    personal_info_disputes = fetch_personal_info_disputes(cur, client_id, 200)
-    inquiry_disputes = fetch_inquiry_disputes(cur, client_id, 200)
-    dispute_metrics = fetch_dispute_metrics(cur, client_id)
-    dispute_round_defaults = fetch_dispute_round_defaults(cur, client_id)
-    saved_letters = fetch_saved_letters(cur, client_id, 100)
-    account_name_options = fetch_account_name_options(cur, client_id, 300)
+    negative_items = fetch_negative_items(cur, client_id, 200)
+    personal_info_errors = fetch_personal_info_errors(cur, client_id, 200)
     credit_products = fetch_credit_products(cur, client_id, 200)
     outbound_referrals = fetch_outbound_referrals(cur, client_id, 200)
 
-    return (
-        dashboard, profile, score_groups, credentials, notes, appointments, followups,
-        redispute_events, documents, upload_requests, referral_partners, account_disputes,
-        personal_info_disputes, inquiry_disputes, dispute_metrics, dispute_round_defaults,
-        saved_letters, account_name_options, credit_products, outbound_referrals
-    )
+    return dashboard, profile, score_groups, credentials, notes, appointments, followups, redispute_events, documents, upload_requests, referral_partners, negative_items, personal_info_errors, credit_products, outbound_referrals
 
 
 def render_client_workspace(request: Request, client_id: str, message: str = "", error: str = "", reveal_cred_id: Optional[str] = None, active_tab: Optional[str] = None):
@@ -864,26 +639,20 @@ def render_client_workspace(request: Request, client_id: str, message: str = "",
         ("calendar", "Calendar"),
         ("credentials_scores", "Credentials & Scores"),
         ("disputes", "Disputes"),
+        ("personal_info", "Personal Info Errors"),
         ("documents", "Documents"),
         ("credit_products", "Credit Products"),
         ("referrals", "Referrals"),
     ]
     valid_tabs = {k for k, _ in tab_defs}
     chosen_tab = active_tab or request.query_params.get("tab") or "overview"
-    if chosen_tab == "personal_info":
-        chosen_tab = "disputes"
     if chosen_tab not in valid_tabs:
         chosen_tab = "overview"
 
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            (
-                dashboard, profile, score_groups, credentials, notes, appointments, followups,
-                redispute_events, documents, upload_requests, referral_partners, account_disputes,
-                personal_info_disputes, inquiry_disputes, dispute_metrics, dispute_round_defaults,
-                saved_letters, account_name_options, credit_products, outbound_referrals
-            ) = load_client_workspace_context(cur, client_id, reveal_cred_id)
+            dashboard, profile, score_groups, credentials, notes, appointments, followups, redispute_events, documents, upload_requests, referral_partners, negative_items, personal_info_errors, credit_products, outbound_referrals = load_client_workspace_context(cur, client_id, reveal_cred_id)
         if not profile:
             return templates.TemplateResponse("index.html", {"request": request, "error": "Client not found."})
         return templates.TemplateResponse(
@@ -902,13 +671,8 @@ def render_client_workspace(request: Request, client_id: str, message: str = "",
                 "documents": documents,
                 "upload_requests": upload_requests,
                 "referral_partners": referral_partners,
-                "account_disputes": account_disputes,
-                "personal_info_disputes": personal_info_disputes,
-                "inquiry_disputes": inquiry_disputes,
-                "dispute_metrics": dispute_metrics,
-                "dispute_round_defaults": dispute_round_defaults,
-                "saved_letters": saved_letters,
-                "account_name_options": account_name_options,
+                "negative_items": negative_items,
+                "personal_info_errors": personal_info_errors,
                 "credit_products": credit_products,
                 "outbound_referrals": outbound_referrals,
                 "providers": PROVIDERS,
@@ -917,9 +681,6 @@ def render_client_workspace(request: Request, client_id: str, message: str = "",
                 "negative_item_statuses": NEGATIVE_ITEM_STATUSES,
                 "personal_error_types": PERSONAL_ERROR_TYPES,
                 "personal_error_statuses": PERSONAL_ERROR_STATUSES,
-                "requested_actions": REQUESTED_ACTIONS,
-                "inquiry_dispute_reasons": INQUIRY_DISPUTE_REASONS,
-                "inquiry_requested_actions": INQUIRY_REQUESTED_ACTIONS,
                 "credit_types": CREDIT_TYPES,
                 "outbound_referral_statuses": OUTBOUND_REFERRAL_STATUSES,
                 "referral_partner_types": REFERRAL_PARTNER_TYPES,
@@ -937,8 +698,6 @@ def render_client_workspace(request: Request, client_id: str, message: str = "",
         conn.close()
 
 
-# ---------------------------
-# API models
 # ---------------------------
 # API models
 # ---------------------------
@@ -1525,18 +1284,16 @@ def ui_delete_score(request: Request, client_id: str = Form(...), snapshot_id: s
         return render_client_workspace(request, client_id, error=str(e))
 
 
-@app.post("/ui/add-account-dispute", response_class=HTMLResponse)
-def ui_add_account_dispute(
+@app.post("/ui/add-negative-item", response_class=HTMLResponse)
+def ui_add_negative_item(
     request: Request,
     client_id: str = Form(...),
     bureau: str = Form(...),
     creditor_name: str = Form(...),
-    account_number_last4: str = Form(""),
+    account_number: str = Form(""),
+    account_type: str = Form(""),
     dispute_reason: str = Form(...),
-    requested_action: str = Form("investigate"),
-    status: str = Form("disputed"),
-    first_seen_date: str = Form(""),
-    round_added: int = Form(1),
+    current_status: str = Form("open"),
     notes: str = Form(""),
     active_tab: str = Form("disputes"),
 ):
@@ -1544,91 +1301,38 @@ def ui_add_account_dispute(
         conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO client_account_disputes
-                  (client_id, creditor_name, account_number_last4, dispute_reason, requested_action, notes,
-                   is_active, bureau, status, first_seen_date, removed_date, is_negative, round_added, last_included_round)
+                INSERT INTO client_negative_items
+                  (client_id, bureau, creditor_name, account_number, account_type, dispute_reason, current_status, notes)
                 VALUES
-                  (%s, %s, NULLIF(%s,''), %s, %s, NULLIF(%s,''), TRUE, %s, %s, NULLIF(%s,'')::date, NULL, TRUE, %s, %s)
-            """, (client_id, creditor_name, account_number_last4, dispute_reason, requested_action, notes, bureau, status, first_seen_date, round_added, round_added))
+                  (%s, %s, %s, NULLIF(%s,''), NULLIF(%s,''), %s, %s, NULLIF(%s,''))
+            """, (client_id, bureau, creditor_name, account_number, account_type, dispute_reason, current_status, notes))
         conn.close()
-        return render_client_workspace(request, client_id, message="Account dispute saved.", active_tab=active_tab)
+        return render_client_workspace(request, client_id, message="Negative/dispute item saved.", active_tab=active_tab)
     except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+        return render_client_workspace(request, client_id, error=str(e))
 
 
-@app.post("/ui/mark-account-dispute-removed", response_class=HTMLResponse)
-def ui_mark_account_dispute_removed(
-    request: Request,
-    client_id: str = Form(...),
-    item_id: str = Form(...),
-    removed_round: int = Form(1),
-    active_tab: str = Form("disputes"),
-):
+@app.post("/ui/delete-negative-item", response_class=HTMLResponse)
+def ui_delete_negative_item(request: Request, client_id: str = Form(...), item_id: str = Form(...), active_tab: str = Form("disputes")):
     try:
         conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE client_account_disputes
-                SET is_active = FALSE,
-                    status = 'removed',
-                    removed_date = CURRENT_DATE,
-                    removed_round = %s
-                WHERE id = %s AND client_id = %s
-            """, (removed_round, item_id, client_id))
+            cur.execute("DELETE FROM client_negative_items WHERE id = %s AND client_id = %s", (item_id, client_id))
         conn.close()
-        return render_client_workspace(request, client_id, message="Account dispute moved to removed list.", active_tab=active_tab)
+        return render_client_workspace(request, client_id, message="Negative/dispute item deleted.", active_tab=active_tab)
     except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+        return render_client_workspace(request, client_id, error=str(e))
 
 
-@app.post("/ui/reactivate-account-dispute", response_class=HTMLResponse)
-def ui_reactivate_account_dispute(
-    request: Request,
-    client_id: str = Form(...),
-    item_id: str = Form(...),
-    round_added: int = Form(1),
-    active_tab: str = Form("disputes"),
-):
-    try:
-        conn = get_conn(); conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE client_account_disputes
-                SET is_active = TRUE,
-                    status = 'disputed',
-                    removed_date = NULL,
-                    removed_round = NULL,
-                    round_added = COALESCE(round_added, %s)
-                WHERE id = %s AND client_id = %s
-            """, (round_added, item_id, client_id))
-        conn.close()
-        return render_client_workspace(request, client_id, message="Account dispute reactivated.", active_tab=active_tab)
-    except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
-
-
-@app.post("/ui/delete-account-dispute", response_class=HTMLResponse)
-def ui_delete_account_dispute(request: Request, client_id: str = Form(...), item_id: str = Form(...), active_tab: str = Form("disputes")):
-    try:
-        conn = get_conn(); conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM client_account_disputes WHERE id = %s AND client_id = %s", (item_id, client_id))
-        conn.close()
-        return render_client_workspace(request, client_id, message="Account dispute deleted.", active_tab=active_tab)
-    except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
-
-
-@app.post("/ui/add-personal-info-dispute", response_class=HTMLResponse)
-def ui_add_personal_info_dispute(
+@app.post("/ui/add-personal-info-error", response_class=HTMLResponse)
+def ui_add_personal_info_error(
     request: Request,
     client_id: str = Form(...),
     bureau: str = Form(""),
-    info_type: str = Form(...),
-    reported_value: str = Form(...),
-    correct_value: str = Form(""),
-    requested_action: str = Form("delete"),
-    round_added: int = Form(1),
+    error_type: str = Form(...),
+    value_text: str = Form(...),
+    dispute_action: str = Form("delete"),
+    current_status: str = Form("open"),
     notes: str = Form(""),
     active_tab: str = Form("disputes"),
 ):
@@ -1636,167 +1340,27 @@ def ui_add_personal_info_dispute(
         conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO client_personal_info_disputes
-                  (client_id, bureau, info_type, reported_value, correct_value, requested_action,
-                   notes, is_active, round_added, last_included_round, removed_date, removed_round)
+                INSERT INTO client_personal_info_errors
+                  (client_id, bureau, error_type, value_text, dispute_action, current_status, notes)
                 VALUES
-                  (%s, NULLIF(%s,''), %s, %s, NULLIF(%s,''), %s, NULLIF(%s,''), TRUE, %s, %s, NULL, NULL)
-            """, (client_id, bureau, info_type, reported_value, correct_value, requested_action, notes, round_added, round_added))
+                  (%s, NULLIF(%s,''), %s, %s, NULLIF(%s,''), %s, NULLIF(%s,''))
+            """, (client_id, bureau, error_type, value_text, dispute_action, current_status, notes))
         conn.close()
-        return render_client_workspace(request, client_id, message="Personal info dispute saved.", active_tab=active_tab)
+        return render_client_workspace(request, client_id, message="Personal information error saved.", active_tab=active_tab)
     except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+        return render_client_workspace(request, client_id, error=str(e))
 
 
-@app.post("/ui/mark-personal-info-dispute-removed", response_class=HTMLResponse)
-def ui_mark_personal_info_dispute_removed(
-    request: Request,
-    client_id: str = Form(...),
-    item_id: str = Form(...),
-    removed_round: int = Form(1),
-    active_tab: str = Form("disputes"),
-):
+@app.post("/ui/delete-personal-info-error", response_class=HTMLResponse)
+def ui_delete_personal_info_error(request: Request, client_id: str = Form(...), item_id: str = Form(...), active_tab: str = Form("personal_info")):
     try:
         conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE client_personal_info_disputes
-                SET is_active = FALSE,
-                    removed_date = CURRENT_DATE,
-                    removed_round = %s
-                WHERE id = %s AND client_id = %s
-            """, (removed_round, item_id, client_id))
+            cur.execute("DELETE FROM client_personal_info_errors WHERE id = %s AND client_id = %s", (item_id, client_id))
         conn.close()
-        return render_client_workspace(request, client_id, message="Personal info dispute moved to removed list.", active_tab=active_tab)
+        return render_client_workspace(request, client_id, message="Personal information error deleted.", active_tab=active_tab)
     except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
-
-
-@app.post("/ui/reactivate-personal-info-dispute", response_class=HTMLResponse)
-def ui_reactivate_personal_info_dispute(
-    request: Request,
-    client_id: str = Form(...),
-    item_id: str = Form(...),
-    round_added: int = Form(1),
-    active_tab: str = Form("disputes"),
-):
-    try:
-        conn = get_conn(); conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE client_personal_info_disputes
-                SET is_active = TRUE,
-                    removed_date = NULL,
-                    removed_round = NULL,
-                    round_added = COALESCE(round_added, %s)
-                WHERE id = %s AND client_id = %s
-            """, (round_added, item_id, client_id))
-        conn.close()
-        return render_client_workspace(request, client_id, message="Personal info dispute reactivated.", active_tab=active_tab)
-    except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
-
-
-@app.post("/ui/delete-personal-info-dispute", response_class=HTMLResponse)
-def ui_delete_personal_info_dispute(request: Request, client_id: str = Form(...), item_id: str = Form(...), active_tab: str = Form("disputes")):
-    try:
-        conn = get_conn(); conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM client_personal_info_disputes WHERE id = %s AND client_id = %s", (item_id, client_id))
-        conn.close()
-        return render_client_workspace(request, client_id, message="Personal info dispute deleted.", active_tab=active_tab)
-    except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
-
-
-@app.post("/ui/add-inquiry-dispute", response_class=HTMLResponse)
-def ui_add_inquiry_dispute(
-    request: Request,
-    client_id: str = Form(...),
-    bureau: str = Form(""),
-    furnisher_name: str = Form(...),
-    inquiry_date: str = Form(""),
-    dispute_reason: str = Form("not my inquiry"),
-    requested_action: str = Form("delete"),
-    round_added: int = Form(1),
-    notes: str = Form(""),
-    active_tab: str = Form("disputes"),
-):
-    try:
-        conn = get_conn(); conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO client_inquiry_disputes
-                  (client_id, bureau, furnisher_name, inquiry_date, dispute_reason, requested_action,
-                   notes, is_active, round_added, last_included_round, removed_date, removed_round)
-                VALUES
-                  (%s, NULLIF(%s,''), %s, NULLIF(%s,'')::date, %s, %s, NULLIF(%s,''), TRUE, %s, %s, NULL, NULL)
-            """, (client_id, bureau, furnisher_name, inquiry_date, dispute_reason, requested_action, notes, round_added, round_added))
-        conn.close()
-        return render_client_workspace(request, client_id, message="Inquiry dispute saved.", active_tab=active_tab)
-    except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
-
-
-@app.post("/ui/mark-inquiry-dispute-removed", response_class=HTMLResponse)
-def ui_mark_inquiry_dispute_removed(
-    request: Request,
-    client_id: str = Form(...),
-    item_id: str = Form(...),
-    removed_round: int = Form(1),
-    active_tab: str = Form("disputes"),
-):
-    try:
-        conn = get_conn(); conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE client_inquiry_disputes
-                SET is_active = FALSE,
-                    removed_date = CURRENT_DATE,
-                    removed_round = %s
-                WHERE id = %s AND client_id = %s
-            """, (removed_round, item_id, client_id))
-        conn.close()
-        return render_client_workspace(request, client_id, message="Inquiry dispute moved to removed list.", active_tab=active_tab)
-    except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
-
-
-@app.post("/ui/reactivate-inquiry-dispute", response_class=HTMLResponse)
-def ui_reactivate_inquiry_dispute(
-    request: Request,
-    client_id: str = Form(...),
-    item_id: str = Form(...),
-    round_added: int = Form(1),
-    active_tab: str = Form("disputes"),
-):
-    try:
-        conn = get_conn(); conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE client_inquiry_disputes
-                SET is_active = TRUE,
-                    removed_date = NULL,
-                    removed_round = NULL,
-                    round_added = COALESCE(round_added, %s)
-                WHERE id = %s AND client_id = %s
-            """, (round_added, item_id, client_id))
-        conn.close()
-        return render_client_workspace(request, client_id, message="Inquiry dispute reactivated.", active_tab=active_tab)
-    except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
-
-
-@app.post("/ui/delete-inquiry-dispute", response_class=HTMLResponse)
-def ui_delete_inquiry_dispute(request: Request, client_id: str = Form(...), item_id: str = Form(...), active_tab: str = Form("disputes")):
-    try:
-        conn = get_conn(); conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM client_inquiry_disputes WHERE id = %s AND client_id = %s", (item_id, client_id))
-        conn.close()
-        return render_client_workspace(request, client_id, message="Inquiry dispute deleted.", active_tab=active_tab)
-    except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+        return render_client_workspace(request, client_id, error=str(e))
 
 
 @app.post("/ui/add-credit-product", response_class=HTMLResponse)
@@ -2123,8 +1687,6 @@ def ui_process_round_with_pdfs(
     round_number: int = Form(...),
     client_email: str = Form(...),
     include_personal_info: bool = Form(False),
-    include_inquiries: bool = Form(False),
-    letter_instructions: str = Form(""),
 ):
     try:
         if not SECRET_KEY:
@@ -2142,40 +1704,6 @@ def ui_process_round_with_pdfs(
             if not run_id:
                 raise RuntimeError("No round_run_id returned")
 
-            cur.execute("""
-                INSERT INTO round_run_dispute_meta
-                  (round_run_id, client_id, round_number, include_accounts, include_personal_info, include_inquiries, letter_instructions)
-                VALUES
-                  (%s, %s, %s, TRUE, %s, %s, NULLIF(%s,''))
-                ON CONFLICT (round_run_id) DO UPDATE
-                SET round_number = EXCLUDED.round_number,
-                    include_accounts = EXCLUDED.include_accounts,
-                    include_personal_info = EXCLUDED.include_personal_info,
-                    include_inquiries = EXCLUDED.include_inquiries,
-                    letter_instructions = EXCLUDED.letter_instructions
-            """, (run_id, client_id, round_number, include_personal_info, include_inquiries, letter_instructions))
-
-            cur.execute("""
-                UPDATE client_account_disputes
-                SET last_included_round = %s
-                WHERE client_id = %s AND COALESCE(is_active, TRUE) = TRUE
-            """, (round_number, client_id))
-
-            if include_personal_info:
-                cur.execute("""
-                    UPDATE client_personal_info_disputes
-                    SET last_included_round = %s
-                    WHERE client_id = %s AND COALESCE(is_active, TRUE) = TRUE
-                """, (round_number, client_id))
-
-            summary_note = build_dispute_round_summary(cur, client_id, round_number, include_personal_info, include_inquiries)
-            if letter_instructions and letter_instructions.strip():
-                summary_note += f" Letter instructions: {letter_instructions.strip()}"
-            cur.execute("""
-                INSERT INTO client_notes (client_id, note_text, note_type, created_by)
-                VALUES (%s, %s, 'dispute_round_summary', 'system')
-            """, (client_id, summary_note))
-
             cur.execute("SELECT id::text FROM letters WHERE round_run_id = %s ORDER BY bureau::text", (run_id,))
             ids = [r[0] for r in cur.fetchall()]
             pdf_results = [generate_and_attach_pdf(cur, lid) for lid in ids]
@@ -2184,16 +1712,8 @@ def ui_process_round_with_pdfs(
 
         return templates.TemplateResponse(
             "run_result.html",
-            {
-                "request": request,
-                "client_id": client_id,
-                "round_number": round_number,
-                "round": round_json,
-                "pdfs": pdf_results,
-                "warning": "Inquiry disputes are tracked and logged in this build, but the legacy letter generator does not yet merge them into generated letters." if include_inquiries else ""
-            }
+            {"request": request, "client_id": client_id, "round_number": round_number, "round": round_json, "pdfs": pdf_results}
         )
 
     except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab='disputes')
-
+        return render_client_workspace(request, client_id, error=str(e))

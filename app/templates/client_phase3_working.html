@@ -32,9 +32,6 @@
     .tab.active { background: #111; color: white; border-color: #111; }
     .label { font-weight: bold; }
     .small { font-size: 12px; color: #666; }
-    .metric-grid { display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; }
-    .metric-card { border:1px solid #ddd; border-radius:8px; padding:12px; background:#fafafa; }
-    .pill { display:inline-block; border:1px solid #ccc; border-radius:999px; padding:2px 8px; font-size:12px; background:#f5f5f5; }
   </style>
 </head>
 <body>
@@ -348,250 +345,67 @@
       {% endfor %}
     </div>
   {% elif active_tab == 'disputes' %}
-    {% set current_round = dispute_round_defaults.get('current_round_number', 1) %}
-    <div class="box warn">
-      <b>Unified disputes workspace:</b> all three dispute types live here now. Active items stay in the working list, removed items stay in history, and a dispute-round summary is automatically pushed into Notes when you run a round. Inquiry disputes are tracked here now, but the current legacy letter generator still only generates accounts plus optional personal-info disputes.
-    </div>
-
-    <div class="metric-grid" style="margin-bottom:16px;">
-      <div class="metric-card">
-        <h3 style="margin-top:0;">Account Disputes</h3>
-        <div class="row"><span class="label">Started negative:</span> {{ dispute_metrics.get('accounts', {}).get('started', 0) }}</div>
-        <div class="row"><span class="label">Current active:</span> {{ dispute_metrics.get('accounts', {}).get('current', 0) }}</div>
-        <div class="row"><span class="label">Removed:</span> {{ dispute_metrics.get('accounts', {}).get('removed', 0) }}</div>
-        <div class="row"><span class="label">New since round 1:</span> {{ dispute_metrics.get('accounts', {}).get('new', 0) }}</div>
-      </div>
-      <div class="metric-card">
-        <h3 style="margin-top:0;">Personal Info</h3>
-        <div class="row"><span class="label">Started:</span> {{ dispute_metrics.get('personal_info', {}).get('started', 0) }}</div>
-        <div class="row"><span class="label">Current active:</span> {{ dispute_metrics.get('personal_info', {}).get('current', 0) }}</div>
-        <div class="row"><span class="label">Removed:</span> {{ dispute_metrics.get('personal_info', {}).get('removed', 0) }}</div>
-        <div class="row"><span class="label">New since round 1:</span> {{ dispute_metrics.get('personal_info', {}).get('new', 0) }}</div>
-      </div>
-      <div class="metric-card">
-        <h3 style="margin-top:0;">Inquiry Disputes</h3>
-        <div class="row"><span class="label">Started:</span> {{ dispute_metrics.get('inquiries', {}).get('started', 0) }}</div>
-        <div class="row"><span class="label">Current active:</span> {{ dispute_metrics.get('inquiries', {}).get('current', 0) }}</div>
-        <div class="row"><span class="label">Removed:</span> {{ dispute_metrics.get('inquiries', {}).get('removed', 0) }}</div>
-        <div class="row"><span class="label">New since round 1:</span> {{ dispute_metrics.get('inquiries', {}).get('new', 0) }}</div>
-      </div>
-    </div>
-
-    <div class="box">
-      <h3>Dispute Round Controls</h3>
-      <div class="row"><span class="label">Suggested current round:</span> <span class="pill">{{ current_round }}</span></div>
-      <div class="row small">Use this round number when adding new items discovered after an earlier round, and when marking items removed after the bureau deletes them.</div>
-    </div>
-
     <div class="grid">
       <div class="box">
-        <h3>Add Account Dispute</h3>
-        <datalist id="account-name-options">
-          {% for name in account_name_options %}<option value="{{ name }}"></option>{% endfor %}
-        </datalist>
-        <form method="post" action="/ui/add-account-dispute">
+        <h3>Add Negative / Dispute Item</h3>
+        <form method="post" action="/ui/add-negative-item">
           <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="active_tab" value="disputes">
-          <div class="subgrid">
-            <div class="row"><label>Round added</label><input type="number" name="round_added" min="1" value="{{ current_round }}"></div>
-            <div class="row"><label>Bureau</label><select name="bureau">{% for b in bureaus %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div>
-          </div>
-          <div class="row"><label>Account / creditor</label><input name="creditor_name" list="account-name-options" required></div>
-          <div class="row"><label>Account # / last 4</label><input name="account_number_last4"></div>
-          <div class="subgrid">
-            <div class="row"><label>Reason</label><select name="dispute_reason">{% for d in dispute_reasons %}<option value="{{ d }}">{{ d }}</option>{% endfor %}</select></div>
-            <div class="row"><label>Requested action</label><select name="requested_action">{% for a in requested_actions %}<option value="{{ a }}">{{ a }}</option>{% endfor %}</select></div>
-          </div>
-          <div class="subgrid">
-            <div class="row"><label>Status</label><select name="status">{% for s in negative_item_statuses %}<option value="{{ s }}" {% if s == 'disputed' %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></div>
-            <div class="row"><label>First seen date</label><input type="date" name="first_seen_date"></div>
-          </div>
+          <div class="row"><label>Bureau</label><select name="bureau">{% for b in bureaus %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Creditor name</label><input name="creditor_name" required></div>
+          <div class="row"><label>Account number</label><input name="account_number"></div>
+          <div class="row"><label>Account type</label><input name="account_type"></div>
+          <div class="row"><label>Dispute reason</label><select name="dispute_reason">{% for d in dispute_reasons %}<option value="{{ d }}">{{ d }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Status</label><select name="current_status">{% for s in negative_item_statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></div>
           <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
-          <button type="submit">Save Account Dispute</button>
+          <button type="submit">Save Item</button>
         </form>
       </div>
       <div class="box">
-        <h3>Active Account Disputes</h3>
-        {% set active_accounts = account_disputes | selectattr('is_active') | list %}
-        {% if active_accounts %}
-          <table class="compact"><tr><th>Bureau</th><th>Creditor</th><th>Acct #</th><th>Reason</th><th>Action</th><th>Status</th><th>Round</th><th></th></tr>
-          {% for n in active_accounts %}
-          <tr>
-            <td>{{ n.bureau }}</td><td>{{ n.creditor_name }}</td><td>{{ n.account_number_last4 }}</td><td>{{ n.dispute_reason }}</td><td>{{ n.requested_action }}</td><td>{{ n.status }}</td><td>{{ n.round_added }}</td>
-            <td>
-              <form method="post" action="/ui/mark-account-dispute-removed" style="margin:0 0 6px 0;">
-                <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ n.id }}"><input type="hidden" name="active_tab" value="disputes"><input type="hidden" name="removed_round" value="{{ current_round }}"><button type="submit">Mark Removed</button>
-              </form>
-              <form method="post" action="/ui/delete-account-dispute" style="margin:0;">
-                <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ n.id }}"><input type="hidden" name="active_tab" value="disputes"><button type="submit">Delete</button>
-              </form>
-            </td>
-          </tr>
+        <h3>Negative / Dispute Items</h3>
+        {% if negative_items %}
+          <table class="compact"><tr><th>Bureau</th><th>Creditor</th><th>Acct #</th><th>Reason</th><th>Status</th><th></th></tr>
+          {% for n in negative_items %}
+          <tr><td>{{ n.bureau }}</td><td>{{ n.creditor_name }}</td><td>{{ n.account_number }}</td><td>{{ n.dispute_reason }}</td><td>{{ n.current_status }}</td><td><form method="post" action="/ui/delete-negative-item" style="margin:0;"><input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ n.id }}"><input type="hidden" name="active_tab" value="disputes"><button type="submit">Delete</button></form></td></tr>
           {% endfor %}</table>
-        {% else %}<p>No active account disputes yet.</p>{% endif %}
+        {% else %}<p>No dispute items yet.</p>{% endif %}
       </div>
     </div>
-
     <div class="box">
-      <h3>Removed Account Disputes History</h3>
-      {% set removed_accounts = account_disputes | rejectattr('is_active') | list %}
-      {% if removed_accounts %}
-        <table class="compact"><tr><th>Bureau</th><th>Creditor</th><th>Acct #</th><th>Removed date</th><th>Removed round</th><th></th></tr>
-        {% for n in removed_accounts %}
-          <tr>
-            <td>{{ n.bureau }}</td><td>{{ n.creditor_name }}</td><td>{{ n.account_number_last4 }}</td><td>{{ n.removed_date }}</td><td>{{ n.removed_round or '—' }}</td>
-            <td>
-              <form method="post" action="/ui/reactivate-account-dispute" style="margin:0;">
-                <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ n.id }}"><input type="hidden" name="active_tab" value="disputes"><input type="hidden" name="round_added" value="{{ current_round }}"><button type="submit">Reactivate</button>
-              </form>
-            </td>
-          </tr>
-        {% endfor %}</table>
-      {% else %}<p>No removed account disputes yet.</p>{% endif %}
+      <h3>Round Processing</h3>
+      <form method="post" action="/ui/process-round-with-pdfs">
+        <input type="hidden" name="client_id" value="{{ client_id }}">
+        <div class="subgrid">
+          <div class="row"><label>Round number</label><input name="round_number" type="number" min="1" max="12" required></div>
+          <div class="row"><label>Client email</label><input name="client_email" type="email" value="{{ profile.get('primary_email') or '' }}" required></div>
+        </div>
+        <div class="row"><label><input name="include_personal_info" type="checkbox"> Include personal info disputes</label></div>
+        <button type="submit">Run Round + PDFs</button>
+      </form>
     </div>
-
+  {% elif active_tab == 'personal_info' %}
     <div class="grid">
       <div class="box">
-        <h3>Add Personal Info Dispute</h3>
-        <form method="post" action="/ui/add-personal-info-dispute">
-          <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="active_tab" value="disputes">
-          <div class="subgrid">
-            <div class="row"><label>Round added</label><input type="number" name="round_added" min="1" value="{{ current_round }}"></div>
-            <div class="row"><label>Bureau</label><select name="bureau"><option value="">all</option>{% for b in bureaus %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div>
-          </div>
-          <div class="row"><label>Info type</label><select name="info_type">{% for t in personal_error_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}</select></div>
-          <div class="row"><label>Reported value</label><input name="reported_value" required></div>
-          <div class="row"><label>Correct value</label><input name="correct_value"></div>
-          <div class="row"><label>Requested action</label><select name="requested_action">{% for a in requested_actions %}<option value="{{ a }}">{{ a }}</option>{% endfor %}</select></div>
+        <h3>Add Personal Info Error</h3>
+        <form method="post" action="/ui/add-personal-info-error">
+          <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="active_tab" value="personal_info">
+          <div class="row"><label>Bureau</label><select name="bureau"><option value="">all</option>{% for b in bureaus %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Error type</label><select name="error_type">{% for t in personal_error_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Value shown on report</label><input name="value_text" required></div>
+          <div class="row"><label>Dispute action</label><input name="dispute_action" value="delete"></div>
+          <div class="row"><label>Status</label><select name="current_status">{% for s in personal_error_statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></div>
           <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
-          <button type="submit">Save Personal Info Dispute</button>
+          <button type="submit">Save Personal Info Error</button>
         </form>
       </div>
       <div class="box">
-        <h3>Active Personal Info Disputes</h3>
-        {% set active_personal = personal_info_disputes | selectattr('is_active') | list %}
-        {% if active_personal %}
-          <table class="compact"><tr><th>Bureau</th><th>Type</th><th>Reported</th><th>Correct</th><th>Action</th><th>Round</th><th></th></tr>
-          {% for p in active_personal %}
-            <tr>
-              <td>{{ p.bureau or 'all' }}</td><td>{{ p.info_type }}</td><td>{{ p.reported_value }}</td><td>{{ p.correct_value or '—' }}</td><td>{{ p.requested_action }}</td><td>{{ p.round_added }}</td>
-              <td>
-                <form method="post" action="/ui/mark-personal-info-dispute-removed" style="margin:0 0 6px 0;">
-                  <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ p.id }}"><input type="hidden" name="active_tab" value="disputes"><input type="hidden" name="removed_round" value="{{ current_round }}"><button type="submit">Mark Removed</button>
-                </form>
-                <form method="post" action="/ui/delete-personal-info-dispute" style="margin:0;">
-                  <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ p.id }}"><input type="hidden" name="active_tab" value="disputes"><button type="submit">Delete</button>
-                </form>
-              </td>
-            </tr>
-          {% endfor %}</table>
-        {% else %}<p>No active personal-info disputes yet.</p>{% endif %}
-      </div>
-    </div>
-
-    <div class="box">
-      <h3>Removed Personal Info Disputes History</h3>
-      {% set removed_personal = personal_info_disputes | rejectattr('is_active') | list %}
-      {% if removed_personal %}
-        <table class="compact"><tr><th>Bureau</th><th>Type</th><th>Reported</th><th>Removed date</th><th>Removed round</th><th></th></tr>
-        {% for p in removed_personal %}
-          <tr>
-            <td>{{ p.bureau or 'all' }}</td><td>{{ p.info_type }}</td><td>{{ p.reported_value }}</td><td>{{ p.removed_date }}</td><td>{{ p.removed_round or '—' }}</td>
-            <td>
-              <form method="post" action="/ui/reactivate-personal-info-dispute" style="margin:0;">
-                <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ p.id }}"><input type="hidden" name="active_tab" value="disputes"><input type="hidden" name="round_added" value="{{ current_round }}"><button type="submit">Reactivate</button>
-              </form>
-            </td>
-          </tr>
-        {% endfor %}</table>
-      {% else %}<p>No removed personal-info disputes yet.</p>{% endif %}
-    </div>
-
-    <div class="grid">
-      <div class="box">
-        <h3>Add Inquiry Dispute</h3>
-        <form method="post" action="/ui/add-inquiry-dispute">
-          <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="active_tab" value="disputes">
-          <div class="subgrid">
-            <div class="row"><label>Round added</label><input type="number" name="round_added" min="1" value="{{ current_round }}"></div>
-            <div class="row"><label>Bureau</label><select name="bureau"><option value="">all</option>{% for b in bureaus %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div>
-          </div>
-          <div class="row"><label>Furnisher / company</label><input name="furnisher_name" required></div>
-          <div class="row"><label>Inquiry date</label><input type="date" name="inquiry_date"></div>
-          <div class="subgrid">
-            <div class="row"><label>Reason</label><select name="dispute_reason">{% for r in inquiry_dispute_reasons %}<option value="{{ r }}">{{ r }}</option>{% endfor %}</select></div>
-            <div class="row"><label>Requested action</label><select name="requested_action">{% for a in inquiry_requested_actions %}<option value="{{ a }}">{{ a }}</option>{% endfor %}</select></div>
-          </div>
-          <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
-          <button type="submit">Save Inquiry Dispute</button>
-        </form>
-      </div>
-      <div class="box">
-        <h3>Active Inquiry Disputes</h3>
-        {% set active_inquiries = inquiry_disputes | selectattr('is_active') | list %}
-        {% if active_inquiries %}
-          <table class="compact"><tr><th>Bureau</th><th>Furnisher</th><th>Date</th><th>Reason</th><th>Round</th><th></th></tr>
-          {% for i in active_inquiries %}
-            <tr>
-              <td>{{ i.bureau or 'all' }}</td><td>{{ i.furnisher_name }}</td><td>{{ i.inquiry_date or '—' }}</td><td>{{ i.dispute_reason }}</td><td>{{ i.round_added }}</td>
-              <td>
-                <form method="post" action="/ui/mark-inquiry-dispute-removed" style="margin:0 0 6px 0;">
-                  <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ i.id }}"><input type="hidden" name="active_tab" value="disputes"><input type="hidden" name="removed_round" value="{{ current_round }}"><button type="submit">Mark Removed</button>
-                </form>
-                <form method="post" action="/ui/delete-inquiry-dispute" style="margin:0;">
-                  <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ i.id }}"><input type="hidden" name="active_tab" value="disputes"><button type="submit">Delete</button>
-                </form>
-              </td>
-            </tr>
-          {% endfor %}</table>
-        {% else %}<p>No active inquiry disputes yet.</p>{% endif %}
-      </div>
-    </div>
-
-    <div class="box">
-      <h3>Removed Inquiry Disputes History</h3>
-      {% set removed_inquiries = inquiry_disputes | rejectattr('is_active') | list %}
-      {% if removed_inquiries %}
-        <table class="compact"><tr><th>Bureau</th><th>Furnisher</th><th>Date</th><th>Removed date</th><th>Removed round</th><th></th></tr>
-        {% for i in removed_inquiries %}
-          <tr>
-            <td>{{ i.bureau or 'all' }}</td><td>{{ i.furnisher_name }}</td><td>{{ i.inquiry_date or '—' }}</td><td>{{ i.removed_date }}</td><td>{{ i.removed_round or '—' }}</td>
-            <td>
-              <form method="post" action="/ui/reactivate-inquiry-dispute" style="margin:0;">
-                <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ i.id }}"><input type="hidden" name="active_tab" value="disputes"><input type="hidden" name="round_added" value="{{ current_round }}"><button type="submit">Reactivate</button>
-              </form>
-            </td>
-          </tr>
-        {% endfor %}</table>
-      {% else %}<p>No removed inquiry disputes yet.</p>{% endif %}
-    </div>
-
-    <div class="grid">
-      <div class="box">
-        <h3>Dispute Letter Instructions + Round Run</h3>
-        <form method="post" action="/ui/process-round-with-pdfs">
-          <input type="hidden" name="client_id" value="{{ client_id }}">
-          <div class="subgrid">
-            <div class="row"><label>Round number</label><input name="round_number" type="number" min="1" max="12" value="{{ current_round }}" required></div>
-            <div class="row"><label>Client email</label><input name="client_email" type="email" value="{{ profile.get('primary_email') or '' }}" required></div>
-          </div>
-          <div class="row"><label><input name="include_personal_info" type="checkbox" checked> Include personal info disputes in generated letter</label></div>
-          <div class="row"><label><input name="include_inquiries" type="checkbox"> Track that this round reviewed inquiry disputes too</label></div>
-          <div class="row small">Inquiry disputes are tracked in this build, but the current legacy letter generator does not yet merge them into the produced letter text.</div>
-          <div class="row"><label>Dispute letter instructions</label><textarea name="letter_instructions" placeholder="Example: Increase the tone from stage 1. Stress repeated reporting after prior notice. Demand reinvestigation and deletion if they cannot verify.">{{ dispute_round_defaults.get('last_letter_instructions') or '' }}</textarea></div>
-          <button type="submit">Run Round + PDFs</button>
-        </form>
-      </div>
-      <div class="box">
-        <h3>Saved Letters</h3>
-        {% if saved_letters %}
-          <table class="compact"><tr><th>Generated</th><th>Title</th><th>Bureau</th><th>Subject</th></tr>
-          {% for l in saved_letters %}
-            <tr>
-              <td>{{ l.generated_at }}</td><td>{{ l.title }}</td><td>{{ l.bureau }}</td><td>{{ l.subject }}</td>
-            </tr>
+        <h3>Personal Information Errors</h3>
+        {% if personal_info_errors %}
+          <table class="compact"><tr><th>Bureau</th><th>Type</th><th>Value</th><th>Action</th><th>Status</th><th></th></tr>
+          {% for p in personal_info_errors %}
+            <tr><td>{{ p.bureau or 'all' }}</td><td>{{ p.error_type }}</td><td>{{ p.value_text }}</td><td>{{ p.dispute_action }}</td><td>{{ p.current_status }}</td><td><form method="post" action="/ui/delete-personal-info-error" style="margin:0;"><input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ p.id }}"><input type="hidden" name="active_tab" value="personal_info"><button type="submit">Delete</button></form></td></tr>
           {% endfor %}
           </table>
-        {% else %}<p>No letters saved yet.</p>{% endif %}
+        {% else %}<p>No personal-information errors yet.</p>{% endif %}
       </div>
     </div>
   {% elif active_tab == 'documents' %}
