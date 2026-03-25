@@ -13,6 +13,10 @@
     .row { margin-bottom: 10px; }
     .actions { display:flex; gap:8px; margin-bottom:16px; }
     h3 { margin-top: 0; }
+    .status-badge { display:inline-block; padding:4px 10px; border-radius:999px; color:white; font-weight:700; font-size:12px; }
+    .status-active { background:#1f8f3b; }
+    .status-inactive { background:#b42318; }
+    .client-banner { border:1px solid #ddd; padding:12px 14px; border-radius:8px; margin-bottom:16px; background:#fafafa; display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; }
   </style>
 </head>
 <body>
@@ -21,8 +25,16 @@
   </div>
 
   <h1>Edit Client Profile</h1>
+  <div class="client-banner">
+    <div>
+      <div><b>{{ profile.get('first_name') }} {{ profile.get('last_name') }}</b></div>
+      <div>{{ profile.get('phone') or '—' }} · {{ profile.get('primary_email') or '—' }}</div>
+      <div>{{ profile.get('address_line1') or '—' }}{% if profile.get('city') or profile.get('state') or profile.get('zip') %}, {{ profile.get('city') or '' }}, {{ profile.get('state') or '' }} {{ profile.get('zip') or '' }}{% endif %}</div>
+    </div>
+    <div><span class="status-badge {% if profile.get('is_active') %}status-active{% else %}status-inactive{% endif %}">{{ 'Active' if profile.get('is_active') else 'Inactive' }}</span></div>
+  </div>
 
-  <form method="post" action="/ui/client/save-profile">
+  <form method="post" action="/ui/client/save-profile" enctype="multipart/form-data">
     <input type="hidden" name="client_id" value="{{ client_id }}">
 
     <div class="grid">
@@ -39,13 +51,13 @@
             {% endfor %}
           </select>
         </div>
-        <div class="row"><label>Date of birth</label><input type="date" name="date_of_birth" value="{{ profile.get('date_of_birth') or '' }}"></div>
-        <div class="row"><label>Social Security (full)</label><input name="ssn_full" value="{{ profile.get('ssn_full') or '' }}"></div>
+        <div class="row"><label>Date of birth</label><input id="date_of_birth" name="date_of_birth" value="{{ profile.get('date_of_birth_input') or '' }}" placeholder="MM/DD/YYYY"></div>
+        <div class="row"><label>Social Security (full)</label><input id="ssn_full" name="ssn_full" value="{{ profile.get('ssn_full') or '' }}" placeholder="000-00-0000"></div>
       </div>
 
       <div class="box">
         <h3>Contact</h3>
-        <div class="row"><label>Primary phone</label><input name="primary_phone" value="{{ profile.get('phone') or '' }}"></div>
+        <div class="row"><label>Primary phone</label><input id="primary_phone" name="primary_phone" value="{{ profile.get('phone') or '' }}" placeholder="000-000-0000"></div>
         <div class="row">
           <label>Primary phone type</label>
           <select name="primary_phone_type">
@@ -54,7 +66,7 @@
             {% endfor %}
           </select>
         </div>
-        <div class="row"><label>Secondary phone</label><input name="secondary_phone" value="{{ profile.get('secondary_phone') or '' }}"></div>
+        <div class="row"><label>Secondary phone</label><input id="secondary_phone" name="secondary_phone" value="{{ profile.get('secondary_phone') or '' }}" placeholder="000-000-0000"></div>
         <div class="row">
           <label>Secondary phone type</label>
           <select name="secondary_phone_type">
@@ -160,7 +172,85 @@
       </div>
     </div>
 
+    <div class="grid">
+      <div class="box">
+        <h3>Letter Signature</h3>
+        {% if profile.get('signature_file_path') %}
+          <div class="row"><img src="/ui/client/{{ client_id }}/signature" alt="Client signature" style="max-width:260px; max-height:90px; border:1px solid #ddd; padding:8px; background:#fff;"></div>
+          <div class="row" style="font-size:12px;color:#555;">Uploaded: {{ profile.get('signature_uploaded_at_display') or 'on file' }}</div>
+        {% else %}
+          <div class="row" style="font-size:12px;color:#555;">No signature uploaded yet.</div>
+        {% endif %}
+        <div class="row"><label>Upload signature (PNG or JPG)</label><input type="file" name="signature_file" accept=".png,.jpg,.jpeg,image/png,image/jpeg"></div>
+        <div class="row"><label><input type="checkbox" name="use_signature_on_letters" {% if profile.get('use_signature_on_letters') %}checked{% endif %}> Use this signature on generated letters by default</label></div>
+        <div class="row"><label><input type="checkbox" name="remove_signature"> Remove current signature</label></div>
+      </div>
+
+      <div class="box">
+        <h3>Letter Formatting Notes</h3>
+        <div class="row" style="font-size:12px;color:#555;line-height:1.5;">Date of birth should be entered as MM/DD/YYYY. Generated dispute letters use a formal letter date like May 19, 2026, place that date at the top right, and can include the client signature if enabled.</div>
+      </div>
+    </div>
+
+
+    <div class="grid">
+      <div class="box">
+        <h3>Profile Management</h3>
+        <div class="row" style="font-size:12px;color:#555;">Delete this profile permanently or merge duplicate profiles into one clean client record.</div>
+        <div class="row" style="display:flex;gap:10px;flex-direction:row;align-items:center;">
+          <a href="/ui/client/{{ client_id }}/merge" style="padding:10px 14px;border-radius:8px;background:#0b57d0;color:#fff;text-decoration:none;">Merge Duplicate Profiles</a>
+          <form method="post" action="/ui/client/{{ client_id }}/delete" onsubmit="return confirm('Delete this client profile and all linked CRM records? This cannot be undone.');">
+            <button type="submit" style="background:#b42318;">Delete Profile</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
     <button type="submit">Save Profile</button>
   </form>
+
+<script>
+function digitsOnly(value) {
+  return (value || '').replace(/\D/g, '');
+}
+function formatDob(value) {
+  const d = digitsOnly(value).slice(0, 8);
+  if (d.length <= 2) return d;
+  if (d.length <= 4) return d.slice(0,2) + '/' + d.slice(2);
+  return d.slice(0,2) + '/' + d.slice(2,4) + '/' + d.slice(4);
+}
+function formatPhone(value) {
+  const d = digitsOnly(value).slice(0, 10);
+  if (d.length <= 3) return d;
+  if (d.length <= 6) return d.slice(0,3) + '-' + d.slice(3);
+  return d.slice(0,3) + '-' + d.slice(3,6) + '-' + d.slice(6);
+}
+function formatSsn(value) {
+  const d = digitsOnly(value).slice(0, 9);
+  if (d.length <= 3) return d;
+  if (d.length <= 5) return d.slice(0,3) + '-' + d.slice(3);
+  return d.slice(0,3) + '-' + d.slice(3,5) + '-' + d.slice(5);
+}
+const dob = document.getElementById('date_of_birth');
+const ssn = document.getElementById('ssn_full');
+const primaryPhone = document.getElementById('primary_phone');
+const secondaryPhone = document.getElementById('secondary_phone');
+if (dob) {
+  dob.addEventListener('input', e => e.target.value = formatDob(e.target.value));
+  dob.addEventListener('blur', e => e.target.value = formatDob(e.target.value));
+}
+if (ssn) {
+  ssn.addEventListener('input', e => e.target.value = formatSsn(e.target.value));
+  ssn.addEventListener('blur', e => e.target.value = formatSsn(e.target.value));
+}
+if (primaryPhone) {
+  primaryPhone.addEventListener('input', e => e.target.value = formatPhone(e.target.value));
+  primaryPhone.addEventListener('blur', e => e.target.value = formatPhone(e.target.value));
+}
+if (secondaryPhone) {
+  secondaryPhone.addEventListener('input', e => e.target.value = formatPhone(e.target.value));
+  secondaryPhone.addEventListener('blur', e => e.target.value = formatPhone(e.target.value));
+}
+</script>
 </body>
 </html>

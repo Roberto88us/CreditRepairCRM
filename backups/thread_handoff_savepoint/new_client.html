@@ -1,0 +1,90 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Create New Profile</title>
+<style>
+body{font-family:Arial,sans-serif;max-width:860px;margin:28px auto;padding:0 16px;background:#fafafa}
+.box{background:#fff;border:1px solid #ddd;border-radius:12px;padding:18px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.row{display:flex;flex-direction:column;gap:6px}
+input,select{padding:10px;border:1px solid #ccc;border-radius:8px}
+button,.btn{padding:10px 14px;border:0;border-radius:8px;background:#0b57d0;color:#fff;text-decoration:none;cursor:pointer}
+.error{background:#fee;border:1px solid #f5b5b5;padding:12px;border-radius:8px;margin-bottom:12px}
+</style></head>
+<body>
+<div class="box">
+  <h2>Create New Profile</h2>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="post" action="/ui/client/create">
+    <div class="grid">
+      <div class="row"><label>First name</label><input name="first_name" value="{{ prefill.first_name if prefill else '' }}" required></div>
+      <div class="row"><label>Last name</label><input name="last_name" value="{{ prefill.last_name if prefill else '' }}"></div>
+      <div class="row"><label>Phone</label><input id="primary_phone" name="primary_phone" placeholder="000-000-0000"></div>
+      <div class="row"><label>Email</label><input name="primary_email"></div>
+      <div class="row"><label>Date of birth</label><input id="date_of_birth" name="date_of_birth" placeholder="MM/DD/YYYY"></div>
+      <div class="row"><label>Social Security (full)</label><input id="ssn_full" name="ssn_full" placeholder="000-00-0000"></div>
+      <div class="row"><label>Address line 1</label><input name="address_line1"></div>
+      <div class="row"><label>Apt / Unit</label><input name="apt_unit"></div>
+      <div class="row"><label>City</label><input name="city"></div>
+      <div class="row"><label>State</label><input name="state"></div>
+      <div class="row"><label>Zip</label><input name="zip_code"></div>
+      <div class="row"><label>Lifecycle status</label>
+        <select name="lifecycle_status">
+          <option value="candidate">candidate</option>
+          <option value="consultation only">consultation only</option>
+          <option value="current client">current client</option>
+          <option value="contract sent">contract sent</option>
+          <option value="inactive">inactive</option>
+        </select>
+      </div>
+      <div class="row" style="justify-content:end;"><label><input type="checkbox" name="is_active"> Active</label></div>
+    </div>
+    <div style="margin-top:18px;display:flex;gap:10px;">
+      <button type="submit">Create Profile</button>
+      <a class="btn" href="/">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<script>
+function digitsOnly(value) {
+  return (value || '').replace(/\D/g, '');
+}
+function formatDob(value) {
+  const d = digitsOnly(value).slice(0, 8);
+  if (d.length <= 2) return d;
+  if (d.length <= 4) return d.slice(0,2) + '/' + d.slice(2);
+  return d.slice(0,2) + '/' + d.slice(2,4) + '/' + d.slice(4);
+}
+function formatPhone(value) {
+  const d = digitsOnly(value).slice(0, 10);
+  if (d.length <= 3) return d;
+  if (d.length <= 6) return d.slice(0,3) + '-' + d.slice(3);
+  return d.slice(0,3) + '-' + d.slice(3,6) + '-' + d.slice(6);
+}
+function formatSsn(value) {
+  const d = digitsOnly(value).slice(0, 9);
+  if (d.length <= 3) return d;
+  if (d.length <= 5) return d.slice(0,3) + '-' + d.slice(3);
+  return d.slice(0,3) + '-' + d.slice(3,5) + '-' + d.slice(5);
+}
+const dob = document.getElementById('date_of_birth');
+const ssn = document.getElementById('ssn_full');
+const primaryPhone = document.getElementById('primary_phone');
+const secondaryPhone = document.getElementById('secondary_phone');
+if (dob) {
+  dob.addEventListener('input', e => e.target.value = formatDob(e.target.value));
+  dob.addEventListener('blur', e => e.target.value = formatDob(e.target.value));
+}
+if (ssn) {
+  ssn.addEventListener('input', e => e.target.value = formatSsn(e.target.value));
+  ssn.addEventListener('blur', e => e.target.value = formatSsn(e.target.value));
+}
+if (primaryPhone) {
+  primaryPhone.addEventListener('input', e => e.target.value = formatPhone(e.target.value));
+  primaryPhone.addEventListener('blur', e => e.target.value = formatPhone(e.target.value));
+}
+if (secondaryPhone) {
+  secondaryPhone.addEventListener('input', e => e.target.value = formatPhone(e.target.value));
+  secondaryPhone.addEventListener('blur', e => e.target.value = formatPhone(e.target.value));
+}
+</script>
+</body></html>

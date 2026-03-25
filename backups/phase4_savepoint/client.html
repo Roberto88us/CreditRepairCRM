@@ -1,0 +1,849 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Client {{ client_id }}</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; }
+    .box { border: 1px solid #ddd; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .subgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .error { background: #ffecec; border: 1px solid #ffb3b3; padding: 10px; border-radius: 6px; margin-bottom: 12px; }
+    .success { border-color:#b7e3b7; background:#f2fff2; }
+    .warn { background:#fff4cc; border:1px solid #ffd666; padding:10px; border-radius:6px; margin-bottom:12px; }
+    code { background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
+    input, select, textarea { padding: 8px; width: 100%; box-sizing: border-box; }
+    textarea { min-height: 84px; }
+    button, .btn {
+      padding: 8px 12px; cursor: pointer; text-decoration: none; display: inline-block;
+      border: 1px solid #ccc; border-radius: 6px; background: white; color: black;
+    }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #eee; padding: 8px; text-align: left; vertical-align: top; }
+    .compact th, .compact td { padding: 6px; font-size: 13px; }
+    .row { margin-bottom: 10px; }
+    .muted { color:#666; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+    .tabs { display:flex; gap:8px; flex-wrap:wrap; margin: 14px 0 18px; }
+    .tab {
+      padding: 8px 12px; border: 1px solid #ccc; border-radius: 999px; text-decoration: none;
+      color: black; background: #f7f7f7;
+    }
+    .tab.active { background: #111; color: white; border-color: #111; }
+    .label { font-weight: bold; }
+    .small { font-size: 12px; color: #666; }
+    .metric-grid { display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; }
+    .metric-card { border:1px solid #ddd; border-radius:8px; padding:12px; background:#fafafa; }
+    .pill { display:inline-block; border:1px solid #ccc; border-radius:999px; padding:2px 8px; font-size:12px; background:#f5f5f5; }
+    .clickable-row { cursor: pointer; }
+    .clickable-row:hover { background:#fafafa; }
+    .prewrap { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <a href="/">← Back</a>
+  <h1>Client Workspace</h1>
+  <p><b>Client ID:</b> <code>{{ client_id }}</code></p>
+
+  <div class="actions">
+    <a class="btn" href="/ui/client/{{ client_id }}/edit">Edit Profile</a>
+  </div>
+
+  {% if profile.get("pending_payment") %}
+    <div class="warn"><b>PENDING PAYMENT WARNING:</b> this record is flagged. Review before processing.</div>
+  {% endif %}
+
+  {% if message %}
+    <div class="box success">{{ message }}</div>
+  {% endif %}
+
+  {% if error %}
+    <div class="error">{{ error }}</div>
+  {% endif %}
+
+  <div class="tabs">
+    {% for key, label in tabs %}
+      <a class="tab {% if active_tab == key %}active{% endif %}" href="/ui/client/{{ client_id }}?tab={{ key }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+
+  {% if active_tab == 'overview' %}
+    <div class="grid">
+      <div class="box">
+        <h3>Basic Client Info</h3>
+        <div class="row"><span class="label">Name:</span> {{ profile.get("first_name") }} {{ profile.get("middle_name") }} {{ profile.get("last_name") }} {% if profile.get("suffix") %}{{ profile.get("suffix") }}{% endif %}</div>
+        <div class="row"><span class="label">Status:</span> {{ profile.get("lifecycle_status") }}</div>
+        <div class="row"><span class="label">Active:</span> {{ "Yes" if profile.get("is_active") else "No" }}</div>
+        <div class="row"><span class="label">DOB:</span> {{ profile.get("date_of_birth_display") or "—" }}</div>
+        <div class="row"><span class="label">SSN:</span> {% if profile.get("ssn_last4") %}***-**-{{ profile.get("ssn_last4") }}{% else %}—{% endif %}</div>
+        <div class="row"><span class="label">Primary phone:</span> {{ profile.get("phone") or "—" }} ({{ profile.get("primary_phone_type") or "cell" }})</div>
+        <div class="row"><span class="label">Secondary phone:</span> {{ profile.get("secondary_phone") or "—" }}{% if profile.get("secondary_phone") %} ({{ profile.get("secondary_phone_type") }}){% endif %}</div>
+        <div class="row"><span class="label">Primary email:</span> {{ profile.get("primary_email") or "—" }}</div>
+        <div class="row"><span class="label">Secondary email:</span> {{ profile.get("secondary_email") or "—" }}</div>
+        <div class="row"><span class="label">Preferred email:</span> {{ profile.get("preferred_email_choice") or "primary" }}{% if profile.get("send_to_both_emails") %} + send to both{% endif %}</div>
+        <div class="row"><span class="label">Signature on file:</span> {{ "Yes" if profile.get("signature_file_path") else "No" }}{% if profile.get("use_signature_on_letters") %} - default on letters{% endif %}</div>
+        <div class="row"><span class="label">Address:</span>
+          {{ profile.get("address_line1") or "" }} {% if profile.get("apt_unit") %}Unit {{ profile.get("apt_unit") }}{% endif %}<br>
+          {% if profile.get("address_line2") %}{{ profile.get("address_line2") }}<br>{% endif %}
+          {{ profile.get("city") or "" }}, {{ profile.get("state") or "" }} {{ profile.get("zip") or "" }}
+        </div>
+      </div>
+
+      <div class="box">
+        <h3>Fees / Billing Snapshot</h3>
+        <div class="row"><span class="label">Pricing plan:</span> {{ profile.get("pricing_plan") or "—" }}</div>
+        <div class="row"><span class="label">Consultation fee:</span> {{ profile.get("consultation_fee") or "—" }}</div>
+        <div class="row"><span class="label">Startup fee:</span> {{ profile.get("initial_fee") or "—" }}</div>
+        <div class="row"><span class="label">Monthly fee:</span> {{ profile.get("monthly_fee") or "—" }}</div>
+        <div class="row"><span class="label">Signup date:</span> {{ profile.get("signup_date") or "—" }}</div>
+        <div class="row"><span class="label">First payment date:</span> {{ profile.get("first_payment_date") or "—" }}</div>
+        <div class="row"><span class="label">Billing group:</span> {{ profile.get("billing_group") or "—" }}{% if profile.get("billing_group") == 'custom' and profile.get("custom_billing_day") %} ({{ profile.get("custom_billing_day") }}){% endif %}</div>
+        <div class="row"><span class="label">Preferred payment method:</span> {{ profile.get("preferred_payment_method") or "—" }}</div>
+        <div class="row"><span class="label">Referred by:</span> {{ profile.get("referred_by_partner_name") or "—" }}</div>
+        <div class="row"><span class="label">Referral note:</span> {{ profile.get("referral_reason") or "—" }}</div>
+      </div>
+    </div>
+  {% elif active_tab == 'profile' %}
+    <div class="box">
+      <h3>Profile</h3>
+      <p class="muted">Use the Edit Profile button to change client identity, contact, referral, fees, and billing settings.</p>
+      <div class="grid">
+        <div>
+          <div class="row"><span class="label">Full name:</span> {{ profile.get("first_name") }} {{ profile.get("middle_name") }} {{ profile.get("last_name") }} {{ profile.get("suffix") }}</div>
+          <div class="row"><span class="label">Status:</span> {{ profile.get("lifecycle_status") }}</div>
+          <div class="row"><span class="label">Active:</span> {{ "Yes" if profile.get("is_active") else "No" }}</div>
+          <div class="row"><span class="label">Pending payment:</span> {{ "Yes" if profile.get("pending_payment") else "No" }}</div>
+        </div>
+        <div>
+          <div class="row"><span class="label">Primary email:</span> {{ profile.get("primary_email") or "—" }}</div>
+          <div class="row"><span class="label">Secondary email:</span> {{ profile.get("secondary_email") or "—" }}</div>
+          <div class="row"><span class="label">Primary phone:</span> {{ profile.get("phone") or "—" }}</div>
+          <div class="row"><span class="label">Secondary phone:</span> {{ profile.get("secondary_phone") or "—" }}</div>
+        </div>
+      </div>
+    </div>
+  {% elif active_tab == 'notes' %}
+    <div class="grid">
+      <div class="box">
+        <h3>Add Note</h3>
+        <form method="post" action="/ui/add-note">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="notes">
+          <div class="row"><label>Note type</label><input name="note_type" value="general"></div>
+          <div class="row"><label>Note</label><textarea name="note_text" required></textarea></div>
+          <button type="submit">Save Note</button>
+        </form>
+      </div>
+      <div class="box">
+        <h3>Recent Notes</h3>
+        {% if notes %}
+          <table class="compact">
+            <tr><th>When</th><th>Type</th><th>Note</th><th>By</th><th></th></tr>
+            {% for n in notes %}
+              <tr>
+                <td>{{ n.created_at }}</td>
+                <td>{{ n.note_type }}</td>
+                <td>{{ n.note_text }}</td>
+                <td>{{ n.created_by }}</td>
+                <td>
+                  <form method="post" action="/ui/delete-note" style="margin:0;">
+                    <input type="hidden" name="client_id" value="{{ client_id }}">
+                    <input type="hidden" name="note_id" value="{{ n.id }}">
+                    <input type="hidden" name="active_tab" value="notes">
+                    <button type="submit">Delete</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p>No notes yet.</p>
+        {% endif %}
+      </div>
+    </div>
+  {% elif active_tab == 'emails' %}
+    <div class="grid">
+      <div class="box">
+        <h3>Log Client Email</h3>
+        <p class="muted">Use this tab to keep every client communication attached to the record: your dispute-update emails, their replies, and any manual email notes.</p>
+        <form method="post" action="/ui/save-client-email">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="emails">
+          <div class="subgrid">
+            <div class="row"><label>Direction</label><select name="direction">{% for v in email_directions %}<option value="{{ v }}">{{ v }}</option>{% endfor %}</select></div>
+            <div class="row"><label>Email date / time</label><input type="datetime-local" name="email_date"></div>
+            <div class="row"><label>Email type</label><select name="email_type">{% for v in email_types %}<option value="{{ v }}">{{ v }}</option>{% endfor %}</select></div>
+            <div class="row"><label>Status</label><select name="status">{% for v in email_statuses %}<option value="{{ v }}">{{ v }}</option>{% endfor %}</select></div>
+            <div class="row"><label>Source</label><select name="source">{% for v in email_sources %}<option value="{{ v }}">{{ v }}</option>{% endfor %}</select></div>
+            <div class="row"><label>Related dispute round</label><input type="number" min="1" max="12" name="related_round"></div>
+          </div>
+          <div class="row"><label>From</label><input name="from_email" value="{{ profile.get('primary_email') or '' }}"></div>
+          <div class="row"><label>To</label><input name="to_email"></div>
+          <div class="row"><label>CC</label><input name="cc_email"></div>
+          <div class="row"><label>Subject</label><input name="subject" required></div>
+          <div class="row"><label>Email body / summary</label><textarea name="body_text" required placeholder="Paste the sent email, the client's reply, or a communication summary here."></textarea></div>
+          <button type="submit">Save Client Email</button>
+        </form>
+      </div>
+      <div class="box">
+        <h3>Client Email History</h3>
+        {% if client_emails %}
+          <table class="compact">
+            <tr><th>When</th><th>Dir</th><th>Subject</th><th>From / To</th><th>Round</th><th></th></tr>
+            {% for e in client_emails %}
+              <tr>
+                <td>{{ e.email_date or e.created_at }}</td>
+                <td><span class="pill">{{ e.direction }}</span><br><span class="small">{{ e.status }}</span></td>
+                <td>
+                  <div><b>{{ e.subject or 'Untitled Email' }}</b></div>
+                  <div class="small">{{ e.email_type }} · {{ e.source }}</div>
+                  {% if e.body_text %}<details><summary>View body</summary><div class="prewrap" style="margin-top:8px;">{{ e.body_text }}</div></details>{% endif %}
+                </td>
+                <td>
+                  {% if e.from_email %}<div><b>From:</b> {{ e.from_email }}</div>{% endif %}
+                  {% if e.to_email %}<div><b>To:</b> {{ e.to_email }}</div>{% endif %}
+                  {% if e.cc_email %}<div><b>CC:</b> {{ e.cc_email }}</div>{% endif %}
+                </td>
+                <td>{{ e.related_round or '—' }}</td>
+                <td>
+                  <form method="post" action="/ui/delete-client-email" onsubmit="return confirm('Delete this email log?');">
+                    <input type="hidden" name="client_id" value="{{ client_id }}">
+                    <input type="hidden" name="email_id" value="{{ e.id }}">
+                    <input type="hidden" name="active_tab" value="emails">
+                    <button type="submit">Delete</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </table>
+        {% else %}<p>No client emails logged yet.</p>{% endif %}
+      </div>
+    </div>
+
+  {% elif active_tab == 'calendar' %}
+    <div class="grid">
+      <div class="box">
+        <h3>Add Appointment</h3>
+        <form method="post" action="/ui/add-appointment">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="calendar">
+          <div class="row"><label>Mode</label>
+            <select name="appointment_mode">
+              <option value="in_person">in_person</option>
+              <option value="phone">phone</option>
+              <option value="virtual">virtual</option>
+            </select>
+          </div>
+          <div class="subgrid">
+            <div class="row"><label>Date</label><input type="date" name="appointment_date" required></div>
+            <div class="row"><label>Time</label><input type="time" name="appointment_time" required></div>
+          </div>
+          <div class="row"><label>Consultation fee</label><select name="consultation_fee">{% for fee in [75,100,150] %}<option value="{{ fee }}">{{ fee }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Location name</label><input name="location_name" value="Carlos G Suarez"></div>
+          <div class="row"><label>Address line 1</label><input name="address_line1" value="8345 SW 41st Ter"></div>
+          <div class="subgrid">
+            <div class="row"><label>Apt / Unit</label><input name="apt_unit"></div>
+            <div class="row"><label>Address line 2</label><input name="address_line2"></div>
+          </div>
+          <div class="subgrid">
+            <div class="row"><label>City</label><input name="city" value="Miami"></div>
+            <div class="row"><label>State</label><input name="state" value="FL"></div>
+          </div>
+          <div class="row"><label>ZIP</label><input name="zip_code" value="33155"></div>
+          <div class="row"><label>Phone to call</label><input name="phone_to_call" value="{{ profile.get('phone') or '' }}"></div>
+          <div class="row"><label>Meeting link</label><input name="meeting_link"></div>
+          <div class="row"><label><input type="checkbox" name="email_enabled" checked> Email enabled</label></div>
+          <div class="row"><label><input type="checkbox" name="sms_enabled"> SMS enabled</label></div>
+          <div class="row"><label><input type="checkbox" name="sms_opt_in"> SMS opt-in confirmed</label></div>
+          <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
+          <button type="submit">Save Appointment</button>
+        </form>
+      </div>
+      <div class="box">
+        <h3>Add Redispute Event</h3>
+        <form method="post" action="/ui/add-redispute-event">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="calendar">
+          <div class="row"><label>Bureau</label><select name="bureau"><option value="">all</option>{% for b in bureaus %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div>
+          <div class="subgrid">
+            <div class="row"><label>Event date</label><input type="date" name="event_date" required></div>
+            <div class="row"><label>Round #</label><input type="number" name="round_number" value="1" min="1"></div>
+          </div>
+          <div class="row"><label>Status</label><select name="status"><option value="scheduled">scheduled</option><option value="completed">completed</option><option value="cancelled">cancelled</option></select></div>
+          <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
+          <button type="submit">Save Redispute Event</button>
+        </form>
+
+        <hr style="margin:16px 0;">
+
+        <h3>Add Follow-Up / Tickler</h3>
+        <form method="post" action="/ui/add-followup">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="calendar">
+          <div class="row"><label>Type</label><select name="followup_type">{% for t in followup_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Due date</label><input type="date" name="due_date"></div>
+          <div class="row"><label>Status</label><select name="status">{% for s in followup_statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Notes</label><textarea name="note_text"></textarea></div>
+          <button type="submit">Save Follow-Up</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="box">
+        <h3>Appointments</h3>
+        {% if appointments %}
+          <table class="compact">
+            <tr><th>Date</th><th>Time</th><th>Mode</th><th>Fee</th><th>Location</th><th></th></tr>
+            {% for a in appointments %}
+            <tr>
+              <td>{{ a.appointment_date }}</td><td>{{ a.appointment_time }}</td><td>{{ a.appointment_mode }}</td><td>{{ a.consultation_fee }}</td>
+              <td>{% if a.appointment_mode == 'phone' %}{{ a.phone_to_call or '—' }}{% elif a.appointment_mode == 'virtual' %}{{ a.meeting_link or '—' }}{% else %}{{ a.location_name or '' }}<br>{{ a.address_line1 }} {% if a.apt_unit %}Unit {{ a.apt_unit }}{% endif %}<br>{% if a.address_line2 %}{{ a.address_line2 }}<br>{% endif %}{{ a.city }}, {{ a.state }} {{ a.zip }}{% endif %}</td>
+              <td><form method="post" action="/ui/delete-appointment" style="margin:0;"><input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="appointment_id" value="{{ a.id }}"><input type="hidden" name="active_tab" value="calendar"><button type="submit">Delete</button></form></td>
+            </tr>
+            {% endfor %}
+          </table>
+        {% else %}<p>No appointments yet.</p>{% endif %}
+      </div>
+      <div class="box">
+        <h3>Redispute Schedule</h3>
+        {% if redispute_events %}
+          <table class="compact">
+            <tr><th>Date</th><th>Bureau</th><th>Round</th><th>Status</th><th>Notes</th><th></th></tr>
+            {% for e in redispute_events %}
+            <tr>
+              <td>{{ e.event_date }}</td><td>{{ e.bureau or 'all' }}</td><td>{{ e.round_number }}</td><td>{{ e.status }}</td><td>{{ e.notes }}</td>
+              <td><form method="post" action="/ui/delete-redispute-event" style="margin:0;"><input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="event_id" value="{{ e.id }}"><input type="hidden" name="active_tab" value="calendar"><button type="submit">Delete</button></form></td>
+            </tr>
+            {% endfor %}
+          </table>
+        {% else %}<p>No redispute events yet.</p>{% endif %}
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>Follow-Ups / Ticklers</h3>
+      {% if followups %}
+        <table class="compact">
+          <tr><th>Due</th><th>Type</th><th>Status</th><th>Note</th><th></th></tr>
+          {% for f in followups %}
+          <tr>
+            <td>{{ f.due_date }}</td><td>{{ f.followup_type }}</td><td>{{ f.status }}</td><td>{{ f.note_text }}</td>
+            <td><form method="post" action="/ui/delete-followup" style="margin:0;"><input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="followup_id" value="{{ f.id }}"><input type="hidden" name="active_tab" value="calendar"><button type="submit">Delete</button></form></td>
+          </tr>
+          {% endfor %}
+        </table>
+      {% else %}<p>No follow-ups yet.</p>{% endif %}
+    </div>
+  {% elif active_tab == 'credentials_scores' %}
+    <div class="grid">
+      <div class="box">
+        <h3>Portal Credentials</h3>
+        <form method="post" action="/ui/save-credential">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <input type="hidden" name="active_tab" value="credentials_scores">
+          <div class="row"><label>Provider</label><select name="provider">{% for p in providers %}<option value="{{ p }}">{{ p }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Username</label><input name="username"></div>
+          <div class="row"><label>Password</label><input name="password"></div>
+          <div class="row"><label>PIN</label><input name="pin"></div>
+          <div class="row"><label>Security Question</label><input name="security_question"></div>
+          <div class="row"><label>Security Answer</label><input name="security_answer"></div>
+          <div class="row"><label>Notes</label><input name="note"></div>
+          <button type="submit">Save Credential</button>
+        </form>
+        <h4>Saved Credentials</h4>
+        {% if credentials %}
+          <table class="compact">
+            <tr><th>Provider</th><th>Username</th><th>Password</th><th>PIN</th><th>Q/A</th><th>Notes</th><th></th></tr>
+            {% for c in credentials %}
+            <tr>
+              <td>{{ c.provider }}</td><td>{{ c.username or '—' }}</td><td>{% if c.revealed %}<code>{{ c.password or '—' }}</code>{% else %}••••••••{% endif %}</td><td>{% if c.revealed %}{{ c.pin or '—' }}{% else %}—{% endif %}</td><td>{% if c.revealed %}Q: {{ c.security_question or '—' }}<br>A: {{ c.security_answer or '—' }}{% else %}—{% endif %}</td><td>{{ c.note }}</td>
+              <td>
+                <form method="post" action="/ui/reveal-credential" style="margin:0 0 4px 0;"><input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="credential_id" value="{{ c.id }}"><input type="hidden" name="active_tab" value="credentials_scores"><button type="submit">Reveal</button></form>
+                <form method="post" action="/ui/delete-credential" style="margin:0;"><input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="credential_id" value="{{ c.id }}"><input type="hidden" name="active_tab" value="credentials_scores"><button type="submit">Delete</button></form>
+              </td>
+            </tr>
+            {% endfor %}
+          </table>
+        {% else %}<p>No credentials saved yet.</p>{% endif %}
+      </div>
+      <div class="box">
+        <h3>Add Score Snapshot</h3>
+        <form method="post" action="/ui/add-score">
+          <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="active_tab" value="credentials_scores">
+          <div class="row"><label>Report date</label><input type="date" name="report_date" required></div>
+          <div class="row"><label>Bureau</label><select name="bureau">{% for b in bureaus %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Source</label><select name="source"><option value="creditkarma">creditkarma</option><option value="transunion_site">transunion_site</option><option value="equifax_site">equifax_site</option><option value="experian_site">experian_site</option><option value="myfico_free">myfico_free</option><option value="manual">manual</option></select></div>
+          <div class="row"><label>Model</label><input name="model" value="FICO 8" required></div>
+          <div class="row"><label>Score</label><input type="number" name="score" min="300" max="850" required></div>
+          <button type="submit">Save Score</button>
+        </form>
+        <h4>Add MyFICO (Enter Once)</h4>
+        <form method="post" action="/ui/add-myfico">
+          <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="active_tab" value="credentials_scores">
+          <div class="row"><label>Report date</label><input type="date" name="report_date" required></div>
+          <div class="subgrid">
+            <div class="row"><label>Experian</label><input type="number" name="experian_score" min="300" max="850" required></div>
+            <div class="row"><label>TransUnion</label><input type="number" name="transunion_score" min="300" max="850" required></div>
+          </div>
+          <div class="row"><label>Equifax</label><input type="number" name="equifax_score" min="300" max="850" required></div>
+          <button type="submit">Save MyFICO Scores</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>Score History (grouped)</h3>
+      {% set groups = score_groups or {} %}
+      {% for group_key, title in [('experian_site','Experian — Experian Site'),('equifax_site','Equifax — Equifax Site'),('transunion_site','TransUnion — TransUnion Site'),('creditkarma','Credit Karma'),('myfico_free','MyFICO Free'),('manual','Manual')] %}
+        <h4>{{ title }}</h4>
+        {% set rows = groups.get(group_key, []) %}
+        {% if rows %}
+          <table class="compact"><tr><th>Report date</th><th>Entered</th><th>Bureau</th><th>Model</th><th>Score</th><th></th></tr>
+          {% for s in rows %}
+            <tr>
+              <td>{{ s.report_date }}</td><td>{{ s.entered_at }}</td><td>{{ s.bureau }}</td><td>{{ s.model }}</td><td><b>{{ s.score }}</b></td>
+              <td><form method="post" action="/ui/delete-score" style="margin:0;"><input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="snapshot_id" value="{{ s.id }}"><input type="hidden" name="active_tab" value="credentials_scores"><button type="submit">Delete</button></form></td>
+            </tr>
+          {% endfor %}
+          </table>
+        {% else %}<p>No entries yet.</p>{% endif %}
+      {% endfor %}
+    </div>
+  {% elif active_tab == 'disputes' %}
+    {% set current_round = dispute_round_defaults.get('current_round_number', 1) %}
+    <div class="box warn">
+      <b>Unified disputes workspace:</b> all three dispute types live here now. Active items stay in the working list, removed items stay in history, and a dispute-round summary is automatically pushed into Notes when you run a round. Inquiry disputes are tracked here now, but the current legacy letter generator still only generates accounts plus optional personal-info disputes.
+    </div>
+
+    <div class="metric-grid" style="margin-bottom:16px;">
+      <div class="metric-card">
+        <h3 style="margin-top:0;">Account Disputes</h3>
+        <div class="row"><span class="label">Started negative:</span> {{ dispute_metrics.get('accounts', {}).get('started', 0) }}</div>
+        <div class="row"><span class="label">Current active:</span> {{ dispute_metrics.get('accounts', {}).get('current', 0) }}</div>
+        <div class="row"><span class="label">Removed:</span> {{ dispute_metrics.get('accounts', {}).get('removed', 0) }}</div>
+        <div class="row"><span class="label">New since round 1:</span> {{ dispute_metrics.get('accounts', {}).get('new', 0) }}</div>
+      </div>
+      <div class="metric-card">
+        <h3 style="margin-top:0;">Personal Info</h3>
+        <div class="row"><span class="label">Started:</span> {{ dispute_metrics.get('personal_info', {}).get('started', 0) }}</div>
+        <div class="row"><span class="label">Current active:</span> {{ dispute_metrics.get('personal_info', {}).get('current', 0) }}</div>
+        <div class="row"><span class="label">Removed:</span> {{ dispute_metrics.get('personal_info', {}).get('removed', 0) }}</div>
+        <div class="row"><span class="label">New since round 1:</span> {{ dispute_metrics.get('personal_info', {}).get('new', 0) }}</div>
+      </div>
+      <div class="metric-card">
+        <h3 style="margin-top:0;">Inquiry Disputes</h3>
+        <div class="row"><span class="label">Started:</span> {{ dispute_metrics.get('inquiries', {}).get('started', 0) }}</div>
+        <div class="row"><span class="label">Current active:</span> {{ dispute_metrics.get('inquiries', {}).get('current', 0) }}</div>
+        <div class="row"><span class="label">Removed:</span> {{ dispute_metrics.get('inquiries', {}).get('removed', 0) }}</div>
+        <div class="row"><span class="label">New since round 1:</span> {{ dispute_metrics.get('inquiries', {}).get('new', 0) }}</div>
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>Dispute Round Controls</h3>
+      <div class="row"><span class="label">Suggested current round:</span> <span class="pill">{{ current_round }}</span></div>
+      <div class="row small">Use this round number when adding new items discovered after an earlier round, and when marking items removed after the bureau deletes them. The selected report or bureau response below controls the printed date/reference line on each bureau letter.</div>
+    </div>
+
+    <div class="grid">
+      <div class="box">
+        <h3>Add Account Dispute</h3>
+        <datalist id="account-name-options">
+          {% for name in account_name_options %}<option value="{{ name }}"></option>{% endfor %}
+        </datalist>
+        <form method="post" action="/ui/add-account-dispute">
+          <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="active_tab" value="disputes">
+          <div class="subgrid">
+            <div class="row"><label>Round added</label><input type="number" name="round_added" min="1" value="{{ current_round }}"></div>
+            <div class="row"><label>Bureau</label><select name="bureau">{% for b in bureaus %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div>
+          </div>
+          <div class="row"><label>Account / creditor</label><input name="creditor_name" list="account-name-options" required></div>
+          <div class="row"><label>Account # / last 4</label><input name="account_number_last4"></div>
+          <div class="subgrid">
+            <div class="row"><label>Reason</label><select name="dispute_reason">{% for d in dispute_reasons %}<option value="{{ d }}">{{ d }}</option>{% endfor %}</select></div>
+            <div class="row"><label>Requested action</label><select name="requested_action">{% for a in requested_actions %}<option value="{{ a }}">{{ a }}</option>{% endfor %}</select></div>
+          </div>
+          <div class="subgrid">
+            <div class="row"><label>Status</label><select name="status">{% for s in negative_item_statuses %}<option value="{{ s }}" {% if s == 'disputed' %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></div>
+            <div class="row"><label>First seen date</label><input type="date" name="first_seen_date"></div>
+          </div>
+          <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
+          <button type="submit">Save Account Dispute</button>
+        </form>
+      </div>
+      <div class="box">
+        <h3>Active Account Disputes</h3>
+        {% set active_accounts = account_disputes | selectattr('is_active') | list %}
+        {% if active_accounts %}
+          <table class="compact"><tr><th>Bureau</th><th>Creditor</th><th>Acct #</th><th>Reason</th><th>Action</th><th>Status</th><th>Round</th><th></th></tr>
+          {% for n in active_accounts %}
+          <tr>
+            <td>{{ n.bureau }}</td><td>{{ n.creditor_name }}</td><td>{{ n.account_number_last4 }}</td><td>{{ n.dispute_reason }}</td><td>{{ n.requested_action }}</td><td>{{ n.status }}</td><td>{{ n.round_added }}</td>
+            <td>
+              <form method="post" action="/ui/mark-account-dispute-removed" style="margin:0 0 6px 0;">
+                <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ n.id }}"><input type="hidden" name="active_tab" value="disputes"><input type="hidden" name="removed_round" value="{{ current_round }}"><button type="submit">Mark Removed</button>
+              </form>
+              <form method="post" action="/ui/delete-account-dispute" style="margin:0;">
+                <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ n.id }}"><input type="hidden" name="active_tab" value="disputes"><button type="submit">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}</table>
+        {% else %}<p>No active account disputes yet.</p>{% endif %}
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>Removed Account Disputes History</h3>
+      {% set removed_accounts = account_disputes | rejectattr('is_active') | list %}
+      {% if removed_accounts %}
+        <table class="compact"><tr><th>Bureau</th><th>Creditor</th><th>Acct #</th><th>Removed date</th><th>Removed round</th><th></th></tr>
+        {% for n in removed_accounts %}
+          <tr>
+            <td>{{ n.bureau }}</td><td>{{ n.creditor_name }}</td><td>{{ n.account_number_last4 }}</td><td>{{ n.removed_date }}</td><td>{{ n.removed_round or '—' }}</td>
+            <td>
+              <form method="post" action="/ui/reactivate-account-dispute" style="margin:0;">
+                <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ n.id }}"><input type="hidden" name="active_tab" value="disputes"><input type="hidden" name="round_added" value="{{ current_round }}"><button type="submit">Reactivate</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}</table>
+      {% else %}<p>No removed account disputes yet.</p>{% endif %}
+    </div>
+
+    <div class="grid">
+      <div class="box">
+        <h3>Add Personal Info Dispute</h3>
+        <form method="post" action="/ui/add-personal-info-dispute">
+          <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="active_tab" value="disputes">
+          <div class="subgrid">
+            <div class="row"><label>Round added</label><input type="number" name="round_added" min="1" value="{{ current_round }}"></div>
+            <div class="row"><label>Bureau</label><select name="bureau"><option value="">all</option>{% for b in bureaus %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div>
+          </div>
+          <div class="row"><label>Info type</label><select name="info_type">{% for t in personal_error_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Reported value</label><input name="reported_value" required></div>
+          <div class="row"><label>Correct value</label><input name="correct_value"></div>
+          <div class="row"><label>Requested action</label><select name="requested_action">{% for a in requested_actions %}<option value="{{ a }}">{{ a }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
+          <button type="submit">Save Personal Info Dispute</button>
+        </form>
+      </div>
+      <div class="box">
+        <h3>Active Personal Info Disputes</h3>
+        {% set active_personal = personal_info_disputes | selectattr('is_active') | list %}
+        {% if active_personal %}
+          <table class="compact"><tr><th>Bureau</th><th>Type</th><th>Reported</th><th>Correct</th><th>Action</th><th>Round</th><th></th></tr>
+          {% for p in active_personal %}
+            <tr>
+              <td>{{ p.bureau or 'all' }}</td><td>{{ p.info_type }}</td><td>{{ p.reported_value }}</td><td>{{ p.correct_value or '—' }}</td><td>{{ p.requested_action }}</td><td>{{ p.round_added }}</td>
+              <td>
+                <form method="post" action="/ui/mark-personal-info-dispute-removed" style="margin:0 0 6px 0;">
+                  <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ p.id }}"><input type="hidden" name="active_tab" value="disputes"><input type="hidden" name="removed_round" value="{{ current_round }}"><button type="submit">Mark Removed</button>
+                </form>
+                <form method="post" action="/ui/delete-personal-info-dispute" style="margin:0;">
+                  <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ p.id }}"><input type="hidden" name="active_tab" value="disputes"><button type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}</table>
+        {% else %}<p>No active personal-info disputes yet.</p>{% endif %}
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>Removed Personal Info Disputes History</h3>
+      {% set removed_personal = personal_info_disputes | rejectattr('is_active') | list %}
+      {% if removed_personal %}
+        <table class="compact"><tr><th>Bureau</th><th>Type</th><th>Reported</th><th>Removed date</th><th>Removed round</th><th></th></tr>
+        {% for p in removed_personal %}
+          <tr>
+            <td>{{ p.bureau or 'all' }}</td><td>{{ p.info_type }}</td><td>{{ p.reported_value }}</td><td>{{ p.removed_date }}</td><td>{{ p.removed_round or '—' }}</td>
+            <td>
+              <form method="post" action="/ui/reactivate-personal-info-dispute" style="margin:0;">
+                <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ p.id }}"><input type="hidden" name="active_tab" value="disputes"><input type="hidden" name="round_added" value="{{ current_round }}"><button type="submit">Reactivate</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}</table>
+      {% else %}<p>No removed personal-info disputes yet.</p>{% endif %}
+    </div>
+
+    <div class="grid">
+      <div class="box">
+        <h3>Add Inquiry Dispute</h3>
+        <form method="post" action="/ui/add-inquiry-dispute">
+          <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="active_tab" value="disputes">
+          <div class="subgrid">
+            <div class="row"><label>Round added</label><input type="number" name="round_added" min="1" value="{{ current_round }}"></div>
+            <div class="row"><label>Bureau</label><select name="bureau"><option value="">all</option>{% for b in bureaus %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div>
+          </div>
+          <div class="row"><label>Furnisher / company</label><input name="furnisher_name" required></div>
+          <div class="row"><label>Inquiry date</label><input type="date" name="inquiry_date"></div>
+          <div class="subgrid">
+            <div class="row"><label>Reason</label><select name="dispute_reason">{% for r in inquiry_dispute_reasons %}<option value="{{ r }}">{{ r }}</option>{% endfor %}</select></div>
+            <div class="row"><label>Requested action</label><select name="requested_action">{% for a in inquiry_requested_actions %}<option value="{{ a }}">{{ a }}</option>{% endfor %}</select></div>
+          </div>
+          <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
+          <button type="submit">Save Inquiry Dispute</button>
+        </form>
+      </div>
+      <div class="box">
+        <h3>Active Inquiry Disputes</h3>
+        {% set active_inquiries = inquiry_disputes | selectattr('is_active') | list %}
+        {% if active_inquiries %}
+          <table class="compact"><tr><th>Bureau</th><th>Furnisher</th><th>Date</th><th>Reason</th><th>Round</th><th></th></tr>
+          {% for i in active_inquiries %}
+            <tr>
+              <td>{{ i.bureau or 'all' }}</td><td>{{ i.furnisher_name }}</td><td>{{ i.inquiry_date or '—' }}</td><td>{{ i.dispute_reason }}</td><td>{{ i.round_added }}</td>
+              <td>
+                <form method="post" action="/ui/mark-inquiry-dispute-removed" style="margin:0 0 6px 0;">
+                  <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ i.id }}"><input type="hidden" name="active_tab" value="disputes"><input type="hidden" name="removed_round" value="{{ current_round }}"><button type="submit">Mark Removed</button>
+                </form>
+                <form method="post" action="/ui/delete-inquiry-dispute" style="margin:0;">
+                  <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ i.id }}"><input type="hidden" name="active_tab" value="disputes"><button type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}</table>
+        {% else %}<p>No active inquiry disputes yet.</p>{% endif %}
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>Removed Inquiry Disputes History</h3>
+      {% set removed_inquiries = inquiry_disputes | rejectattr('is_active') | list %}
+      {% if removed_inquiries %}
+        <table class="compact"><tr><th>Bureau</th><th>Furnisher</th><th>Date</th><th>Removed date</th><th>Removed round</th><th></th></tr>
+        {% for i in removed_inquiries %}
+          <tr>
+            <td>{{ i.bureau or 'all' }}</td><td>{{ i.furnisher_name }}</td><td>{{ i.inquiry_date or '—' }}</td><td>{{ i.removed_date }}</td><td>{{ i.removed_round or '—' }}</td>
+            <td>
+              <form method="post" action="/ui/reactivate-inquiry-dispute" style="margin:0;">
+                <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ i.id }}"><input type="hidden" name="active_tab" value="disputes"><input type="hidden" name="round_added" value="{{ current_round }}"><button type="submit">Reactivate</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}</table>
+      {% else %}<p>No removed inquiry disputes yet.</p>{% endif %}
+    </div>
+
+    <div class="grid">
+      <div class="box">
+        <h3>Dispute Letter Instructions + Round Run</h3>
+        <form method="post" action="/ui/process-round-with-pdfs">
+          <input type="hidden" name="client_id" value="{{ client_id }}">
+          <div class="subgrid">
+            <div class="row"><label>Round number</label><input name="round_number" type="number" min="1" max="12" value="{{ current_round }}" required></div>
+            <div class="row"><label>Client email</label><input name="client_email" type="email" value="{{ profile.get('primary_email') or '' }}" required></div>
+          </div>
+          <div class="row"><label><input name="include_personal_info" type="checkbox" checked> Include personal info disputes in generated letter</label></div>
+          <div class="row"><label><input name="include_inquiries" type="checkbox"> Track that this round reviewed inquiry disputes too</label></div>
+          <div class="row"><label><input name="include_signature" type="checkbox" {% if profile.get("use_signature_on_letters") %}checked{% endif %}> Include client signature on generated letters</label></div>
+
+          <h4>Primary report / response for this round</h4>
+          <p class="small">Choose one report or bureau response per bureau. That selected document’s date and reference number will print on the next letter for that bureau.</p>
+          {% for bureau in bureaus %}
+            <div style="border:1px solid #e1e1e1; border-radius:8px; padding:10px; margin-bottom:12px;">
+              <div style="font-weight:700; margin-bottom:8px;">{{ bureau.title() }}</div>
+              {% set source_docs = dispute_source_groups.get(bureau, []) %}
+              {% if source_docs %}
+                {% for d in source_docs %}
+                  <label style="display:block; margin-bottom:8px; line-height:1.4;">
+                    <input type="radio" name="primary_{{ bureau }}_document_id" value="{{ d.id }}" {% if last_document_selection.get(bureau) == d.id or (not last_document_selection.get(bureau) and loop.first) %}checked{% endif %}>
+                    <span style="font-weight:600;">{{ d.document_kind }}</span>
+                    {% if d.document_date %} dated {{ d.document_date }}{% endif %}
+                    {% if d.reference_display %} | {{ d.reference_display }}{% endif %}
+                    {% if d.source_name %} | {{ d.source_name }}{% endif %}
+                    <br><span class="small">{{ d.file_name }}</span>
+                    {% if d.can_open %}<a class="btn" href="/ui/documents/{{ d.id }}/open" target="_blank" style="margin-left:8px;">Open</a>{% endif %}
+                  </label>
+                {% endfor %}
+              {% else %}
+                <div class="small">No {{ bureau.title() }} report or bureau response documents attached yet.</div>
+              {% endif %}
+            </div>
+          {% endfor %}
+
+          <div class="row"><label>Dispute letter instructions</label><textarea name="letter_instructions" placeholder="Example: Redispute the selected accounts, include the selected name variations, and include the two Comenity inquiries from the selected response.">{{ dispute_round_defaults.get('last_letter_instructions') or '' }}</textarea></div>
+          <button type="submit">Run Round + PDFs</button>
+        </form>
+      </div>
+      <div class="box">
+        <h3>Saved Letters</h3>
+        <p class="muted">Double-click a row or use Open PDF to open the saved dispute letter. The CRM titles can include the round for tracking, but the printed letter itself does not show the round number.</p>
+        {% if saved_letters %}
+          <table class="compact"><tr><th>Generated</th><th>Title</th><th>Bureau</th><th>Subject</th><th></th></tr>
+          {% for l in saved_letters %}
+            <tr class="clickable-row" ondblclick="window.open('/ui/letters/{{ l.id }}/open', '_blank')">
+              <td>{{ l.generated_at }}</td>
+              <td><a href="/ui/letters/{{ l.id }}/open" target="_blank">{{ l.title }}</a></td>
+              <td>{{ l.bureau }}</td>
+              <td>{{ l.subject }}</td>
+              <td><a class="btn" href="/ui/letters/{{ l.id }}/open" target="_blank">Open PDF</a></td>
+            </tr>
+          {% endfor %}
+          </table>
+        {% else %}<p>No letters saved yet.</p>{% endif %}
+      </div>
+    </div>
+  {% elif active_tab == 'documents' %}
+    <div class="grid">
+      <div class="box">
+        <h3>Create Upload Link</h3>
+        <form method="post" action="/ui/create-upload-request">
+          <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="active_tab" value="documents">
+          <div class="row"><label>Request type</label><input name="request_type" value="general_upload"></div>
+          <div class="row"><label>Allowed doc types</label><input name="allowed_doc_types" placeholder="credit_report,bureau_response,proof_of_address"></div>
+          <div class="row"><label>Expires in days</label><input type="number" name="expires_days" value="30" min="1"></div>
+          <button type="submit">Create Upload Link</button>
+        </form>
+        <h4>Open Upload Links</h4>
+        {% if upload_requests %}
+          <table class="compact"><tr><th>Type</th><th>Allowed</th><th>Status</th><th>Expires</th><th>Link</th></tr>
+          {% for ur in upload_requests %}
+            <tr><td>{{ ur.request_type }}</td><td>{{ ur.allowed_doc_types }}</td><td>{{ ur.status }}</td><td>{{ ur.expires_at }}</td><td><a href="{{ request.base_url }}upload/{{ ur.token }}" target="_blank">Open</a></td></tr>
+          {% endfor %}</table>
+        {% else %}<p>No upload links created yet.</p>{% endif %}
+      </div>
+      <div class="box">
+        <h3>Attach or Log Document</h3>
+        <form method="post" action="/ui/add-document-meta" enctype="multipart/form-data">
+          <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="active_tab" value="documents">
+          <div class="subgrid">
+            <div class="row"><label>Document section</label><select name="doc_section">{% for key, label in document_sections %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></div>
+            <div class="row"><label>Document category</label><select name="doc_category">{% for d in document_categories %}<option value="{{ d }}">{{ d }}</option>{% endfor %}</select></div>
+          </div>
+          <div class="row"><label>Attach file</label><input type="file" name="file"></div>
+          <div class="row"><label>File name (optional if attached)</label><input name="file_name" placeholder="Use this for metadata-only records or to override the attached file name"></div>
+          <div class="row"><label>Stored file path (metadata-only)</label><input name="file_path"></div>
+          <div class="subgrid">
+            <div class="row"><label>Bureau</label><select name="bureau"><option value="">—</option>{% for b in bureaus %}<option value="{{ b }}">{{ b }}</option>{% endfor %}</select></div>
+            <div class="row"><label>Source</label><input name="source_name" placeholder="Experian site, TransUnion, Credit Karma, MyFICO, AnnualCreditReport"></div>
+          </div>
+          <div class="subgrid">
+            <div class="row"><label>Document / report / response date</label><input type="date" name="document_date"></div>
+            <div class="row"><label>Statement / proof date</label><input type="date" name="statement_date"></div>
+          </div>
+          <div class="subgrid">
+            <div class="row"><label>Expiration date (IDs)</label><input type="date" name="expires_on"></div>
+            <div class="row"><label>Refresh every days</label><input type="number" name="refresh_every_days"></div>
+          </div>
+          <div class="subgrid">
+            <div class="row"><label>Reference label</label><input name="reference_label" placeholder="Report Number, File#, Dispute Number"></div>
+            <div class="row"><label>Reference value</label><input name="reference_value" placeholder="TransUnion example: 00000000-000"></div>
+          </div>
+          <div class="row"><label>Description / note</label><textarea name="description"></textarea></div>
+          <div class="row"><label>Review status</label><select name="review_status">{% for s in doc_review_statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Review notes</label><textarea name="review_notes"></textarea></div>
+          <button type="submit">Save Document</button>
+        </form>
+      </div>
+    </div>
+
+    {% for section_key, section_label in document_sections %}
+      <div class="box">
+        <h3>{{ section_label }}</h3>
+        {% set rows = documents_by_section.get(section_key, []) %}
+        {% if rows %}
+          <table class="compact">
+            <tr><th>Added</th><th>File</th><th>Meta</th><th>Review</th><th></th></tr>
+            {% for d in rows %}
+              <tr>
+                <td>{{ d.created_at }}</td>
+                <td>
+                  <div style="font-weight:600;">{{ d.file_name }}</div>
+                  {% if d.description %}<div class="small">{{ d.description }}</div>{% endif %}
+                  {% if d.file_path %}<div class="small">{{ d.file_path }}</div>{% endif %}
+                </td>
+                <td>
+                  {% if d.doc_category %}<div>{{ d.doc_category }}</div>{% endif %}
+                  {% if d.bureau %}<div>{{ d.bureau.title() }}</div>{% endif %}
+                  {% if d.source_name %}<div>{{ d.source_name }}</div>{% endif %}
+                  {% if d.document_date %}<div>Date: {{ d.document_date }}</div>{% endif %}
+                  {% if d.reference_display %}<div>{{ d.reference_display }}</div>{% endif %}
+                  {% if d.statement_date %}<div>Statement/proof: {{ d.statement_date }}</div>{% endif %}
+                  {% if d.expires_on %}<div>Expires: {{ d.expires_on }}</div>{% endif %}
+                </td>
+                <td>{{ d.review_status }}{% if d.review_notes %}<br>{{ d.review_notes }}{% endif %}</td>
+                <td>
+                  {% if d.can_open %}<a class="btn" href="/ui/documents/{{ d.id }}/open" target="_blank">Open</a>{% endif %}
+                  <form method="post" action="/ui/delete-document" style="margin-top:4px;"><input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="document_id" value="{{ d.id }}"><input type="hidden" name="active_tab" value="documents"><button type="submit">Delete</button></form>
+                </td>
+              </tr>
+            {% endfor %}
+          </table>
+        {% else %}<p>No {{ section_label.lower() }} attached yet.</p>{% endif %}
+      </div>
+    {% endfor %}
+  {% elif active_tab == 'credit_products' %}
+    <div class="grid">
+      <div class="box">
+        <h3>Add Credit Product</h3>
+        <form method="post" action="/ui/add-credit-product">
+          <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="active_tab" value="credit_products">
+          <div class="row"><label>Lender name</label><input name="lender_name" required></div>
+          <div class="row"><label>Credit type</label><select name="credit_type">{% for c in credit_types %}<option value="{{ c }}">{{ c }}</option>{% endfor %}</select></div>
+          <div class="subgrid">
+            <div class="row"><label>Limit / amount</label><input type="number" step="0.01" name="credit_limit"></div>
+            <div class="row"><label>Secured deposit amount</label><input type="number" step="0.01" name="secured_deposit_amount"></div>
+          </div>
+          <div class="subgrid">
+            <div class="row"><label>Due date (day)</label><input type="number" min="1" max="31" name="due_date"></div>
+            <div class="row"><label>Cutoff date (day)</label><input type="number" min="1" max="31" name="cutoff_date"></div>
+          </div>
+          <div class="row"><label>Origination date</label><input type="date" name="origination_date"></div>
+          <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
+          <button type="submit">Save Credit Product</button>
+        </form>
+      </div>
+      <div class="box">
+        <h3>Credit Products Obtained</h3>
+        {% if credit_products %}
+          <table class="compact"><tr><th>Lender</th><th>Type</th><th>Limit</th><th>Due/Cutoff</th><th>Opened</th><th></th></tr>
+          {% for c in credit_products %}
+            <tr><td>{{ c.lender_name }}</td><td>{{ c.credit_type }}</td><td>{{ c.credit_limit }}</td><td>{{ c.due_date }}/{{ c.cutoff_date }}</td><td>{{ c.origination_date }}</td><td><form method="post" action="/ui/delete-credit-product" style="margin:0;"><input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ c.id }}"><input type="hidden" name="active_tab" value="credit_products"><button type="submit">Delete</button></form></td></tr>
+          {% endfor %}</table>
+        {% else %}<p>No credit products yet.</p>{% endif %}
+      </div>
+    </div>
+  {% elif active_tab == 'referrals' %}
+    <div class="grid">
+      <div class="box">
+        <h3>Add Referral Partner</h3>
+        <form method="post" action="/ui/save-referral-partner">
+          <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="active_tab" value="referrals">
+          <div class="row"><label>Name</label><input name="name" required></div>
+          <div class="row"><label>Company</label><input name="company_name"></div>
+          <div class="row"><label>Type</label><select name="partner_type">{% for t in referral_partner_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Phone</label><input name="phone"></div>
+          <div class="row"><label>Email</label><input name="email"></div>
+          <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
+          <button type="submit">Save Referral Partner</button>
+        </form>
+      </div>
+      <div class="box">
+        <h3>Add Outbound Referral</h3>
+        <form method="post" action="/ui/add-outbound-referral">
+          <input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="active_tab" value="referrals">
+          <div class="row"><label>Partner</label><select name="referral_partner_id">{% for rp in referral_partners %}<option value="{{ rp.id }}">{{ rp.name }}{% if rp.company_name %} — {{ rp.company_name }}{% endif %}</option>{% endfor %}</select></div>
+          <div class="row"><label>Referral date</label><input type="date" name="referral_date" required></div>
+          <div class="row"><label>Referral reason</label><input name="referral_reason"></div>
+          <div class="row"><label>Status</label><select name="status">{% for s in outbound_referral_statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Notes</label><textarea name="notes"></textarea></div>
+          <button type="submit">Save Outbound Referral</button>
+        </form>
+      </div>
+    </div>
+    <div class="box">
+      <h3>Outbound Referrals</h3>
+      {% if outbound_referrals %}
+        <table class="compact"><tr><th>Date</th><th>Partner</th><th>Type</th><th>Reason</th><th>Status</th><th></th></tr>
+        {% for r in outbound_referrals %}
+          <tr><td>{{ r.referral_date }}</td><td>{{ r.partner_name }}{% if r.company_name %}<br><span class="small">{{ r.company_name }}</span>{% endif %}</td><td>{{ r.partner_type }}</td><td>{{ r.referral_reason }}</td><td>{{ r.status }}</td><td><form method="post" action="/ui/delete-outbound-referral" style="margin:0;"><input type="hidden" name="client_id" value="{{ client_id }}"><input type="hidden" name="item_id" value="{{ r.id }}"><input type="hidden" name="active_tab" value="referrals"><button type="submit">Delete</button></form></td></tr>
+        {% endfor %}</table>
+      {% else %}<p>No outbound referrals yet.</p>{% endif %}
+    </div>
+  {% endif %}
+</body>
+</html>

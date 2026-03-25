@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Merge Duplicate Profiles</title>
+<style>
+body{font-family:Arial,sans-serif;max-width:960px;margin:28px auto;padding:0 16px;background:#fafafa}
+.box{background:#fff;border:1px solid #ddd;border-radius:12px;padding:18px;margin-bottom:18px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+input{padding:10px;border:1px solid #ccc;border-radius:8px;min-width:280px}
+button,.btn{padding:10px 14px;border:0;border-radius:8px;background:#0b57d0;color:#fff;text-decoration:none;cursor:pointer}
+table{width:100%;border-collapse:collapse}
+th,td{padding:10px;border-bottom:1px solid #eee;text-align:left}
+.muted{color:#666;font-size:13px}
+</style></head>
+<body>
+<div class="box">
+  <h2>Merge Duplicate Profiles</h2>
+  <div><b>Source profile:</b> {{ source.get('first_name') }} {{ source.get('last_name') }} {% if source.get('date_of_birth_display') %}— DOB {{ source.get('date_of_birth_display') }}{% endif %}</div>
+  <div class="muted">Search for the target profile that should remain after the merge.</div>
+  <form class="row" method="get" action="/ui/client/{{ client_id }}/merge" style="margin-top:12px;">
+    <input name="q" value="{{ q or '' }}" placeholder="Search duplicate by name, phone, or email">
+    <button type="submit">Search</button>
+    <a class="btn" href="/ui/client/{{ client_id }}/edit">Back</a>
+  </form>
+</div>
+{% if results %}
+<div class="box">
+  <table>
+    <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th></th></tr></thead>
+    <tbody>
+    {% for r in results %}
+      <tr>
+        <td>{{ r.first_name }} {{ r.last_name }}</td>
+        <td>{{ r.phone or '—' }}</td>
+        <td>{{ r.email or '—' }}</td>
+        <td>
+          <form method="post" action="/ui/client/{{ client_id }}/merge" onsubmit="return confirm('Merge this duplicate into the selected target profile? The current source profile will be deleted.');">
+            <input type="hidden" name="target_client_id" value="{{ r.id }}">
+            <button type="submit">Merge Into This Profile</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% elif q %}
+<div class="box muted">No possible duplicate profiles matched that search.</div>
+{% endif %}
+</body></html>

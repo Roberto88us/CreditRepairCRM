@@ -1,79 +1,60 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8" />
+  <meta charset="utf-8">
   <title>Credit Repair CRM</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 24px; }
-    .box { border: 1px solid #ddd; padding: 16px; border-radius: 8px; max-width: 980px; }
-    .error { background: #ffecec; border: 1px solid #ffb3b3; padding: 10px; border-radius: 6px; margin-bottom: 12px; }
-    input { padding: 8px; width: 520px; }
-    button { padding: 8px 12px; cursor: pointer; }
-    table { border-collapse: collapse; width: 100%; margin-top: 14px; }
-    th, td { border-bottom: 1px solid #eee; padding: 10px; text-align: left; }
-    code { background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
-    .muted { color:#666; }
+    body{font-family:Arial,sans-serif;max-width:1000px;margin:28px auto;padding:0 16px;background:#fafafa;color:#222}
+    .box{background:#fff;border:1px solid #ddd;border-radius:12px;padding:18px;margin-bottom:18px}
+    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    input[type=text]{padding:10px 12px;border:1px solid #ccc;border-radius:8px;min-width:320px}
+    button,.btn{padding:10px 14px;border:0;border-radius:8px;background:#0b57d0;color:#fff;text-decoration:none;cursor:pointer}
+    .btn-secondary{background:#555}
+    .error{background:#fee;border:1px solid #f5b5b5;padding:12px;border-radius:8px}
+    .success{background:#ecfdf3;border:1px solid #9bd0ae;padding:12px;border-radius:8px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px;border-bottom:1px solid #eee;text-align:left}
+    .muted{color:#666;font-size:13px}
   </style>
 </head>
 <body>
-  <h1>Credit Repair CRM</h1>
-
   <div class="box">
-    {% if error %}
-      <div class="error">{{ error }}</div>
-    {% endif %}
-
-    <h3>Search Clients</h3>
-    <form method="get" action="/ui/search">
-      <input name="q" placeholder="Search name, phone, status (and email if available)" value="{{ q or '' }}" required />
+    <h1>Credit Repair CRM</h1>
+    <form class="row" action="/ui/search" method="get">
+      <input type="text" name="q" value="{{ q or '' }}" placeholder="Search by name, phone, email, or SSN last 4">
       <button type="submit">Search</button>
+      <a class="btn btn-secondary" href="/ui/client/new{% if q %}?q={{ q|urlencode }}{% endif %}">Create New Profile</a>
     </form>
-
-    {% if results is defined %}
-      <p class="muted" style="margin-top:10px;">
-        Results: <b>{{ results_count }}</b>
-      </p>
-
-      {% if results_count == 0 %}
-        <p>No matches.</p>
-      {% else %}
-        <table>
-          <tr>
-            <th>Name</th>
-            <th>Phone</th>
-            <th>Email</th>
-            <th>Status</th>
-            <th>Open</th>
-          </tr>
-          {% for r in results %}
-          <tr>
-            <td>{{ r.first_name }} {{ r.last_name }}</td>
-            <td>{{ r.phone }}</td>
-            <td>{{ r.email or "" }}</td>
-            <td>{{ r.status }}</td>
-            <td>
-              <form method="post" action="/ui/client" style="margin:0;">
-                <input type="hidden" name="client_id" value="{{ r.id }}" />
-                <button type="submit">Open</button>
-              </form>
-            </td>
-          </tr>
-          {% endfor %}
-        </table>
-      {% endif %}
-    {% endif %}
-
-    <hr style="margin:18px 0; border:none; border-top:1px solid #eee;" />
-
-    <h3>Open Client by ID</h3>
-    <form method="post" action="/ui/client">
-      <input name="client_id" placeholder="Client UUID (e.g., cd3bc746-...)" required />
-      <button type="submit">Open</button>
-    </form>
-
-    <p style="margin-top:14px;color:#555;">
-      Internal UI (local).
-    </p>
   </div>
+
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% if message %}<div class="success">{{ message }}</div>{% endif %}
+
+  {% if results is defined %}
+  <div class="box">
+    <h3>Search Results</h3>
+    {% if results_count %}
+      <table>
+        <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          {% for r in results %}
+            <tr>
+              <td>{{ r.first_name }} {{ r.last_name }}</td>
+              <td>{{ r.phone or '—' }}</td>
+              <td>{{ r.email or '—' }}</td>
+              <td>{{ r.status or '—' }}</td>
+              <td><a class="btn" href="/ui/client/{{ r.id }}">Open</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="muted">No matching client was found.</div>
+      <div style="margin-top:12px;">
+        <a class="btn" href="/ui/client/new{% if q %}?q={{ q|urlencode }}{% endif %}">Create New Profile</a>
+      </div>
+    {% endif %}
+  </div>
+  {% endif %}
 </body>
 </html>
