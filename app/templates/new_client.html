@@ -1,50 +1,242 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>Create New Profile</title>
+<html><head><meta charset="utf-8"><title>Create New Client</title>
 <style>
-body{font-family:Arial,sans-serif;max-width:860px;margin:28px auto;padding:0 16px;background:#fafafa}
+body{font-family:Arial,sans-serif;max-width:980px;margin:28px auto;padding:0 16px;background:#fafafa}
 .box{background:#fff;border:1px solid #ddd;border-radius:12px;padding:18px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .row{display:flex;flex-direction:column;gap:6px}
-input,select{padding:10px;border:1px solid #ccc;border-radius:8px}
+input,select,textarea{padding:10px;border:1px solid #ccc;border-radius:8px}
 button,.btn{padding:10px 14px;border:0;border-radius:8px;background:#0b57d0;color:#fff;text-decoration:none;cursor:pointer}
+button.secondary{background:#eef3ff;color:#0b57d0;border:1px solid #bfd2ff}
 .error{background:#fee;border:1px solid #f5b5b5;padding:12px;border-radius:8px;margin-bottom:12px}
+.small{font-size:12px;color:#666}
+.hidden{display:none}
+.search-wrap{position:relative;max-width:620px}
+.search-results{position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #ccc;border-radius:10px;box-shadow:0 10px 24px rgba(0,0,0,.08);z-index:10;max-height:240px;overflow:auto;display:none}
+.search-item{padding:10px 12px;cursor:pointer}
+.search-item:hover{background:#f5f8ff}
+.inline-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.wide{grid-column:1 / -1}
+.modal-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.modal-title-wrap{display:flex;flex-direction:column;gap:4px}
+.close-link{display:inline-flex;align-items:center;justify-content:center;padding:10px 14px;border-radius:14px;text-decoration:none;font-weight:800}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid-address{display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:14px}
+.grid-city{display:grid;grid-template-columns:minmax(0,1fr) 220px 180px;gap:14px}
+.link-action{padding:0 !important;background:transparent !important;border:0 !important;box-shadow:none !important;color:var(--cs-gold-soft) !important;font-weight:800 !important;text-decoration:underline !important;border-radius:0 !important;justify-content:flex-start}
+@media (max-width: 980px){.grid-3,.grid-2,.grid-address,.grid-city{grid-template-columns:1fr}}
+
+/* --- CreditSapientia themed form/layout overrides --- */
+:root{
+  --cs-gold: {{ theme_runtime.palette.secondary if theme_runtime else '#d7af57' }};
+  --cs-gold-soft: {{ theme_runtime.palette.text if theme_runtime else '#f1d38b' }};
+  --cs-primary: {{ theme_runtime.palette.primary if theme_runtime else '#0a1a2f' }};
+  --cs-panel: {{ theme_runtime.palette.surface if theme_runtime else 'rgba(8,18,33,.88)' }};
+  --cs-border: {{ theme_runtime.palette.border if theme_runtime else 'rgba(212,171,82,.45)' }};
+  --cs-text: {{ theme_runtime.palette.text if theme_runtime else '#f3e5bc' }};
+  --cs-muted: {{ theme_runtime.palette.muted if theme_runtime else '#cab889' }};
+}
+body{
+  margin:0 auto !important;
+  padding:24px 18px 36px !important;
+  max-width:1280px !important;
+  font-family:Inter,Arial,sans-serif !important;
+  color:var(--cs-text) !important;
+  background:#071220 !important;
+  min-height:100vh;
+  position:relative;
+}
+body::before{
+  content:"";
+  position:fixed;
+  inset:0;
+  background:url('/static/brand/themes/{{ current_theme or "cosmic_03_royal_blue_elegance" }}.png') center/cover no-repeat fixed;
+  z-index:-3;
+}
+body::after{
+  content:"";
+  position:fixed;
+  inset:0;
+  background:radial-gradient(circle at 78% 15%, rgba(245,208,119,.16), transparent 20%),linear-gradient(180deg, rgba(2,7,16,.35), rgba(2,7,16,.82));
+  z-index:-2;
+}
+.box,.card{
+  background:var(--cs-panel) !important;
+  border:1px solid var(--cs-border) !important;
+  border-radius:18px !important;
+  box-shadow:0 18px 42px rgba(0,0,0,.34) !important;
+  color:var(--cs-text) !important;
+}
+h1,h2,h3,label,b,strong{color:var(--cs-text) !important}
+.muted,.small{color:var(--cs-muted) !important}
+input,select,textarea{
+  background:rgba(255,255,255,.94) !important;
+  color:#111827 !important;
+  border:1px solid rgba(215,175,87,.38) !important;
+  border-radius:12px !important;
+}
+button,.btn{
+  background:linear-gradient(180deg,#f3d88f,#c79131) !important;
+  color:#231605 !important;
+  border:1px solid rgba(215,175,87,.42) !important;
+  border-radius:14px !important;
+  font-weight:800 !important;
+  box-shadow:0 10px 20px rgba(0,0,0,.16) !important;
+}
+button.secondary,.btn-secondary,.btn-gray,.btn-outline{
+  background:rgba(6,15,28,.72) !important;
+  color:var(--cs-text) !important;
+  border:1px solid var(--cs-border) !important;
+}
+.btn-danger,.danger-btn{background:linear-gradient(180deg,#8d1e1e,#5a0e0e) !important;color:#fff !important}
+.error{background:rgba(127,29,29,.24) !important;border:1px solid rgba(254,202,202,.35) !important;color:#ffe0e0 !important}
+.success{background:rgba(34,197,94,.14) !important;border:1px solid rgba(134,239,172,.35) !important;color:#d7ffdb !important}
+table{background:transparent;color:var(--cs-text)} th,td{border-bottom:1px solid rgba(148,163,184,.18) !important}
+a{color:var(--cs-gold-soft)}
+
 </style></head>
 <body>
 <div class="box">
-  <h2>Create New Profile</h2>
+  <div class="modal-header">
+    <div class="modal-title-wrap">
+      <h2 style="margin:0;">Create New Client</h2>
+    </div>
+    <a class="btn secondary close-link" href="#" onclick="return safeCloseNewClient(event);">Close</a>
+  </div>
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
   <form method="post" action="/ui/client/create">
+    <input type="hidden" name="suffix" value="{{ prefill.suffix if prefill else '' }}">
+    <input type="hidden" name="address_line2" value="{{ prefill.address_line2 if prefill else '' }}">
     <div class="grid">
-      <div class="row"><label>First name</label><input name="first_name" value="{{ prefill.first_name if prefill else '' }}" required></div>
-      <div class="row"><label>Last name</label><input name="last_name" value="{{ prefill.last_name if prefill else '' }}"></div>
-      <div class="row"><label>Phone</label><input id="primary_phone" name="primary_phone" placeholder="000-000-0000"></div>
-      <div class="row"><label>Email</label><input name="primary_email"></div>
-      <div class="row"><label>Date of birth</label><input id="date_of_birth" name="date_of_birth" placeholder="MM/DD/YYYY"></div>
-      <div class="row"><label>Social Security (full)</label><input id="ssn_full" name="ssn_full" placeholder="000-00-0000"></div>
-      <div class="row"><label>Address line 1</label><input name="address_line1"></div>
-      <div class="row"><label>Apt / Unit</label><input name="apt_unit"></div>
-      <div class="row"><label>City</label><input name="city"></div>
-      <div class="row"><label>State</label><input name="state"></div>
-      <div class="row"><label>Zip</label><input name="zip_code"></div>
-      <div class="row"><label>Lifecycle status</label>
+      <div class="row wide">
+        <div class="grid-3">
+          <div class="row"><label>First Name</label><input name="first_name" value="{{ prefill.first_name if prefill else '' }}" required></div>
+          <div class="row"><label>Middle Name</label><input name="middle_name" value="{{ prefill.middle_name if prefill else '' }}"></div>
+          <div class="row"><label>Last Name</label><input name="last_name" value="{{ prefill.last_name if prefill else '' }}"></div>
+        </div>
+      </div>
+
+      <div class="row wide">
+        <div class="grid-address">
+          <div class="row"><label>Residential Address</label><input name="address_line1" value="{{ prefill.address_line1 if prefill else '' }}"></div>
+          <div class="row"><label>Apt / Unit #</label><input name="apt_unit" value="{{ prefill.apt_unit if prefill else '' }}"></div>
+        </div>
+      </div>
+
+      <div class="row wide">
+        <div class="grid-city">
+          <div class="row"><label>City</label><input name="city" value="{{ prefill.city if prefill else '' }}"></div>
+          <div class="row"><label>State</label><select name="state"><option value=""></option>{% for abbr, name in us_states %}<option value="{{ abbr }}" {% if prefill and prefill.state == abbr %}selected{% endif %}>{{ abbr }} - {{ name }}</option>{% endfor %}</select></div>
+          <div class="row"><label>Zip Code</label><input name="zip_code" value="{{ prefill.zip_code if prefill else '' }}"></div>
+        </div>
+      </div>
+
+      <div class="row wide">
+        <button type="button" class="link-action" id="showMailingAddressBtn">+ Add mailing address if different</button>
+        <div id="mailingAddressWrap" class="hidden" style="margin-top:10px;">
+          <div class="grid-address">
+            <div class="row"><label>Mailing Address</label><input name="mailing_address_line1" value="{{ prefill.mailing_address_line1 if prefill else '' }}"></div>
+            <div class="row"><label>Apt / Unit #</label><input name="mailing_apt_unit" value="{{ prefill.mailing_apt_unit if prefill else '' }}"></div>
+          </div>
+          <div class="grid-city" style="margin-top:14px;">
+            <div class="row"><label>City</label><input name="mailing_city" value="{{ prefill.mailing_city if prefill else '' }}"></div>
+            <div class="row"><label>State</label><select name="mailing_state"><option value=""></option>{% for abbr, name in us_states %}<option value="{{ abbr }}" {% if prefill and prefill.mailing_state == abbr %}selected{% endif %}>{{ abbr }} - {{ name }}</option>{% endfor %}</select></div>
+            <div class="row"><label>Zip Code</label><input name="mailing_zip" value="{{ prefill.mailing_zip if prefill else '' }}"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row wide">
+        <div class="grid-2">
+          <div class="row"><label>Date of Birth</label><input id="date_of_birth" name="date_of_birth" placeholder="MM/DD/YYYY" value="{{ prefill.date_of_birth if prefill else '' }}"></div>
+          <div class="row"><label>Social Security</label><input id="ssn_full" name="ssn_full" placeholder="000-00-0000" value="{{ prefill.ssn_full if prefill else '' }}"></div>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>Primary Phone</label>
+        <input id="primary_phone" name="primary_phone" placeholder="000-000-0000" value="{{ prefill.primary_phone if prefill else '' }}">
+        <label style="margin-top:10px;">Secondary Phone</label>
+        <div class="inline-actions">
+          <button type="button" class="secondary" id="showSecondaryPhoneBtn">Add phone</button>
+        </div>
+        <div id="secondaryPhoneWrap" class="{% if not (prefill and prefill.secondary_phone) %}hidden{% endif %}" style="margin-top:8px;">
+          <div style="display:flex; gap:10px; align-items:center;">
+            <input id="secondary_phone" name="secondary_phone" placeholder="000-000-0000" value="{{ prefill.secondary_phone if prefill else '' }}" style="flex:1;">
+            <button type="button" class="secondary" id="removeSecondaryPhoneBtn">Delete field</button>
+          </div>
+        </div>
+
+        <div style="margin-top:12px;">
+          <label>Referred By</label>
+          <div class="search-wrap">
+            <input type="text" id="referredBySearch" placeholder="Start typing a client name, phone, email, or address">
+            <div id="referralSearchResults" class="search-results"></div>
+          </div>
+          <div id="referredByPicked" class="small" style="margin-top:6px;">{% if prefill and (prefill.referred_by_client_id or prefill.referred_by_partner_id) %}Referral source selected.{% else %}No referral source selected.{% endif %}</div>
+          <input type="hidden" id="referred_by_source_type" name="referred_by_source_type" value="{{ prefill.referred_by_source_type if prefill else '' }}">
+          <input type="hidden" id="referred_by_client_id" name="referred_by_client_id" value="{{ prefill.referred_by_client_id if prefill else '' }}">
+          <input type="hidden" id="referred_by_partner_id" name="referred_by_partner_id" value="{{ prefill.referred_by_partner_id if prefill else '' }}">
+        </div>
+      </div>
+
+      <div class="row">
+        <label>Primary Email</label>
+        <input type="email" name="primary_email" value="{{ prefill.primary_email if prefill else '' }}">
+        <label style="margin-top:10px;">Secondary Email</label>
+        <div class="inline-actions">
+          <button type="button" class="secondary" id="showSecondaryEmailBtn">Add email</button>
+        </div>
+        <div id="secondaryEmailWrap" class="{% if not (prefill and prefill.secondary_email) %}hidden{% endif %}" style="margin-top:8px;">
+          <div style="display:flex; gap:10px; align-items:center;">
+            <input type="email" id="secondary_email" name="secondary_email" value="{{ prefill.secondary_email if prefill else '' }}" style="flex:1;">
+            <button type="button" class="secondary" id="removeSecondaryEmailBtn">Delete field</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="row" id="emailDeliveryRowWrap">
+        <div id="emailDeliveryRow" class="{% if not (prefill and prefill.secondary_email) %}hidden{% endif %}">
+          <label>Email Delivery</label>
+          <select name="preferred_email_choice">
+            <option value="primary" {% if not prefill or (not prefill.send_to_both_emails and (prefill.preferred_email_choice or 'primary') == 'primary') %}selected{% endif %}>Primary email</option>
+            <option value="secondary" {% if prefill and (not prefill.send_to_both_emails) and prefill.preferred_email_choice == 'secondary' %}selected{% endif %}>Secondary email</option>
+            <option value="both" {% if prefill and prefill.send_to_both_emails %}selected{% endif %}>Both emails</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>Client Status</label>
         <select name="lifecycle_status">
-          <option value="candidate">candidate</option>
-          <option value="consultation only">consultation only</option>
-          <option value="current client">current client</option>
-          <option value="contract sent">contract sent</option>
-          <option value="inactive">inactive</option>
+          {% for value, label in lifecycle_options %}<option value="{{ value }}" {% if (prefill.lifecycle_status if prefill else 'prospect') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
         </select>
       </div>
-      <div class="row" style="justify-content:end;"><label><input type="checkbox" name="is_active"> Active</label></div>
     </div>
     <div style="margin-top:18px;display:flex;gap:10px;">
-      <button type="submit">Create Profile</button>
-      <a class="btn" href="/">Cancel</a>
+      <button type="submit">Create Client</button>
+      <a class="btn secondary" href="#" onclick="return safeCloseNewClient(event);">Cancel</a>
     </div>
   </form>
 </div>
 
 <script>
+function safeCloseNewClient(event) {
+  if (event) event.preventDefault();
+  try {
+    if (window.opener && !window.opener.closed) {
+      window.close();
+      return false;
+    }
+  } catch (err) {}
+  if (window.history.length > 1) {
+    window.history.back();
+    return false;
+  }
+  window.location.href = '/ui/credit-repair-dashboard';
+  return false;
+}
 function digitsOnly(value) {
   return (value || '').replace(/\D/g, '');
 }
@@ -66,25 +258,131 @@ function formatSsn(value) {
   if (d.length <= 5) return d.slice(0,3) + '-' + d.slice(3);
   return d.slice(0,3) + '-' + d.slice(3,5) + '-' + d.slice(5);
 }
-const dob = document.getElementById('date_of_birth');
-const ssn = document.getElementById('ssn_full');
-const primaryPhone = document.getElementById('primary_phone');
+function bindFormatter(id, formatter) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('input', e => e.target.value = formatter(e.target.value));
+  el.addEventListener('blur', e => e.target.value = formatter(e.target.value));
+}
+bindFormatter('date_of_birth', formatDob);
+bindFormatter('ssn_full', formatSsn);
+bindFormatter('primary_phone', formatPhone);
+bindFormatter('secondary_phone', formatPhone);
+
 const secondaryPhone = document.getElementById('secondary_phone');
-if (dob) {
-  dob.addEventListener('input', e => e.target.value = formatDob(e.target.value));
-  dob.addEventListener('blur', e => e.target.value = formatDob(e.target.value));
+const secondaryEmail = document.getElementById('secondary_email');
+const secondaryPhoneWrap = document.getElementById('secondaryPhoneWrap');
+const secondaryEmailWrap = document.getElementById('secondaryEmailWrap');
+const emailDeliveryRow = document.getElementById('emailDeliveryRow');
+
+document.getElementById('showSecondaryPhoneBtn')?.addEventListener('click', function(){
+  if (secondaryPhoneWrap) secondaryPhoneWrap.classList.remove('hidden');
+  if (secondaryPhone) secondaryPhone.focus();
+});
+
+document.getElementById('removeSecondaryPhoneBtn')?.addEventListener('click', function(){
+  if (secondaryPhone) secondaryPhone.value = '';
+  if (secondaryPhoneWrap) secondaryPhoneWrap.classList.add('hidden');
+});
+
+document.getElementById('showSecondaryEmailBtn')?.addEventListener('click', function(){
+  if (secondaryEmailWrap) secondaryEmailWrap.classList.remove('hidden');
+  if (emailDeliveryRow) emailDeliveryRow.classList.remove('hidden');
+  if (secondaryEmail) secondaryEmail.focus();
+});
+
+document.getElementById('removeSecondaryEmailBtn')?.addEventListener('click', function(){
+  if (secondaryEmail) secondaryEmail.value = '';
+  if (secondaryEmailWrap) secondaryEmailWrap.classList.add('hidden');
+  if (emailDeliveryRow) emailDeliveryRow.classList.add('hidden');
+});
+
+const mailingAddressWrap = document.getElementById('mailingAddressWrap');
+const showMailingAddressBtn = document.getElementById('showMailingAddressBtn');
+showMailingAddressBtn?.addEventListener('click', function(){
+  if (!mailingAddressWrap) return;
+  const isHidden = mailingAddressWrap.classList.contains('hidden');
+  mailingAddressWrap.classList.toggle('hidden');
+  showMailingAddressBtn.textContent = isHidden ? '− Hide mailing address' : '+ Add mailing address if different';
+});
+
+secondaryEmail?.addEventListener('input', function(){
+  if (!emailDeliveryRow) return;
+  if ((secondaryEmail.value || '').trim()) {
+    emailDeliveryRow.classList.remove('hidden');
+    if (secondaryEmailWrap) secondaryEmailWrap.classList.remove('hidden');
+  }
+});
+
+if (mailingAddressWrap && !mailingAddressWrap.classList.contains('hidden') && showMailingAddressBtn) {
+  showMailingAddressBtn.textContent = '− Hide mailing address';
 }
-if (ssn) {
-  ssn.addEventListener('input', e => e.target.value = formatSsn(e.target.value));
-  ssn.addEventListener('blur', e => e.target.value = formatSsn(e.target.value));
+
+const referralInput = document.getElementById('referredBySearch');
+const referralResults = document.getElementById('referralSearchResults');
+const referralPicked = document.getElementById('referredByPicked');
+const referredBySourceType = document.getElementById('referred_by_source_type');
+const referredByClientId = document.getElementById('referred_by_client_id');
+const referredByPartnerId = document.getElementById('referred_by_partner_id');
+let referralAbort = null;
+
+function clearReferralSelection() {
+  if (referredBySourceType) referredBySourceType.value = '';
+  if (referredByClientId) referredByClientId.value = '';
+  if (referredByPartnerId) referredByPartnerId.value = '';
+  if (referralPicked) referralPicked.textContent = 'No referral source selected.';
 }
-if (primaryPhone) {
-  primaryPhone.addEventListener('input', e => e.target.value = formatPhone(e.target.value));
-  primaryPhone.addEventListener('blur', e => e.target.value = formatPhone(e.target.value));
+function pickReferral(item) {
+  if (!item) return;
+  if (referredBySourceType) referredBySourceType.value = item.source_type || '';
+  if (referredByClientId) referredByClientId.value = item.source_type === 'client' ? (item.id || '') : '';
+  if (referredByPartnerId) referredByPartnerId.value = item.source_type === 'partner' ? (item.id || '') : '';
+  if (referralInput) referralInput.value = item.label || item.name || '';
+  if (referralPicked) referralPicked.textContent = 'Selected: ' + (item.label || item.name || '');
+  if (referralResults) referralResults.style.display = 'none';
 }
-if (secondaryPhone) {
-  secondaryPhone.addEventListener('input', e => e.target.value = formatPhone(e.target.value));
-  secondaryPhone.addEventListener('blur', e => e.target.value = formatPhone(e.target.value));
+function renderReferralResults(items) {
+  if (!referralResults) return;
+  referralResults.innerHTML = '';
+  if (!Array.isArray(items) || !items.length) {
+    referralResults.style.display = 'none';
+    return;
+  }
+  items.forEach(item => {
+    const div = document.createElement('div');
+    div.className = 'search-item';
+    div.textContent = item.label || item.name || item.id || '';
+    div.addEventListener('mousedown', function(ev){
+      ev.preventDefault();
+      pickReferral(item);
+    });
+    referralResults.appendChild(div);
+  });
+  referralResults.style.display = 'block';
 }
+referralInput?.addEventListener('input', async function(){
+  const q = (referralInput.value || '').trim();
+  if (q.length < 1) {
+    if (!q) clearReferralSelection();
+    renderReferralResults([]);
+    return;
+  }
+  if (referralAbort) referralAbort.abort();
+  referralAbort = new AbortController();
+  try {
+    const resp = await fetch('/ui/referral-source-search?q=' + encodeURIComponent(q), {signal: referralAbort.signal});
+    const data = await resp.json();
+    renderReferralResults(data || []);
+  } catch (err) {
+    if (err && err.name === 'AbortError') return;
+    renderReferralResults([]);
+  }
+});
+document.addEventListener('click', function(ev){
+  if (!referralResults || !referralInput) return;
+  if (!referralResults.contains(ev.target) && ev.target !== referralInput) {
+    referralResults.style.display = 'none';
+  }
+});
 </script>
 </body></html>

@@ -1,11 +1,20 @@
 
 import os
+import sys
 import json
+import shutil
+import socket
+import subprocess
+import tempfile
 import base64
+import calendar as pycalendar
 import hashlib
+import hmac
+import secrets
 import re
 import mimetypes
-from collections import defaultdict
+import zipfile
+from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
 from itertools import zip_longest
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -13,13 +22,14 @@ from pathlib import Path
 from typing import Optional, List
 from uuid import uuid4
 from xml.sax.saxutils import escape
+from xml.etree import ElementTree as ET
 
 import psycopg2
 from psycopg2 import sql
 from fastapi import FastAPI, HTTPException, Request, Form, UploadFile, File, Query
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -31,6 +41,28 @@ from reportlab.platypus import Image as RLImage, Paragraph, SimpleDocTemplate, S
 from reportlab.lib.utils import ImageReader
 
 from cryptography.fernet import Fernet, InvalidToken
+
+try:
+    from pptx import Presentation as PptxPresentation
+    from pptx.util import Inches, Pt
+except Exception:
+    PptxPresentation = None
+    Inches = Pt = None
+
+from theme_system import (
+    DEFAULT_THEME_PACK_KEY,
+    build_theme_runtime,
+    ensure_theme_files,
+    get_theme_catalog,
+    get_theme_pack,
+    load_theme_library,
+    load_theme_settings,
+    normalize_theme_key,
+    resolve_background_for_screen,
+    save_theme_library,
+    save_theme_settings,
+)
+from theme_agent import ThemeAgent
 
 PdfReader = None
 PDF_READER_SOURCE = ""
@@ -57,53 +89,3473 @@ OUTPUT_DIR = os.getenv("OUTPUT_DIR", r"C:\CreditRepairCRM\letters")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", r"C:\CreditRepairCRM\uploads")
 SIGNATURE_DIR = os.path.join(UPLOAD_DIR, "client_signatures")
 INVOICE_DIR = os.path.join(UPLOAD_DIR, "invoices")
+PRESENTATION_LIBRARY_DIR = os.path.join(UPLOAD_DIR, "presentation_library")
 COMPANY_PHONE = os.getenv("COMPANY_PHONE", "305-000-0000")
 COMPANY_EMAIL = os.getenv("COMPANY_EMAIL", "info@cleanslateconsulting.com")
 COMPANY_ADDRESS1 = os.getenv("COMPANY_ADDRESS1", "Miami, FL")
 COMPANY_ADDRESS2 = os.getenv("COMPANY_ADDRESS2", "")
+COMPANY_CITY_STATE_ZIP = os.getenv("COMPANY_CITY_STATE_ZIP", "")
+if not COMPANY_CITY_STATE_ZIP:
+    _company_city = os.getenv("COMPANY_CITY", "").strip()
+    _company_state = os.getenv("COMPANY_STATE", "").strip()
+    _company_zip = os.getenv("COMPANY_ZIP", "").strip()
+    _parts = [p for p in [", ".join([x for x in [_company_city, _company_state] if x]), _company_zip] if p]
+    COMPANY_CITY_STATE_ZIP = " ".join(_parts).strip()
 COMPANY_LOGO_PATH = os.getenv("COMPANY_LOGO_PATH", "")
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = Path(APP_DIR).resolve().parent
+BACKUP_DIR = PROJECT_ROOT / "backups"
+BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+CUSTOM_LETTER_TEMPLATE_DIR = os.path.join(APP_DIR, "custom_letter_templates")
+CUSTOM_LETTER_TEMPLATE_BUREAUS = ["equifax", "transunion", "experian"]
 
-app = FastAPI(title="Credit Repair CRM API")
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
+for _dir in (OUTPUT_DIR, UPLOAD_DIR, SIGNATURE_DIR, INVOICE_DIR, PRESENTATION_LIBRARY_DIR, CUSTOM_LETTER_TEMPLATE_DIR):
+    try:
+        os.makedirs(_dir, exist_ok=True)
+    except Exception:
+        pass
+
+for _bureau_dir in CUSTOM_LETTER_TEMPLATE_BUREAUS:
+    try:
+        os.makedirs(os.path.join(CUSTOM_LETTER_TEMPLATE_DIR, _bureau_dir), exist_ok=True)
+    except Exception:
+        pass
+
+THEME_LIBRARY_PATH = Path(APP_DIR) / "theme_pack_library.json"
+THEME_SETTINGS_PATH = Path(APP_DIR) / "theme_system_settings.json"
+ensure_theme_files(THEME_LIBRARY_PATH, THEME_SETTINGS_PATH)
+THEME_PACK_LIBRARY = load_theme_library(THEME_LIBRARY_PATH)
+THEME_SYSTEM_SETTINGS = load_theme_settings(THEME_SETTINGS_PATH)
+THEME_CATALOG = get_theme_catalog(THEME_PACK_LIBRARY)
+THEME_AGENT = ThemeAgent(approved_assets_only=True)
+
+SOFTWARE_NAME = "CreditSapientia CRM"
+SOFTWARE_TAGLINE = "AI-Powered Tools to Restore Financial Health"
+
+THEME_CATALOG = {}
+DEFAULT_LOBBY_THEME = DEFAULT_THEME_PACK_KEY
+THEME_PACK_LIBRARY = {}
+THEME_SYSTEM_SETTINGS = {}
+
+ROLE_CATALOG = {
+    "administrator": "Administrator",
+    "credit_repair_user": "Credit Repair User",
+    "accounting_user": "Accounting User",
+    "limited_entry_user": "Limited Entry User",
+    "read_only_user": "Read Only User",
+}
+
+ROLE_PERMISSION_CATALOG = {
+    "administrator": {
+        "label": "Full platform control",
+        "items": [
+            "Full access to Lobby, Global Settings, Global Reports, Help, Credit Repair, and Accounting.",
+            "Can create, edit, activate, deactivate, and manage software users.",
+            "Can generate reset links, force password resets, and unlock accounts.",
+        ],
+    },
+    "credit_repair_user": {
+        "label": "Credit repair operations",
+        "items": [
+            "Can access Lobby, Help, Credit Repair Dashboard, and Credit Repair Settings.",
+            "Cannot access Global Settings, Global Reports, or Accounting-only areas.",
+        ],
+    },
+    "accounting_user": {
+        "label": "Accounting operations",
+        "items": [
+            "Can access Lobby, Help, Accounting Dashboard, and Accounting Settings.",
+            "Cannot access Global Settings, Global Reports, or Credit Repair-only areas.",
+        ],
+    },
+    "limited_entry_user": {
+        "label": "Limited entry",
+        "items": [
+            "Can access Lobby and assigned workflows for data entry.",
+            "Cannot access Global Settings, Global Reports, Credit Repair Settings, or Accounting Settings.",
+        ],
+    },
+    "read_only_user": {
+        "label": "Read only",
+        "items": [
+            "Can access Lobby and Help in read-only mode.",
+            "Cannot change settings, users, or restricted workflow data.",
+        ],
+    },
+}
+
+app = FastAPI(title=SOFTWARE_NAME)
+app.mount("/static", StaticFiles(directory=str(Path(APP_DIR) / "static")), name="static")
+
+PUBLIC_EXACT_PATHS = {
+    "/",
+    "/health",
+    "/favicon.ico",
+    "/ui/login/open",
+    "/ui/login",
+    "/ui/license",
+    "/ui/license/activate",
+    "/ui/setup-first-use",
+    "/ui/forgot-password",
+    "/ui/password/reset",
+}
+PUBLIC_PREFIX_PATHS = (
+    "/static/",
+    "/upload/",
+)
+PROTECTED_PREFIX_PATHS = (
+    "/ui/",
+    "/clients/",
+    "/process-round",
+    "/letters/",
+    "/round-runs/",
+)
+
+
+def _path_is_public(path: str) -> bool:
+    if path in PUBLIC_EXACT_PATHS:
+        return True
+    return any(path.startswith(prefix) for prefix in PUBLIC_PREFIX_PATHS)
+
+
+@app.middleware("http")
+async def enforce_auth_for_protected_paths(request: Request, call_next):
+    path = request.url.path or "/"
+    if _path_is_public(path):
+        return await call_next(request)
+    if any(path.startswith(prefix) for prefix in PROTECTED_PREFIX_PATHS):
+        if not is_authenticated(request):
+            if path.startswith("/ui/"):
+                return RedirectResponse(url="/", status_code=303)
+            return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+    return await call_next(request)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    """Serve the CreditSapientia favicon to prevent browser /favicon.ico 404 noise."""
+    for candidate in (
+        Path(APP_DIR) / "static" / "brand" / "icons" / "creditsapientia_black.ico",
+        Path(APP_DIR) / "static" / "brand" / "icons" / "creditsapientia_transparent.ico",
+    ):
+        if candidate.exists():
+            return FileResponse(candidate)
+    raise HTTPException(status_code=404, detail="favicon not found")
+
+
+templates = Jinja2Templates(directory=str(Path(APP_DIR) / "templates"))
+_base_template_response = templates.TemplateResponse
+
+
+def _template_response_compat(*args, **kwargs):
+    """
+    Backward-compatible adapter for Starlette's request-first TemplateResponse API.
+    Keeps existing call sites working while avoiding deprecation warnings.
+    """
+    if args and isinstance(args[0], Request):
+        return _base_template_response(*args, **kwargs)
+    if args and isinstance(args[0], str):
+        name = args[0]
+        context = args[1] if len(args) > 1 else kwargs.get("context", {})
+        if isinstance(context, dict) and isinstance(context.get("request"), Request):
+            request = context["request"]
+            extra_args = args[2:] if len(args) > 2 else ()
+            return _base_template_response(request, name, context, *extra_args, **kwargs)
+    if "name" in kwargs and "request" in kwargs and "context" in kwargs:
+        request = kwargs.pop("request")
+        name = kwargs.pop("name")
+        context = kwargs.pop("context")
+        return _base_template_response(request, name, context, *args, **kwargs)
+    return _base_template_response(*args, **kwargs)
+
+
+templates.TemplateResponse = _template_response_compat
 
 PROVIDERS = ["creditkarma", "equifax_site", "experian_site", "myfico", "transunion_site"]
+US_STATES = [
+    ("AL", "Alabama"), ("AK", "Alaska"), ("AZ", "Arizona"), ("AR", "Arkansas"), ("CA", "California"),
+    ("CO", "Colorado"), ("CT", "Connecticut"), ("DE", "Delaware"), ("FL", "Florida"), ("GA", "Georgia"),
+    ("HI", "Hawaii"), ("ID", "Idaho"), ("IL", "Illinois"), ("IN", "Indiana"), ("IA", "Iowa"),
+    ("KS", "Kansas"), ("KY", "Kentucky"), ("LA", "Louisiana"), ("ME", "Maine"), ("MD", "Maryland"),
+    ("MA", "Massachusetts"), ("MI", "Michigan"), ("MN", "Minnesota"), ("MS", "Mississippi"), ("MO", "Missouri"),
+    ("MT", "Montana"), ("NE", "Nebraska"), ("NV", "Nevada"), ("NH", "New Hampshire"), ("NJ", "New Jersey"),
+    ("NM", "New Mexico"), ("NY", "New York"), ("NC", "North Carolina"), ("ND", "North Dakota"), ("OH", "Ohio"),
+    ("OK", "Oklahoma"), ("OR", "Oregon"), ("PA", "Pennsylvania"), ("RI", "Rhode Island"), ("SC", "South Carolina"),
+    ("SD", "South Dakota"), ("TN", "Tennessee"), ("TX", "Texas"), ("UT", "Utah"), ("VT", "Vermont"),
+    ("VA", "Virginia"), ("WA", "Washington"), ("WV", "West Virginia"), ("WI", "Wisconsin"), ("WY", "Wyoming"),
+    ("DC", "District of Columbia")
+]
 PHONE_TYPES = ["cell", "home", "other", "work"]
 SUFFIXES = ["", "II", "III", "IV", "Jr", "Sr"]
-STATUSES = [
-    "candidate",
-    "cancelled",
-    "completed",
-    "consultation only",
-    "contract sent",
-    "current client",
-    "inactive",
-    "pending payment",
-    "referred out",
+
+CLIENT_INTERVIEW_WORKFLOW_STATUSES = [
+    ("not_started", "Not Started"),
+    ("pending", "Pending"),
+    ("complete", "Complete"),
+    ("skip", "Skip"),
 ]
-PAYMENT_METHODS = ["card", "cash", "zelle"]
+
+SECTION_STATUS_LABELS = {
+    "incomplete": "Incomplete",
+    "pending": "Pending",
+    "complete": "Complete",
+    "skip": "Skip",
+}
+
+SECTION_STATUS_OPTIONS = [
+    ("incomplete", "Incomplete"),
+    ("pending", "Pending"),
+    ("complete", "Complete"),
+    ("skip", "Skip"),
+]
+EMPLOYMENT_STATUS_OPTIONS = [
+    "employed", "self_employed", "rental_income", "retired", "unemployed", "student", "other"
+]
+HOUSING_STATUS_OPTIONS = [
+    "homeowner", "rent", "live_with_parents", "other"
+]
+BANKING_STATUS_OPTIONS = [
+    ("checking_and_savings", "Checking and Savings"),
+    ("checking_only", "Checking Account"),
+    ("savings_only", "Savings Account"),
+    ("none", "None"),
+]
+RESIDENCY_STATUS_OPTIONS = ["resident", "non_resident"]
+ADDITIONAL_INCOME_SOURCE_OPTIONS = [
+    "employment", "self_employment", "retirement", "disability", "unemployment", "rental_income", "child_support_alimony", "other"
+]
+CREDIT_GOAL_OPTIONS = [
+    ("first_home", "Purchase a first home"),
+    ("second_home", "Purchase a second home"),
+    ("vacation_home", "Purchase a vacation home"),
+    ("investment_property", "Purchase an investment property"),
+    ("credit_cards", "Qualify for credit cards"),
+    ("business_lending", "Qualify for business lending"),
+    ("vehicle", "Need a new car"),
+    ("better_credit", "Just improve my credit"),
+    ("marriage", "Getting married / joint finances"),
+    ("furniture", "Need furniture / household items"),
+    ("other", "Other"),
+]
+GOAL_TIMEFRAME_OPTIONS = [
+    ("0_3", "0–3 months"),
+    ("3_6", "3–6 months"),
+    ("6_12", "6–12 months"),
+    ("12_24", "12–24 months"),
+    ("24_plus", "24+ months"),
+    ("not_sure", "Not sure"),
+]
+COUNTRY_OPTIONS = [('Afghanistan', 'Afghanistan'), ('Albania', 'Albania'), ('Algeria', 'Algeria'), ('American Samoa', 'American Samoa'), ('Andorra', 'Andorra'), ('Angola', 'Angola'), ('Anguilla', 'Anguilla'), ('Antarctica', 'Antarctica'), ('Antigua and Barbuda', 'Antigua and Barbuda'), ('Argentina', 'Argentina'), ('Armenia', 'Armenia'), ('Aruba', 'Aruba'), ('Australia', 'Australia'), ('Austria', 'Austria'), ('Azerbaijan', 'Azerbaijan'), ('Bahamas', 'Bahamas'), ('Bahrain', 'Bahrain'), ('Bangladesh', 'Bangladesh'), ('Barbados', 'Barbados'), ('Belarus', 'Belarus'), ('Belgium', 'Belgium'), ('Belize', 'Belize'), ('Benin', 'Benin'), ('Bermuda', 'Bermuda'), ('Bhutan', 'Bhutan'), ('Bolivia, Plurinational State of', 'Bolivia, Plurinational State of'), ('Bonaire, Sint Eustatius and Saba', 'Bonaire, Sint Eustatius and Saba'), ('Bosnia and Herzegovina', 'Bosnia and Herzegovina'), ('Botswana', 'Botswana'), ('Bouvet Island', 'Bouvet Island'), ('Brazil', 'Brazil'), ('British Indian Ocean Territory', 'British Indian Ocean Territory'), ('Brunei Darussalam', 'Brunei Darussalam'), ('Bulgaria', 'Bulgaria'), ('Burkina Faso', 'Burkina Faso'), ('Burundi', 'Burundi'), ('Cabo Verde', 'Cabo Verde'), ('Cambodia', 'Cambodia'), ('Cameroon', 'Cameroon'), ('Canada', 'Canada'), ('Cayman Islands', 'Cayman Islands'), ('Central African Republic', 'Central African Republic'), ('Chad', 'Chad'), ('Chile', 'Chile'), ('China', 'China'), ('Christmas Island', 'Christmas Island'), ('Cocos (Keeling) Islands', 'Cocos (Keeling) Islands'), ('Colombia', 'Colombia'), ('Comoros', 'Comoros'), ('Congo', 'Congo'), ('Congo, The Democratic Republic of the', 'Congo, The Democratic Republic of the'), ('Cook Islands', 'Cook Islands'), ('Costa Rica', 'Costa Rica'), ('Croatia', 'Croatia'), ('Cuba', 'Cuba'), ('Curaçao', 'Curaçao'), ('Cyprus', 'Cyprus'), ('Czechia', 'Czechia'), ("Côte d'Ivoire", "Côte d'Ivoire"), ('Denmark', 'Denmark'), ('Djibouti', 'Djibouti'), ('Dominica', 'Dominica'), ('Dominican Republic', 'Dominican Republic'), ('Ecuador', 'Ecuador'), ('Egypt', 'Egypt'), ('El Salvador', 'El Salvador'), ('Equatorial Guinea', 'Equatorial Guinea'), ('Eritrea', 'Eritrea'), ('Estonia', 'Estonia'), ('Eswatini', 'Eswatini'), ('Ethiopia', 'Ethiopia'), ('Falkland Islands (Malvinas)', 'Falkland Islands (Malvinas)'), ('Faroe Islands', 'Faroe Islands'), ('Fiji', 'Fiji'), ('Finland', 'Finland'), ('France', 'France'), ('French Guiana', 'French Guiana'), ('French Polynesia', 'French Polynesia'), ('French Southern Territories', 'French Southern Territories'), ('Gabon', 'Gabon'), ('Gambia', 'Gambia'), ('Georgia', 'Georgia'), ('Germany', 'Germany'), ('Ghana', 'Ghana'), ('Gibraltar', 'Gibraltar'), ('Greece', 'Greece'), ('Greenland', 'Greenland'), ('Grenada', 'Grenada'), ('Guadeloupe', 'Guadeloupe'), ('Guam', 'Guam'), ('Guatemala', 'Guatemala'), ('Guernsey', 'Guernsey'), ('Guinea', 'Guinea'), ('Guinea-Bissau', 'Guinea-Bissau'), ('Guyana', 'Guyana'), ('Haiti', 'Haiti'), ('Heard Island and McDonald Islands', 'Heard Island and McDonald Islands'), ('Holy See (Vatican City State)', 'Holy See (Vatican City State)'), ('Honduras', 'Honduras'), ('Hong Kong', 'Hong Kong'), ('Hungary', 'Hungary'), ('Iceland', 'Iceland'), ('India', 'India'), ('Indonesia', 'Indonesia'), ('Iran, Islamic Republic of', 'Iran, Islamic Republic of'), ('Iraq', 'Iraq'), ('Ireland', 'Ireland'), ('Isle of Man', 'Isle of Man'), ('Israel', 'Israel'), ('Italy', 'Italy'), ('Jamaica', 'Jamaica'), ('Japan', 'Japan'), ('Jersey', 'Jersey'), ('Jordan', 'Jordan'), ('Kazakhstan', 'Kazakhstan'), ('Kenya', 'Kenya'), ('Kiribati', 'Kiribati'), ("Korea, Democratic People's Republic of", "Korea, Democratic People's Republic of"), ('Korea, Republic of', 'Korea, Republic of'), ('Kuwait', 'Kuwait'), ('Kyrgyzstan', 'Kyrgyzstan'), ("Lao People's Democratic Republic", "Lao People's Democratic Republic"), ('Latvia', 'Latvia'), ('Lebanon', 'Lebanon'), ('Lesotho', 'Lesotho'), ('Liberia', 'Liberia'), ('Libya', 'Libya'), ('Liechtenstein', 'Liechtenstein'), ('Lithuania', 'Lithuania'), ('Luxembourg', 'Luxembourg'), ('Macao', 'Macao'), ('Madagascar', 'Madagascar'), ('Malawi', 'Malawi'), ('Malaysia', 'Malaysia'), ('Maldives', 'Maldives'), ('Mali', 'Mali'), ('Malta', 'Malta'), ('Marshall Islands', 'Marshall Islands'), ('Martinique', 'Martinique'), ('Mauritania', 'Mauritania'), ('Mauritius', 'Mauritius'), ('Mayotte', 'Mayotte'), ('Mexico', 'Mexico'), ('Micronesia, Federated States of', 'Micronesia, Federated States of'), ('Moldova, Republic of', 'Moldova, Republic of'), ('Monaco', 'Monaco'), ('Mongolia', 'Mongolia'), ('Montenegro', 'Montenegro'), ('Montserrat', 'Montserrat'), ('Morocco', 'Morocco'), ('Mozambique', 'Mozambique'), ('Myanmar', 'Myanmar'), ('Namibia', 'Namibia'), ('Nauru', 'Nauru'), ('Nepal', 'Nepal'), ('Netherlands', 'Netherlands'), ('New Caledonia', 'New Caledonia'), ('New Zealand', 'New Zealand'), ('Nicaragua', 'Nicaragua'), ('Niger', 'Niger'), ('Nigeria', 'Nigeria'), ('Niue', 'Niue'), ('Norfolk Island', 'Norfolk Island'), ('North Macedonia', 'North Macedonia'), ('Northern Mariana Islands', 'Northern Mariana Islands'), ('Norway', 'Norway'), ('Oman', 'Oman'), ('Pakistan', 'Pakistan'), ('Palau', 'Palau'), ('Palestine, State of', 'Palestine, State of'), ('Panama', 'Panama'), ('Papua New Guinea', 'Papua New Guinea'), ('Paraguay', 'Paraguay'), ('Peru', 'Peru'), ('Philippines', 'Philippines'), ('Pitcairn', 'Pitcairn'), ('Poland', 'Poland'), ('Portugal', 'Portugal'), ('Puerto Rico', 'Puerto Rico'), ('Qatar', 'Qatar'), ('Romania', 'Romania'), ('Russian Federation', 'Russian Federation'), ('Rwanda', 'Rwanda'), ('Réunion', 'Réunion'), ('Saint Barthélemy', 'Saint Barthélemy'), ('Saint Helena, Ascension and Tristan da Cunha', 'Saint Helena, Ascension and Tristan da Cunha'), ('Saint Kitts and Nevis', 'Saint Kitts and Nevis'), ('Saint Lucia', 'Saint Lucia'), ('Saint Martin (French part)', 'Saint Martin (French part)'), ('Saint Pierre and Miquelon', 'Saint Pierre and Miquelon'), ('Saint Vincent and the Grenadines', 'Saint Vincent and the Grenadines'), ('Samoa', 'Samoa'), ('San Marino', 'San Marino'), ('Sao Tome and Principe', 'Sao Tome and Principe'), ('Saudi Arabia', 'Saudi Arabia'), ('Senegal', 'Senegal'), ('Serbia', 'Serbia'), ('Seychelles', 'Seychelles'), ('Sierra Leone', 'Sierra Leone'), ('Singapore', 'Singapore'), ('Sint Maarten (Dutch part)', 'Sint Maarten (Dutch part)'), ('Slovakia', 'Slovakia'), ('Slovenia', 'Slovenia'), ('Solomon Islands', 'Solomon Islands'), ('Somalia', 'Somalia'), ('South Africa', 'South Africa'), ('South Georgia and the South Sandwich Islands', 'South Georgia and the South Sandwich Islands'), ('South Sudan', 'South Sudan'), ('Spain', 'Spain'), ('Sri Lanka', 'Sri Lanka'), ('Sudan', 'Sudan'), ('Suriname', 'Suriname'), ('Svalbard and Jan Mayen', 'Svalbard and Jan Mayen'), ('Sweden', 'Sweden'), ('Switzerland', 'Switzerland'), ('Syrian Arab Republic', 'Syrian Arab Republic'), ('Taiwan, Province of China', 'Taiwan, Province of China'), ('Tajikistan', 'Tajikistan'), ('Tanzania, United Republic of', 'Tanzania, United Republic of'), ('Thailand', 'Thailand'), ('Timor-Leste', 'Timor-Leste'), ('Togo', 'Togo'), ('Tokelau', 'Tokelau'), ('Tonga', 'Tonga'), ('Trinidad and Tobago', 'Trinidad and Tobago'), ('Tunisia', 'Tunisia'), ('Turkmenistan', 'Turkmenistan'), ('Turks and Caicos Islands', 'Turks and Caicos Islands'), ('Tuvalu', 'Tuvalu'), ('Türkiye', 'Türkiye'), ('Uganda', 'Uganda'), ('Ukraine', 'Ukraine'), ('United Arab Emirates', 'United Arab Emirates'), ('United Kingdom', 'United Kingdom'), ('United States', 'United States'), ('United States Minor Outlying Islands', 'United States Minor Outlying Islands'), ('Uruguay', 'Uruguay'), ('Uzbekistan', 'Uzbekistan'), ('Vanuatu', 'Vanuatu'), ('Venezuela, Bolivarian Republic of', 'Venezuela, Bolivarian Republic of'), ('Viet Nam', 'Viet Nam'), ('Virgin Islands, British', 'Virgin Islands, British'), ('Virgin Islands, U.S.', 'Virgin Islands, U.S.'), ('Wallis and Futuna', 'Wallis and Futuna'), ('Western Sahara', 'Western Sahara'), ('Yemen', 'Yemen'), ('Zambia', 'Zambia'), ('Zimbabwe', 'Zimbabwe'), ('Åland Islands', 'Åland Islands')]
+CLIENT_STATUS_OPTIONS = [
+    ("prospect", "Prospect"),
+    ("client", "Client"),
+    ("cancelled", "Cancelled"),
+    ("completed", "Completed"),
+    ("contract sent", "Contract Sent"),
+    ("pending payment", "Pending Payment"),
+    ("referred for bankruptcy", "Referred for Bankruptcy"),
+    ("not a candidate", "Not a Candidate"),
+]
+STATUSES = [value for value, _label in CLIENT_STATUS_OPTIONS]
+CLIENT_STATUS_LABELS = {value: label for value, label in CLIENT_STATUS_OPTIONS}
+
+
+def normalize_client_status(value: str | None) -> str | None:
+    raw = str(value or '').strip().lower()
+    if not raw:
+        return None
+    aliases = {
+        'candidate': 'prospect',
+        'current client': 'client',
+        'active client': 'client',
+        'contract_sent': 'contract sent',
+        'contract sent': 'contract sent',
+        'pending payment': 'pending payment',
+        'pending_payment': 'pending payment',
+        'referred out': 'referred for bankruptcy',
+        'referred for bankruptcy': 'referred for bankruptcy',
+        'not a candidate': 'not a candidate',
+        'not_candidate': 'not a candidate',
+        'cancelled': 'cancelled',
+        'completed': 'completed',
+        'prospect': 'prospect',
+        'client': 'client',
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in CLIENT_STATUS_LABELS else None
+
+
+def display_client_workflow_status(value: str | None) -> str:
+    normalized = normalize_client_status(value)
+    if normalized and normalized in CLIENT_STATUS_LABELS:
+        return CLIENT_STATUS_LABELS[normalized]
+    raw = str(value or '').strip()
+    return raw.title() if raw else '—'
+
+
+def _avatar_svg(letter: str = 'P', primary: str = '#0b1f33', secondary: str = '#d7af57') -> str:
+    letter = (letter or 'P').strip()[:1].upper() or 'P'
+    svg = f"""<svg xmlns='http://www.w3.org/2000/svg' width='256' height='256' viewBox='0 0 256 256'>
+    <defs>
+      <linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>
+        <stop offset='0%' stop-color='{primary}'/>
+        <stop offset='100%' stop-color='{secondary}'/>
+      </linearGradient>
+    </defs>
+    <rect width='256' height='256' rx='44' fill='url(#g)'/>
+    <circle cx='128' cy='94' r='40' fill='rgba(255,255,255,0.14)'/>
+    <path d='M48 212c12-40 46-64 80-64s68 24 80 64' fill='rgba(255,255,255,0.14)'/>
+    <text x='128' y='146' text-anchor='middle' font-family='Inter,Arial,sans-serif' font-size='92' font-weight='800' fill='rgba(255,255,255,0.92)'>{escape(letter)}</text>
+    </svg>"""
+    return svg
+
+
+def find_pg_dump_executable() -> Optional[str]:
+    candidates: list[str] = []
+    direct = shutil.which("pg_dump")
+    if direct:
+        candidates.append(direct)
+    env_value = os.getenv("PG_DUMP_PATH", "").strip()
+    if env_value:
+        candidates.append(env_value)
+    if os.name == "nt":
+        for env_name in ("ProgramFiles", "ProgramFiles(x86)"):
+            base = os.getenv(env_name, "").strip()
+            if not base:
+                continue
+            postgres_root = Path(base) / "PostgreSQL"
+            if not postgres_root.exists():
+                continue
+            for version_dir in sorted(postgres_root.iterdir(), reverse=True):
+                exe = version_dir / "bin" / "pg_dump.exe"
+                if exe.exists():
+                    candidates.append(str(exe))
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate and candidate not in seen and Path(candidate).exists():
+            seen.add(candidate)
+            return candidate
+    return None
+
+
+def _backup_source_entries() -> list[tuple[Path, str]]:
+    entries: list[tuple[Path, str]] = []
+    seen_paths: set[str] = set()
+    seen_arcnames: set[str] = set()
+
+    def add(path_like, arc_base: str):
+        try:
+            path = Path(path_like).resolve()
+        except Exception:
+            return
+        if not path.exists():
+            return
+        path_key = str(path).lower()
+        arc_key = arc_base.replace('\\', '/').strip('/').lower()
+        if path_key in seen_paths or arc_key in seen_arcnames:
+            return
+        seen_paths.add(path_key)
+        seen_arcnames.add(arc_key)
+        entries.append((path, arc_base))
+
+    add(PROJECT_ROOT / "app", "app")
+    add(Path(UPLOAD_DIR), "uploads")
+    add(Path(OUTPUT_DIR), "letters")
+    add(PROJECT_ROOT / ".env", ".env")
+    return entries
+
+
+def create_system_backup(note: str = "") -> tuple[Path, list[str], str]:
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    safe_note = re.sub(r"[^A-Za-z0-9_-]+", "_", (note or "").strip()).strip("_")[:50]
+    backup_name = f"backup_{timestamp}" + (f"_{safe_note}" if safe_note else "")
+    zip_path = BACKUP_DIR / f"{backup_name}.zip"
+    warnings: list[str] = []
+    pg_dump_path = find_pg_dump_executable()
+
+    with tempfile.TemporaryDirectory(prefix="crm_backup_") as tmp_dir:
+        temp_root = Path(tmp_dir)
+        db_dir = temp_root / "database"
+        db_dir.mkdir(parents=True, exist_ok=True)
+        db_dump_path = db_dir / f"{DB_NAME}_dump.sql"
+
+        if pg_dump_path:
+            env = os.environ.copy()
+            if DB_PASSWORD:
+                env["PGPASSWORD"] = DB_PASSWORD
+            cmd = [
+                pg_dump_path,
+                "-h", str(DB_HOST),
+                "-p", str(DB_PORT),
+                "-U", str(DB_USER),
+                "-d", str(DB_NAME),
+                "-f", str(db_dump_path),
+            ]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
+            except Exception as exc:
+                warnings.append(f"Database dump failed: {exc}")
+        else:
+            warnings.append("Database dump skipped: pg_dump was not found on this computer.")
+
+        manifest = {
+            "backup_name": backup_name,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "machine": socket.gethostname(),
+            "project_root": str(PROJECT_ROOT),
+            "database": {
+                "host": DB_HOST,
+                "port": DB_PORT,
+                "name": DB_NAME,
+                "user": DB_USER,
+                "dump_included": db_dump_path.exists(),
+            },
+            "note": note or "",
+            "included_sources": [str(path) for path, _arc in _backup_source_entries()],
+            "warnings": warnings,
+        }
+        (temp_root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            written_arcnames: set[str] = set()
+
+            def write_once(file_path: Path, arcname: str):
+                normalized = arcname.replace('\\', '/').lstrip('./')
+                if normalized in written_arcnames:
+                    return
+                written_arcnames.add(normalized)
+                zf.write(file_path, arcname=normalized)
+
+            for source_path, arc_base in _backup_source_entries():
+                if source_path.is_file():
+                    write_once(source_path, arc_base)
+                    continue
+                for child in source_path.rglob("*"):
+                    if child.is_dir():
+                        continue
+                    try:
+                        resolved_child = child.resolve()
+                        if BACKUP_DIR in resolved_child.parents:
+                            continue
+                        if any(part in {".git", "__pycache__"} for part in resolved_child.parts):
+                            continue
+                        if resolved_child.suffix.lower() == ".pyc":
+                            continue
+                        # Defensive guard: never allow nested backup archives to be swept into a new backup.
+                        if resolved_child.suffix.lower() == ".zip" and "backup" in resolved_child.name.lower():
+                            continue
+                    except Exception:
+                        pass
+                    rel = child.relative_to(source_path)
+                    write_once(child, str(Path(arc_base) / rel))
+            for child in temp_root.rglob("*"):
+                if child.is_dir():
+                    continue
+                write_once(child, str(child.relative_to(temp_root)))
+
+    return zip_path, warnings, backup_name
+
+
+def build_backup_message(zip_path: Path, warnings: list[str]) -> str:
+    message = f"Back-Up saved: {zip_path.name}"
+    if warnings:
+        message += " | Warnings: " + " ; ".join(warnings)
+    return message
+
+
+def list_backups(limit: int = 30) -> list[dict]:
+    backups = []
+    if not BACKUP_DIR.exists():
+        return backups
+    for path in sorted(BACKUP_DIR.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
+        stat = path.stat()
+        backups.append({
+            "name": path.name,
+            "created_at": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %I:%M %p"),
+            "size": f"{stat.st_size / 1024 / 1024:.2f} MB",
+        })
+    return backups
+
+
+def open_local_path(path: Path) -> None:
+    if os.name == "nt":
+        os.startfile(str(path))
+        return
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+        return
+    subprocess.Popen(["xdg-open", str(path)])
+
+
+
+
+def ensure_system_settings_table(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS system_settings (
+            setting_key TEXT PRIMARY KEY,
+            setting_value TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            dashboard_theme TEXT DEFAULT 'royal_blue'
+        )
+    """)
+
+
+def system_setting(key: str, default: str = "") -> str:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                ensure_system_settings_table(cur)
+                cur.execute("SELECT COALESCE(setting_value, %s) FROM system_settings WHERE setting_key=%s LIMIT 1", (default, key))
+                row = cur.fetchone()
+                return (row[0] if row else default) or default
+    except Exception:
+        return default
+
+
+def save_system_setting(key: str, value: str):
+    with get_conn() as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_system_settings_table(cur)
+            cur.execute("""
+                INSERT INTO system_settings (setting_key, setting_value, updated_at)
+                VALUES (%s,%s,CURRENT_TIMESTAMP)
+                ON CONFLICT (setting_key) DO UPDATE SET
+                    setting_value=EXCLUDED.setting_value,
+                    updated_at=CURRENT_TIMESTAMP
+            """, (key, value))
+
+
+def is_license_activated() -> bool:
+    return bool(system_setting("license_key", "").strip())
+
+
+
+def refresh_theme_state() -> None:
+    global THEME_PACK_LIBRARY, THEME_SYSTEM_SETTINGS, THEME_CATALOG
+    ensure_theme_files(THEME_LIBRARY_PATH, THEME_SETTINGS_PATH)
+    THEME_PACK_LIBRARY = load_theme_library(THEME_LIBRARY_PATH)
+    THEME_SYSTEM_SETTINGS = load_theme_settings(THEME_SETTINGS_PATH)
+    THEME_CATALOG = get_theme_catalog(THEME_PACK_LIBRARY)
+
+
+THEME_COOKIE_NAME = "crm_active_theme"
+
+def _table_has_column(cur, table_name: str, column_name: str) -> bool:
+    try:
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = %s
+              AND column_name = %s
+            LIMIT 1
+            """,
+            (table_name, column_name),
+        )
+        return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def _safe_add_column(cur, table_name: str, column_name: str, ddl_sql: str) -> bool:
+    if _table_has_column(cur, table_name, column_name):
+        return True
+    try:
+        cur.execute(ddl_sql)
+        return True
+    except Exception:
+        return False
+
+
+
+
+def _read_theme_cookie(request: Request | None) -> str:
+    if not request:
+        return ""
+    return (request.cookies.get(THEME_COOKIE_NAME) or "").strip()
+
+
+def _set_theme_cookie(response: Response, theme_key: str) -> Response:
+    clean = normalize_theme_key(theme_key, THEME_PACK_LIBRARY)
+    response.set_cookie(THEME_COOKIE_NAME, clean, httponly=False, samesite='lax', path='/')
+    return response
+
+
+def get_active_theme_key(request: Request | None = None) -> str:
+    refresh_theme_state()
+    raw_cookie = _read_theme_cookie(request)
+    if raw_cookie:
+        return normalize_theme_key(raw_cookie, THEME_PACK_LIBRARY)
+    settings = load_theme_settings(THEME_SETTINGS_PATH)
+    for setting_key in ("active_theme_key", "lobby_theme", "default_theme"):
+        raw = system_setting(setting_key, "")
+        if raw:
+            return normalize_theme_key(raw, THEME_PACK_LIBRARY)
+    raw = settings.get("active_theme_key", DEFAULT_LOBBY_THEME)
+    return normalize_theme_key(raw, THEME_PACK_LIBRARY)
+
+
+def set_active_theme_key(theme_key: str) -> str:
+    refresh_theme_state()
+    clean = normalize_theme_key(theme_key, THEME_PACK_LIBRARY)
+    for setting_key in ("active_theme_key", "lobby_theme", "default_theme"):
+        save_system_setting(setting_key, clean)
+    settings = load_theme_settings(THEME_SETTINGS_PATH)
+    settings["active_theme_key"] = clean
+    save_theme_settings(THEME_SETTINGS_PATH, settings)
+    refresh_theme_state()
+    return clean
+
+
+def get_lobby_theme(request: Request | None = None) -> str:
+    return get_active_theme_key(request)
+
+
+def active_theme_key_for_request(request: Request, current_profile: dict | None = None) -> str:
+    refresh_theme_state()
+    profile = current_profile or get_current_profile_context(request) or {}
+    raw = (profile.get("dashboard_theme") or "").strip()
+    use_custom_theme = bool(profile.get("use_custom_theme"))
+    if use_custom_theme and raw:
+        return normalize_theme_key(raw, THEME_PACK_LIBRARY)
+    return get_active_theme_key(request)
+
+
+def active_theme_background_for_request(request: Request, screen: str, current_profile: dict | None = None) -> str:
+    key = active_theme_key_for_request(request, current_profile)
+    pack = get_theme_pack(THEME_PACK_LIBRARY, key)
+    return resolve_background_for_screen(pack, screen)
+
+
+def active_theme_runtime_for_request(request: Request, screen: str, current_profile: dict | None = None) -> dict:
+    key = active_theme_key_for_request(request, current_profile)
+    pack = get_theme_pack(THEME_PACK_LIBRARY, key)
+    runtime = build_theme_runtime(pack, screen)
+    runtime["screen"] = screen
+    return runtime
+
+
+def make_password_hash(password: str) -> str:
+    password = (password or "").encode("utf-8")
+    salt = secrets.token_bytes(16)
+    rounds = 260000
+    digest = hashlib.pbkdf2_hmac("sha256", password, salt, rounds)
+    return f"pbkdf2_sha256${rounds}${base64.b64encode(salt).decode()}${base64.b64encode(digest).decode()}"
+
+
+def verify_password_hash(password: str, stored_hash: str) -> bool:
+    try:
+        scheme, rounds_text, salt_b64, digest_b64 = (stored_hash or "").split("$", 3)
+        if scheme != "pbkdf2_sha256":
+            return False
+        rounds = int(rounds_text)
+        salt = base64.b64decode(salt_b64.encode())
+        expected = base64.b64decode(digest_b64.encode())
+        actual = hashlib.pbkdf2_hmac("sha256", (password or "").encode("utf-8"), salt, rounds)
+        return hmac.compare_digest(actual, expected)
+    except Exception:
+        return False
+
+
+
+def ensure_app_users_table(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS app_users (
+            id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            username TEXT NOT NULL,
+            email TEXT,
+            role TEXT NOT NULL DEFAULT 'administrator',
+            password_hash TEXT NOT NULL,
+            is_active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_login_at TIMESTAMP NULL,
+            password_changed_at TIMESTAMP NULL,
+            failed_login_attempts INTEGER DEFAULT 0,
+            locked_until TIMESTAMP NULL,
+            force_password_reset BOOLEAN DEFAULT FALSE,
+            reset_token_hash TEXT NULL,
+            reset_token_expires_at TIMESTAMP NULL,
+            reset_sent_at TIMESTAMP NULL,
+            created_by TEXT NULL,
+            updated_by TEXT NULL
+        )
+    """)
+    for ddl in [
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS email TEXT",
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'administrator'",
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP NULL",
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP NULL",
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER DEFAULT 0",
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP NULL",
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS force_password_reset BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS reset_token_hash TEXT NULL",
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS reset_token_expires_at TIMESTAMP NULL",
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS reset_sent_at TIMESTAMP NULL",
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS created_by TEXT NULL",
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS updated_by TEXT NULL",
+    ]:
+        try:
+            cur.execute(ddl)
+        except Exception:
+            pass
+
+def _normalize_role(role: str = '') -> str:
+    role = (role or '').strip().lower()
+    return role if role in ROLE_CATALOG else 'administrator'
+
+
+def permission_items_for_role(role: str = '') -> list[str]:
+    role = _normalize_role(role)
+    return list((ROLE_PERMISSION_CATALOG.get(role) or {}).get('items') or [])
+
+
+def has_role_permission(role: str = '', permission: str = '') -> bool:
+    role = _normalize_role(role)
+    permission = (permission or '').strip().lower()
+    matrix = {
+        'administrator': {'global_settings', 'global_reports', 'help', 'credit_repair', 'accounting', 'manage_users'},
+        'credit_repair_user': {'help', 'credit_repair'},
+        'accounting_user': {'help', 'accounting'},
+        'limited_entry_user': {'help'},
+        'read_only_user': {'help'},
+    }
+    return permission in matrix.get(role, set())
+
+
+def format_user_dt(value) -> str:
+    if not value:
+        return ''
+    try:
+        return value.strftime('%Y-%m-%d %I:%M %p')
+    except Exception:
+        return str(value)
+
+
+def user_security_status(user: dict | None = None) -> dict:
+    user = user or {}
+    now = datetime.now()
+    locked_until = user.get('locked_until_raw') or user.get('locked_until')
+    if locked_until and hasattr(locked_until, 'strftime') and locked_until > now:
+        return {'key': 'locked', 'label': 'Locked', 'class': 'bad'}
+    if not bool(user.get('is_active', True)):
+        return {'key': 'inactive', 'label': 'Inactive', 'class': 'warn'}
+    if bool(user.get('force_password_reset')) and not user.get('last_login_at_raw'):
+        return {'key': 'pending_setup', 'label': 'Pending Setup', 'class': 'warn'}
+    if bool(user.get('force_password_reset')):
+        return {'key': 'reset_required', 'label': 'Reset Required', 'class': 'warn'}
+    return {'key': 'active', 'label': 'Active', 'class': 'ok'}
+
+
+def generate_user_reset_token() -> tuple[str, str, datetime]:
+    raw = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(raw.encode('utf-8')).hexdigest()
+    expires_at = datetime.now() + timedelta(minutes=30)
+    return raw, digest, expires_at
+
+
+def count_active_admins() -> int:
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            ensure_app_users_table(cur)
+            cur.execute("SELECT COUNT(*) FROM app_users WHERE COALESCE(is_active, TRUE) = TRUE AND COALESCE(role, 'administrator') = 'administrator'")
+            row = cur.fetchone()
+            return int((row or [0])[0] or 0)
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def fetch_app_users(include_inactive: bool = True) -> list[dict]:
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            ensure_app_users_table(cur)
+            sql = """
+                SELECT id,
+                       COALESCE(display_name,''),
+                       COALESCE(username,''),
+                       COALESCE(email,''),
+                       COALESCE(role,'administrator'),
+                       COALESCE(is_active, TRUE),
+                       created_at,
+                       updated_at,
+                       last_login_at,
+                       password_changed_at,
+                       COALESCE(failed_login_attempts, 0),
+                       locked_until,
+                       COALESCE(force_password_reset, FALSE),
+                       COALESCE(created_by, ''),
+                       COALESCE(updated_by, '')
+                  FROM app_users
+            """
+            if not include_inactive:
+                sql += " WHERE COALESCE(is_active, TRUE) = TRUE"
+            sql += " ORDER BY lower(COALESCE(display_name,'')), lower(COALESCE(username,''))"
+            cur.execute(sql)
+            rows = []
+            for r in cur.fetchall() or []:
+                user = {
+                    'id': r[0], 'display_name': r[1] or '', 'username': r[2] or '', 'email': r[3] or '',
+                    'role': _normalize_role(r[4]), 'role_label': ROLE_CATALOG.get(_normalize_role(r[4]), 'Administrator'),
+                    'is_active': bool(r[5]), 'created_at': format_user_dt(r[6]), 'updated_at': format_user_dt(r[7]),
+                    'last_login_at': format_user_dt(r[8]), 'password_changed_at': format_user_dt(r[9]),
+                    'failed_login_attempts': int(r[10] or 0), 'locked_until': format_user_dt(r[11]),
+                    'force_password_reset': bool(r[12]), 'created_by': r[13] or '', 'updated_by': r[14] or '',
+                    'created_at_raw': r[6], 'updated_at_raw': r[7], 'last_login_at_raw': r[8],
+                    'password_changed_at_raw': r[9], 'locked_until_raw': r[11],
+                }
+                user['status'] = user_security_status(user)
+                user['permission_items'] = permission_items_for_role(user['role'])
+                rows.append(user)
+            return rows
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def fetch_app_user(user_id: str = '') -> dict:
+    if not user_id:
+        return {}
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            ensure_app_users_table(cur)
+            cur.execute(
+                """
+                SELECT id, COALESCE(display_name,''), COALESCE(username,''), COALESCE(email,''), COALESCE(role,'administrator'),
+                       COALESCE(is_active, TRUE), last_login_at, password_changed_at, COALESCE(failed_login_attempts, 0),
+                       locked_until, COALESCE(force_password_reset, FALSE), COALESCE(created_by, ''), COALESCE(updated_by, ''),
+                       created_at, updated_at
+                  FROM app_users
+                 WHERE id=%s
+                """,
+                (user_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return {}
+            user = {
+                'id': row[0], 'display_name': row[1], 'username': row[2], 'email': row[3],
+                'role': _normalize_role(row[4]), 'role_label': ROLE_CATALOG.get(_normalize_role(row[4]), 'Administrator'),
+                'is_active': bool(row[5]), 'last_login_at': format_user_dt(row[6]), 'password_changed_at': format_user_dt(row[7]),
+                'failed_login_attempts': int(row[8] or 0), 'locked_until': format_user_dt(row[9]), 'force_password_reset': bool(row[10]),
+                'created_by': row[11] or '', 'updated_by': row[12] or '', 'created_at': format_user_dt(row[13]), 'updated_at': format_user_dt(row[14]),
+                'last_login_at_raw': row[6], 'password_changed_at_raw': row[7], 'locked_until_raw': row[9],
+            }
+            user['status'] = user_security_status(user)
+            user['permission_items'] = permission_items_for_role(user['role'])
+            return user
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+
+def fetch_app_user_for_login(key: str = '') -> dict:
+    key = (key or '').strip().lower()
+    if not key:
+        return {}
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            ensure_app_users_table(cur)
+            cur.execute(
+                """
+                SELECT id, COALESCE(display_name,''), COALESCE(username,''), COALESCE(email,''), COALESCE(role,'administrator'),
+                       password_hash, COALESCE(is_active, TRUE), COALESCE(failed_login_attempts, 0), locked_until, COALESCE(force_password_reset, FALSE)
+                FROM app_users
+                WHERE lower(COALESCE(username,'')) = %s
+                   OR lower(COALESCE(email,'')) = %s
+                   OR lower(COALESCE(display_name,'')) = %s
+                ORDER BY COALESCE(is_active, TRUE) DESC, updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+                LIMIT 1
+                """,
+                (key, key, key),
+            )
+            row = cur.fetchone()
+            if not row:
+                return {}
+            return {
+                'id': row[0], 'display_name': row[1], 'username': row[2], 'email': row[3],
+                'role': _normalize_role(row[4]), 'password_hash': row[5] or '', 'is_active': bool(row[6]),
+                'failed_login_attempts': int(row[7] or 0), 'locked_until_raw': row[8], 'force_password_reset': bool(row[9]),
+            }
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+def active_user_count() -> int:
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            ensure_app_users_table(cur)
+            cur.execute("SELECT COUNT(*) FROM app_users WHERE COALESCE(is_active, TRUE) = TRUE")
+            row = cur.fetchone()
+            return int((row or [0])[0] or 0)
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+def migrate_legacy_first_user():
+    try:
+        if active_user_count() > 0:
+            return
+        stored_hash = (system_setting("admin_password_hash", "") or '').strip()
+        if not stored_hash:
+            return
+        username = (system_setting("admin_username", "") or system_setting("admin_email", "") or 'admin').strip() or 'admin'
+        display_name = (system_setting("admin_display_name", "Administrator") or 'Administrator').strip() or 'Administrator'
+        email = (system_setting("admin_email", "") or '').strip()
+        with get_conn() as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                ensure_app_users_table(cur)
+                cur.execute(
+                    """
+                    INSERT INTO app_users (id, display_name, username, email, role, password_hash, is_active, created_at, updated_at, password_changed_at, force_password_reset)
+                    VALUES (%s,%s,%s,%s,%s,%s,TRUE,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,FALSE)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    (uuid4().hex, display_name, username, email, 'administrator', stored_hash),
+                )
+    except Exception:
+        return
+
+def saved_admin_username() -> str:
+    migrate_legacy_first_user()
+    users = fetch_app_users(include_inactive=False)
+    if users:
+        return (users[0].get('username') or users[0].get('email') or '').strip()
+    return (system_setting("admin_username", "") or system_setting("admin_email", "") or "").strip()
+
+def has_first_user_password() -> bool:
+    migrate_legacy_first_user()
+    if active_user_count() > 0:
+        return True
+    return bool(system_setting("admin_password_hash", "").strip())
+
+def is_authenticated(request: Request) -> bool:
+    if (request.cookies.get("crm_auth") or "").strip() != "1":
+        return False
+    user_id = (request.cookies.get('crm_user_id') or '').strip()
+    if not user_id:
+        return False
+    user = fetch_app_user(user_id)
+    return bool(user and user.get('is_active'))
+
+def attach_auth_cookie(response, username: str = "Admin", user_id: str = '', role: str = 'administrator'):
+    cookie_kwargs = {"path": "/", "httponly": True, "samesite": "lax"}
+    response.set_cookie("crm_auth", "1", **cookie_kwargs)
+    response.set_cookie("crm_user_name", username or "Admin", path="/", samesite="lax")
+    response.set_cookie("crm_user_id", user_id or '', **cookie_kwargs)
+    response.set_cookie("crm_user_role", _normalize_role(role), **cookie_kwargs)
+    return response
+
+def clear_auth_cookie(response):
+    for key in ("crm_auth", "crm_user_name", "crm_user_id", "crm_user_role"):
+        response.delete_cookie(key, path="/")
+    return response
+
+def current_user_role(request: Request) -> str:
+    user = fetch_app_user((request.cookies.get('crm_user_id') or '').strip())
+    if user:
+        return _normalize_role(user.get('role') or 'administrator')
+    return _normalize_role(request.cookies.get('crm_user_role') or 'administrator')
+
+
+def current_user_id_cookie(request: Request) -> str:
+    user_id = (request.cookies.get('crm_user_id') or '').strip()
+    return user_id if fetch_app_user(user_id) else ''
+
+
+def is_administrator(request: Request) -> bool:
+    return current_user_role(request) == 'administrator'
+
+
+def require_permission(request: Request, permission: str, fallback: str = '/ui/lobby'):
+    require_auth(request)
+    if not has_role_permission(current_user_role(request), permission):
+        raise HTTPException(status_code=303, headers={"Location": fallback + '?error=' + quote_plus('You do not have permission to access that area.')})
+
+
+def require_auth(request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=303, headers={"Location": "/"})
+
+
+
+def active_theme_for_request(request: Request, current_profile: dict | None = None) -> str:
+    return active_theme_background_for_request(request, "module", current_profile)
+
+
+
+def settings_section_catalog(scope: str = "global") -> list[dict]:
+    scope = (scope or "global").strip().lower()
+    catalogs = {
+        "global": [
+            {"key": "software_registration", "label": "Software Registration"},
+            {"key": "users", "label": "Users"},
+            {"key": "backup", "label": "Back-Up"},
+            {"key": "appearance", "label": "Global Theme System"},
+        ],
+        "credit_repair": [
+            {"key": "credit_repair_configuration", "label": "Credit Repair Configuration"},
+            {"key": "credit_repair_tables_records", "label": "Credit Repair Tables & Records"},
+            {"key": "credit_repair_templates", "label": "Credit Repair Templates"},
+        ],
+        "accounting": [
+            {"key": "billing_invoice_configuration", "label": "Accounting Configuration"},
+            {"key": "accounting_tables_records", "label": "Accounting Tables & Records"},
+            {"key": "accounting_templates", "label": "Accounting Templates"},
+        ],
+    }
+    return catalogs.get(scope, catalogs["global"])
+
+def settings_scope_meta(scope: str = "global") -> dict:
+    scope = (scope or "global").strip().lower()
+    meta = {
+        "global": {
+            "page_title": "Global Settings",
+            "subtitle": "Software-wide configuration only. Registration, users, back-up, and the global theme system live here.",
+            "base_href": "/ui/global-settings",
+        },
+        "credit_repair": {
+            "page_title": "Credit Repair Settings",
+            "subtitle": "Credit-repair-only configuration, reusable dispute-side records, and template libraries live here.",
+            "base_href": "/ui/credit-repair-settings",
+        },
+        "accounting": {
+            "page_title": "Accounting Settings",
+            "subtitle": "Accounting-only configuration, billing defaults, reusable accounting records, and accounting templates live here.",
+            "base_href": "/ui/accounting-settings",
+        },
+    }
+    return meta.get(scope, meta["global"])
+
+
+
+
+
+GLOBAL_SETTINGS_SECTIONS = {"software_registration", "users", "backup", "appearance"}
+CREDIT_REPAIR_SETTINGS_SECTIONS = {"credit_repair_configuration", "credit_repair_tables_records", "credit_repair_templates"}
+ACCOUNTING_SETTINGS_SECTIONS = {"billing_invoice_configuration", "accounting_tables_records", "accounting_templates"}
+
+def normalize_settings_section(scope: str, section: str) -> str:
+    raw = (section or '').strip()
+    if scope == 'credit_repair':
+        return raw if raw in CREDIT_REPAIR_SETTINGS_SECTIONS else 'credit_repair_configuration'
+    if scope == 'accounting':
+        return raw if raw in ACCOUNTING_SETTINGS_SECTIONS else 'billing_invoice_configuration'
+    return raw if raw in GLOBAL_SETTINGS_SECTIONS else 'software_registration'
+
+def is_credit_repair_section(section: str) -> bool:
+    return (section or '').strip() in CREDIT_REPAIR_SETTINGS_SECTIONS
+
+def is_accounting_section(section: str) -> bool:
+    return (section or '').strip() in ACCOUNTING_SETTINGS_SECTIONS
+
+def module_shell_catalog() -> dict:
+    return {
+        "credit_repair": {
+            "title": "Credit Repair Dashboard",
+            "description": "Core credit repair operations: client intake, client search, client dashboard workflow, disputes, documents, portal planning, onboarding, and review queue.",
+            "sections": [
+                {"title": "Client Management", "items": ["Client Search", "Create New Profile", "Onboarding", "Merge Clients", "Review Queue", "Client Portal"]},
+                {"title": "Client Dashboard", "items": ["Overview", "Billing", "Notes / Follow-Ups", "Emails", "Calendar", "Credentials & Scores", "Disputes", "Documents", "Credit Re-establishment", "Referrals"]},
+                {"title": "Disputes", "items": ["Equifax, TransUnion, and Experian handled separately", "Source document analysis from Documents", "Account, inquiry, and personal-info disputes", "Other Credit Bureaus later (LexisNexis, ChexSystems, etc.)", "Fraud / Identity Theft workflow later", "Generate polished client dispute report later"]},
+                {"title": "Portal / Onboarding", "items": ["Agreements and disclosures", "Right-to-cancel acknowledgement", "Requested document uploads", "Portal invoice visibility", "Portal payment-method update and cancellation request", "Credit education access"]},
+            ],
+        },
+        "accounting": {
+            "title": "Accounting",
+            "description": "Standalone accounting module for back-office work, while client Billing stays the fast operational workspace inside the Client Dashboard.",
+            "sections": [
+                {"key": "dashboard", "title": "Accounting Dashboard", "items": ["Snapshot of invoices, payments, deposits, and reconciliation work"]},
+                {"key": "sales", "title": "Sales", "items": ["Estimates", "Invoices", "Payments", "Recurring Invoices", "Customer Statements", "Customers", "Services", "Products", "Discounts"], "children": [
+                    {"key": "estimates", "title": "Estimates"},
+                    {"key": "invoices", "title": "Invoices"},
+                    {"key": "payments", "title": "Payments"},
+                    {"key": "recurring_invoices", "title": "Recurring Invoices"},
+                    {"key": "customer_statements", "title": "Customer Statements"},
+                    {"key": "customers", "title": "Customers"},
+                    {"key": "services", "title": "Services"},
+                    {"key": "products", "title": "Products"},
+                    {"key": "discounts", "title": "Discounts"}
+                ]},
+                {"key": "bookkeeping", "title": "Bookkeeping", "items": ["Transactions", "Reconciliation", "Chart of Accounts"], "children": [
+                    {"key": "transactions", "title": "Transactions"},
+                    {"key": "reconciliation", "title": "Reconciliation"},
+                    {"key": "chart_of_accounts", "title": "Chart of Accounts"}
+                ]},
+                {"key": "banking", "title": "Banking", "items": ["Bank accounts, deposits, imports, and cash management"]},
+                {"key": "payroll", "title": "Payroll", "items": ["Payroll runs, contractors, employees, liabilities"]},
+                {"key": "accounting_reports", "title": "Accounting Reports", "items": ["A/R, deposits, payments, sales, and bookkeeping reports"]},
+            ],
+        },
+        "reports": {
+            "title": "Reports",
+            "description": "Operational and financial reporting from a single integrated system so you no longer have to bounce among the Credit Repair Dashboard, payments, banking, and outside accounting.",
+            "sections": [
+                {"title": "Operational Reports", "items": ["Active Client List", "Clients by Billing Day", "Open Follow-Ups", "Upcoming Redisputes", "Portal / Acknowledgement Status", "Documents Needed / Review Queue"]},
+                {"title": "Financial Reports", "items": ["Payments Received", "Unpaid Invoices", "Invoice Aging", "Processor Fees", "Discounts", "Gross Sales vs Net Sales", "Profit & Loss (light)"]},
+            ],
+        },
+        "marketing": {
+            "title": "Marketing",
+            "description": "Campaigns, newsletters, printable materials, partner materials, opt-in / opt-out handling, and future AI-assisted social planning.",
+            "sections": [
+                {"title": "Campaigns", "items": ["Mass Emails", "Newsletters", "Opt-In / Opt-Out Lists", "Mass Updates / Notices", "Newsletter Subscribers (non-clients too)"]},
+                {"title": "Materials", "items": ["Tri-Folds", "Partner Materials", "Printable / Emailable Materials", "Campaign Templates"]},
+                {"title": "Social Media (future)", "items": ["AI Content Generator", "Content Calendar", "Instagram / Facebook / TikTok Posting Queue"]},
+            ],
+        },
+        "presentations": {
+            "title": "Presentations",
+            "description": "Presentation library for client education and sales workflows, with multiple decks and send/export options.",
+            "sections": [
+                {"title": "Presentation Library", "items": ["Short Presentation", "Long Presentation", "Partner Presentation", "Uploaded Decks"]},
+                {"title": "Delivery", "items": ["Send as PDF", "Send as Locked PowerPoint", "Attach to Client Communications", "Store in Templates / Presentations Folder"]},
+            ],
+        },
+        "education": {
+            "title": "Education",
+            "description": "Credit education resources for the Credit Repair Dashboard and future client portal, including the guide, YouTube topics, and learning library.",
+            "sections": [
+                {"title": "Education Library", "items": ["Credit Repair Guide", "YouTube Topic Library", "Portal-Visible Educational Resources"]},
+                {"title": "Portal Access", "items": ["Guide Downloads", "Video Playlists by Topic", "Client-Facing FAQs / Learning Resources"]},
+            ],
+        },
+        "compliance": {
+            "title": "Compliance / Legal",
+            "description": "Useful relevant information, bureau links, federal and state rules, disclosure sources, and compliance references.",
+            "sections": [
+                {"title": "Useful / Relevant Information", "items": ["FCRA / FDCPA / CFPB Links", "Bureau Websites", "Prescreen Opt-In / Opt-Out Link", "Fraud / CFPB Reference Links"]},
+                {"title": "Rules Library", "items": ["Federal Rules", "State-by-State Rules", "Disclosure Source Materials", "Compliance Checklists"]},
+            ],
+        },
+        "help": {
+            "title": "Help",
+            "description": "One software-wide help menu with guidance for the complete platform.",
+            "sections": [
+                {"title": "Getting Started", "items": ["Log in and confirm your role", "Use the Lobby to open a business or personal record", "Use Global Settings for software-wide items only", "Use Global Reports for software-wide reporting"]},
+                {"title": "Lobby / Navigation", "items": ["How to search records", "How active vs inactive records work", "How to open business vs personal records", "What the Quick Actions area is for"]},
+                {"title": "Credit Repair", "items": ["Client Dashboard workflow", "Disputes, documents, notes, and follow-ups", "Client portal and onboarding", "Credit repair settings and templates"]},
+                {"title": "Accounting", "items": ["Accounting Dashboard navigation", "Invoices, payments, customers, and reconciliation", "Accounting settings and templates", "When to use Accounting Dashboard vs client Billing tab"]},
+                {"title": "Global Settings / Users / Security", "items": ["Software Registration", "Users and role-based access", "Password rules and reset handling", "Back-Ups and Global Theme System"]},
+                {"title": "Troubleshooting", "items": ["What to do when a screen does not open", "What to do when a modal saves but does not close", "How to verify the current workspace", "How to restart the local application safely"]},
+            ],
+        },
+        "global_reports": {
+            "title": "Global Reports",
+            "description": "Software-wide reporting across all businesses and personal records from one place.",
+            "sections": [
+                {"title": "Business / Personal Overview", "items": ["Business record counts", "Personal record counts", "Active vs inactive record counts", "Newest records and most recently opened workspaces"]},
+                {"title": "Operations / Usage", "items": ["Latest Back-Up", "Recent user activity", "Workspace usage summary", "Future cross-workspace operational reporting"]},
+                {"title": "Financial / Compliance Rollups", "items": ["Future invoice and payment rollups", "Future processor-fee and discount rollups", "Future compliance reminder rollups", "Future renewal and due-date rollups"]},
+            ],
+        },
+    }
+
+
+def get_current_client_context(request: Request) -> dict:
+    cid = (request.cookies.get("crm_current_client_id") or "").strip()
+    if not cid:
+        return {}
+    return {
+        "id": cid,
+        "name": (request.cookies.get("crm_current_client_name") or "Current Client").strip() or "Current Client",
+        "tab": (request.cookies.get("crm_current_client_tab") or "overview").strip() or "overview",
+    }
+
+
+def attach_current_client_cookie(response, client_id: str, profile: dict, active_tab: str = "overview"):
+    display_name = (profile or {}).get("client_name") or " ".join([x for x in [
+        (profile or {}).get("first_name"),
+        (profile or {}).get("middle_name"),
+        (profile or {}).get("last_name")
+    ] if x]).strip() or "Current Client"
+    response.set_cookie("crm_current_client_id", str(client_id), path="/")
+    response.set_cookie("crm_current_client_name", display_name, path="/")
+    response.set_cookie("crm_current_client_tab", active_tab or "overview", path="/")
+    return response
+
+
+def clear_current_client_cookie(response):
+    for key in ("crm_current_client_id", "crm_current_client_name", "crm_current_client_tab"):
+        response.delete_cookie(key, path="/")
+    return response
+
+
+def _enforce_client_scope(request: Request, client_id: str, *, ui_redirect: bool = True):
+    if not client_id:
+        raise HTTPException(status_code=404, detail="Client not found.")
+    if is_administrator(request):
+        return
+    current_client_id = (get_current_client_context(request).get("id") or "").strip()
+    if current_client_id == str(client_id).strip():
+        return
+    if ui_redirect:
+        raise HTTPException(
+            status_code=303,
+            headers={"Location": "/ui/lobby?error=" + quote_plus("Open the client workspace before accessing this record.")},
+        )
+    raise HTTPException(status_code=403, detail="Forbidden for current client context")
+
+
+def _try_db_rows(query: str, params: tuple = ()) -> list[dict]:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                cols = [d[0] for d in (cur.description or [])]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def _try_db_value(query: str, params: tuple = (), default=None):
+    rows = _try_db_rows(query, params)
+    if not rows:
+        return default
+    row = rows[0]
+    if not row:
+        return default
+    return next(iter(row.values()))
+
+
+def _setting_map(keys: list[str]) -> dict:
+    if not keys:
+        return {}
+    rows = _try_db_rows(
+        "select setting_key, setting_value from system_settings where setting_key = any(%s)",
+        (keys,)
+    )
+    return {r.get("setting_key"): r.get("setting_value") for r in rows}
+
+
+def _preview_invoice_service_items(limit: int = 8) -> list[dict]:
+    return _try_db_rows(
+        """
+        select item_name, invoice_type, coalesce(default_amount,0) as default_amount, is_active
+        from invoice_service_items
+        order by lower(item_name), created_at desc
+        limit %s
+        """,
+        (limit,),
+    )
+
+
+def _preview_referral_partners(limit: int = 8) -> list[dict]:
+    return _try_db_rows(
+        """
+        select name, company_name, partner_type, phone, email, is_active
+        from referral_partners
+        order by lower(name), created_at desc
+        limit %s
+        """,
+        (limit,),
+    )
+
+
+
+
+def _settings_referral_source_action_html(source_id: str, name: str = '') -> str:
+    source_id = (source_id or '').strip()
+    if not source_id:
+        return ''
+    display_name = escape(name or 'this referral record')
+    return (
+        f'<div style="display:flex;gap:6px;flex-wrap:wrap;">'
+        f'<a class="btn btn-outline" href="/ui/credit-repair-settings?section=credit_repair_tables_records&edit_referral_source_id={source_id}#referral-source-editor">Edit</a>'
+        f'<form method="post" action="/ui/settings/referral-source/{source_id}/delete" style="margin:0;display:inline;" onsubmit="return confirm(\'Delete referral record for {display_name}?\');">'
+        f'<input type="hidden" name="section" value="credit_repair_tables_records">'
+        f'<button type="submit">Delete</button>'
+        f'</form>'
+        f'</div>'
+    )
+
+
+def _fetch_referral_source_for_settings(source_id: str) -> dict | None:
+    source_id = (source_id or '').strip()
+    if not source_id:
+        return None
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            ensure_referral_sources_table(cur)
+            cur.execute(
+                """
+                SELECT id::text, COALESCE(name,''), COALESCE(company_name,''), COALESCE(source_type,'other'),
+                       COALESCE(phone,''), COALESCE(email,''), COALESCE(notes,''), COALESCE(is_active, TRUE)
+                FROM referral_sources
+                WHERE id = %s::uuid
+                LIMIT 1
+                """,
+                (source_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                'source_id': row[0],
+                'source_name': row[1],
+                'company_name': row[2],
+                'source_type': row[3],
+                'phone': row[4],
+                'email': row[5],
+                'notes': row[6],
+                'is_active': bool(row[7]),
+            }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _preview_bureau_addresses(limit: int = 8) -> list[dict]:
+    return _try_db_rows(
+        """
+        select bureau, address_type, bureau_name, line1, city, state, zip
+        from bureau_addresses
+        order by bureau, address_type
+        limit %s
+        """,
+        (limit,),
+    )
+
+
+def _preview_email_templates(limit: int = 8) -> list[dict]:
+    return _try_db_rows(
+        """
+        select name, left(replace(replace(template_text, E'\n', ' '), E'\r', ' '), 90) as preview
+        from email_templates
+        order by lower(name)
+        limit %s
+        """,
+        (limit,),
+    )
+
+
+def _preview_letter_templates(limit: int = 8) -> list[dict]:
+    return _try_db_rows(
+        """
+        select name, coalesce(template_group,'') as template_group, coalesce(letter_type,'') as letter_type,
+               coalesce(bureau,'') as bureau, tone_level
+        from letter_templates
+        order by coalesce(template_group,''), coalesce(tone_level,0), lower(name)
+        limit %s
+        """,
+        (limit,),
+    )
+
+
+def _preview_recent_invoices(limit: int = 8) -> list[dict]:
+    return _try_db_rows(
+        """
+        select i.invoice_number,
+               coalesce(c.first_name || ' ' || c.last_name, '(unknown)') as client_name,
+               i.invoice_type, i.status, i.issue_date, i.due_date, i.amount
+        from client_invoices i
+        left join clients c on c.id = i.client_id
+        order by coalesce(i.issue_date, current_date) desc, i.created_at desc
+        limit %s
+        """,
+        (limit,),
+    )
+
+
+def _preview_recent_payments(limit: int = 8) -> list[dict]:
+    return _try_db_rows(
+        """
+        select p.payment_date,
+               coalesce(c.first_name || ' ' || c.last_name, '(unknown)') as client_name,
+               p.amount, p.method, p.purpose, coalesce(p.reference,'') as reference
+        from payments p
+        left join clients c on c.id = p.client_id
+        order by p.payment_date desc, p.created_at desc
+        limit %s
+        """,
+        (limit,),
+    )
+
+
+def _settings_referral_source_rows() -> list[list[str]]:
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            rows = fetch_referral_sources(cur, include_inactive=True, limit=500)
+        return [
+            [
+                r.get('name') or '',
+                r.get('company_name') or '',
+                r.get('source_type') or '',
+                r.get('phone') or '',
+                r.get('email') or '',
+                'Yes' if r.get('is_active') else 'No',
+                _settings_referral_source_action_html(r.get('id') or '', r.get('name') or ''),
+            ]
+            for r in rows
+        ]
+    except Exception:
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _settings_content_runtime(section: str) -> dict:
+    setting_keys = [
+        "company_name",
+        "contact_name",
+        "company_phone",
+        "phone_type",
+        "company_email",
+        "company_website",
+        "company_fax",
+        "company_address1",
+        "company_address2",
+        "company_city",
+        "company_state",
+        "company_zip",
+    ]
+    smap = _setting_map(setting_keys)
+    company_name = smap.get("company_name") or SENDER_NAME or "Not yet configured"
+    phone_value = smap.get("company_phone") or COMPANY_PHONE or "Not yet configured"
+    email_value = smap.get("company_email") or COMPANY_EMAIL or "Not yet configured"
+    website_value = smap.get("company_website") or os.getenv("COMPANY_WEBSITE", "").strip() or "Not yet configured"
+    fax_value = smap.get("company_fax") or os.getenv("COMPANY_FAX", "").strip() or "Not yet configured"
+    line1 = smap.get("company_address1") or COMPANY_ADDRESS1 or ""
+    line2 = smap.get("company_address2") or COMPANY_ADDRESS2 or ""
+    city = smap.get("company_city") or os.getenv("COMPANY_CITY", "").strip()
+    state = smap.get("company_state") or os.getenv("COMPANY_STATE", "").strip()
+    zip_code = smap.get("company_zip") or os.getenv("COMPANY_ZIP", "").strip()
+    phone_type = smap.get("phone_type") or "Office / Cell (not set)"
+
+    invoice_item_count = _try_db_value("select count(*) as c from invoice_service_items", default=0) or 0
+    referral_partner_count = _try_db_value("select count(*) as c from referral_partners", default=0) or 0
+    referral_source_count = _try_db_value("select count(*) as c from referral_sources", default=0) or 0
+    bureau_address_count = _try_db_value("select count(*) as c from bureau_addresses", default=0) or 0
+    email_template_count = _try_db_value("select count(*) as c from email_templates", default=0) or 0
+    letter_template_count = _try_db_value("select count(*) as c from letter_templates", default=0) or 0
+    recurring_count = _try_db_value("select count(*) as c from recurring_invoice_schedules where is_active = true", default=0) or 0
+    open_invoice_count = _try_db_value("select count(*) as c from client_invoices where lower(status) = 'unpaid'", default=0) or 0
+    sales_tax_rate_value = _try_db_value("select coalesce(setting_value,'0') from accounting_settings where setting_key = 'sales_tax_rate' limit 1", default='0') or '0'
+    invoice_default_message = _try_db_value("select coalesce(setting_value,'') from accounting_settings where setting_key = 'invoice_default_message' limit 1", default='') or ''
+
+    data = {
+        "credit_repair_configuration": {
+            "title": "Credit Repair Configuration",
+            "description": "Credit-repair-side business identity, contact defaults, intake requirements, and consultation/intake fields that affect the Credit Repair Dashboard and Client Dashboard workflows.",
+            "cards": [
+                {
+                    "title": "Current business identity",
+                    "items": [
+                        f"Company Name: {company_name}",
+                        f"Telephone Number: {phone_value}",
+                        f"Phone Type: {phone_type}",
+                        f"Email: {email_value}",
+                        f"Website: {website_value}",
+                        f"Fax Number: {fax_value}",
+                        f"Address: {' | '.join([x for x in [line1, line2, ', '.join([x for x in [city, state] if x]), zip_code] if x]) or 'Not yet configured'}",
+                    ],
+                    "meta": "This should become editable here instead of living only in environment variables or scattered settings."
+                },
+                {
+                    "title": "Intake / underwriting master layout",
+                    "items": [
+                        "Citizenship country / permanent resident / other-country citizenship",
+                        "Employment status / employer / position",
+                        "Student status / school / expected graduation",
+                        "Annual or household income",
+                        "Monthly mortgage / rent",
+                        "Homeowner yes/no",
+                        "Checking / savings / none",
+                    ],
+                    "meta": "These fields belong in the intake master plan and should feed consultation recommendations, credit product decisions, and future underwriting workflows."
+                },
+                {
+                    "title": "Portal / communication defaults",
+                    "items": [
+                        "Agreement + disclosures package defaults",
+                        "Right-to-cancel acknowledgement defaults",
+                        "Request-for-documents package defaults",
+                        "Default sender / communication settings",
+                        "Portal branding defaults",
+                    ],
+                    "meta": "These are not fully wired yet, but this is the correct permanent home for them."
+                },
+            ],
+        },
+        "billing_invoice_configuration": {
+            "title": "Billing & Invoice Configuration",
+            "description": "Invoice branding, numbering, reminder rules, recurring billing defaults, and the overall billing presentation layer.",
+            "cards": [
+                {
+                    "title": "Current billing snapshot",
+                    "items": [
+                        f"Recurring invoice schedules: {recurring_count}",
+                        f"Open invoices currently in the system: {open_invoice_count}",
+                        f"Invoice service items configured: {invoice_item_count}",
+                        f"Sales tax rate: {sales_tax_rate_value}%",
+                        f"Company logo path in environment: {'Configured' if COMPANY_LOGO_PATH else 'Not configured'}",
+                    ],
+                    "meta": "This is the foundation for billing configuration, not the full payment/reconciliation engine."
+                },
+                {
+                    "title": "Invoice layouts / branding",
+                    "items": [
+                        "Preset Layout 1",
+                        "Preset Layout 2",
+                        "Preset Layout 3",
+                        "Preset Layout 4",
+                        "Preset Layout 5",
+                        "Company logo / invoice footer / payment instructions",
+                    ],
+                    "meta": "Layouts should live under invoice templates, while active branding/rules should live here."
+                },
+                {
+                    "title": "Billing automation roadmap",
+                    "items": [
+                        "Recurring invoice defaults",
+                        "Zelle reminder timing",
+                        "Past-due notice defaults",
+                        "Receipt / confirmation defaults",
+                        "Cancellation / final billing defaults",
+                    ],
+                    "meta": "These should eventually drive the billing workflows instead of being handled ad hoc."
+                },
+            ],
+            "invoice_defaults": {
+                "sales_tax_rate": str(sales_tax_rate_value),
+                "invoice_default_message": invoice_default_message,
+            },
+            "tables": [
+                {
+                    "title": "Current invoice service items",
+                    "note": "Live rows from invoice_service_items.",
+                    "columns": ["Name", "Type", "Default Amount", "Active"],
+                    "rows": [
+                        [r.get("item_name") or "", r.get("invoice_type") or "", _money_display(r.get("default_amount")), "Yes" if r.get("is_active") else "No"]
+                        for r in _preview_invoice_service_items()
+                    ],
+                    "empty_text": "No invoice service items are configured yet."
+                }
+            ],
+        },
+        "credit_repair_tables_records": {
+            "title": "Credit Repair Tables & Records",
+            "description": "Reusable dispute-side master records so Credit Repair Dashboard and Client Dashboard workflows stay consistent.",
+            "cards": [
+                {
+                    "title": "Billing & invoicing records",
+                    "items": [
+                        f"Invoice Service Items ({invoice_item_count})",
+                        "Discount Records (planned)",
+                        "Payment Methods / Terms (planned)",
+                        "Merchant Service Records (planned)",
+                        "Card Network Fee Rates (planned under Accounting too)",
+                    ],
+                    "meta": "These are shared lists and should not be buried inside individual client records."
+                },
+                {
+                    "title": "Dispute records",
+                    "items": [
+                        f"Referral Partners ({referral_partner_count})",
+                        f"Referred By Sources ({referral_source_count})",
+                        f"Bureau Addresses ({bureau_address_count})",
+                        "Creditor Records / Disputed Item Creditors (needed next)",
+                        "Lender Records / Pre-Qualification Lenders (planned)",
+                        "Other Credit Bureau Records: LexisNexis / ChexSystems / etc. (planned)",
+                    ],
+                    "meta": "This is where reusable dispute-side records belong."
+                },
+            ],
+            "invoice_defaults": {
+                "sales_tax_rate": str(sales_tax_rate_value),
+                "invoice_default_message": invoice_default_message,
+            },
+            "tables": [
+                {
+                    "title": "Referral partners",
+                    "note": "Live rows from referral_partners.",
+                    "columns": ["Name", "Company", "Type", "Phone", "Email", "Active"],
+                    "rows": [
+                        [r.get("name") or "", r.get("company_name") or "", r.get("partner_type") or "", r.get("phone") or "", r.get("email") or "", "Yes" if r.get("is_active") else "No"]
+                        for r in _preview_referral_partners()
+                    ],
+                    "empty_text": "No referral partner records are configured yet."
+                },
+                {
+                    "title": "Referred By sources",
+                    "note": "Live rows from referral_sources. Edit or delete the master referral record here.",
+                    "columns": ["Name", "Company", "Type", "Phone", "Email", "Active", "Actions"],
+                    "safe_cells": True,
+                    "rows": _settings_referral_source_rows(),
+                    "empty_text": "No referred-by sources are configured yet."
+                },
+                {
+                    "title": "Bureau addresses",
+                    "note": "Live rows from bureau_addresses.",
+                    "columns": ["Bureau", "Address Type", "Name", "Line 1", "City", "State", "ZIP"],
+                    "rows": [
+                        [r.get("bureau") or "", r.get("address_type") or "", r.get("bureau_name") or "", r.get("line1") or "", r.get("city") or "", r.get("state") or "", r.get("zip") or ""]
+                        for r in _preview_bureau_addresses()
+                    ],
+                    "empty_text": "No bureau addresses are configured yet."
+                },
+            ],
+        },
+        "credit_repair_templates": {
+            "title": "Credit Repair Templates",
+            "description": "Credit-repair template libraries for dispute work, intake, client communication, and future presentation assets.",
+            "cards": [
+                {
+                    "title": "Current template counts",
+                    "items": [
+                        f"Email templates: {email_template_count}",
+                        f"Letter templates: {letter_template_count}",
+                        "Agreement / disclosure templates should live here",
+                        "Consultation summary templates should live here",
+                        "Presentation templates / upload folders should live here",
+                    ],
+                    "meta": "This is the library layer. Finished decks/materials belong in their own modules too."
+                },
+                {
+                    "title": "Dispute / client process templates",
+                    "items": [
+                        "Agreement Templates",
+                        "Disclosure Templates",
+                        "Welcome Email Templates",
+                        "Client Update Templates",
+                        "Dispute Letter Templates",
+                        "Consultation Summary Templates",
+                        "Client-Facing Dispute Report Templates",
+                    ],
+                    "meta": "These templates support your actual client workflow and should stay separate from billing templates."
+                },
+            ],
+            "invoice_defaults": {
+                "sales_tax_rate": str(sales_tax_rate_value),
+                "invoice_default_message": invoice_default_message,
+            },
+            "tables": [
+                {
+                    "title": "Email templates",
+                    "note": "Live rows from email_templates.",
+                    "columns": ["Name", "Preview"],
+                    "rows": [
+                        [r.get("name") or "", r.get("preview") or ""]
+                        for r in _preview_email_templates()
+                    ],
+                    "empty_text": "No email templates are configured yet."
+                },
+                {
+                    "title": "Letter templates",
+                    "note": "Live rows from letter_templates.",
+                    "columns": ["Name", "Group", "Letter Type", "Bureau", "Tone"],
+                    "rows": [
+                        [r.get("name") or "", r.get("template_group") or "", r.get("letter_type") or "", r.get("bureau") or "", str(r.get("tone_level") or "")]
+                        for r in _preview_letter_templates()
+                    ],
+                    "empty_text": "No letter templates are configured yet."
+                },
+            ],
+        },
+        "appearance": {
+            "title": "Appearance",
+            "description": "Software-wide visual settings for the staff side and future client portal presentation.",
+            "cards": [
+                {
+                    "title": "Theme controls",
+                    "items": [
+                        "Color Scheme",
+                        "Fonts",
+                        "Lobby look and feel",
+                        "Portal presentation style",
+                    ],
+                    "meta": "This is still a structural placeholder, but it is the correct permanent home for visual settings."
+                }
+            ],
+        },
+    }
+
+    data["credit_repair_configuration"]["title"] = "Credit Repair Configuration"
+    data["credit_repair_configuration"]["description"] = "Credit-repair-side business identity, consultation defaults, intake rules, and portal/client workflow settings."
+    data["billing_invoice_configuration"]["title"] = "Accounting Configuration"
+    data["billing_invoice_configuration"]["description"] = "Accounting and billing defaults, invoice behavior, reminders, and accounting-side presentation rules."
+
+    data["credit_repair_tables_records"] = {
+        "title": "Credit Repair Tables & Records",
+        "description": "Reusable dispute-side records. These tables stay available to the shared data layer even if the Credit Repair module is later locked for a workspace.",
+        "cards": [
+            {
+                "title": "Dispute-side records",
+                "items": [
+                    f"Referral Partners ({referral_partner_count})",
+                    f"Referred By Sources ({referral_source_count})",
+                    f"Bureau Addresses ({bureau_address_count})",
+                    "Creditor master records",
+                    "Lender / pre-qualification directories",
+                    "Other credit bureau directories (LexisNexis / ChexSystems / etc.)",
+                ],
+                "meta": "These are shared master records, but their primary maintenance home is Credit Repair Settings."
+            }
+        ],
+        "tables": [
+            {
+                "title": "Referral partners",
+                "note": "Live rows from referral_partners.",
+                "columns": ["Name", "Company", "Type", "Phone", "Email", "Active"],
+                "rows": [
+                    [r.get("name") or "", r.get("company_name") or "", r.get("partner_type") or "", r.get("phone") or "", r.get("email") or "", "Yes" if r.get("is_active") else "No"]
+                    for r in _preview_referral_partners()
+                ],
+                "empty_text": "No referral partner records are configured yet."
+            },
+            {
+                "title": "Referred By sources",
+                "note": "Live rows from referral_sources. Edit or delete the master referral record here.",
+                "columns": ["Name", "Company", "Type", "Phone", "Email", "Active", "Actions"],
+                "safe_cells": True,
+                "rows": _settings_referral_source_rows(),
+                "empty_text": "No referred-by sources are configured yet."
+            },
+            {
+                "title": "Bureau addresses",
+                "note": "Live rows from bureau_addresses.",
+                "columns": ["Bureau", "Address Type", "Name", "Line 1", "City", "State", "ZIP"],
+                "rows": [
+                    [r.get("bureau") or "", r.get("address_type") or "", r.get("bureau_name") or "", r.get("line1") or "", r.get("city") or "", r.get("state") or "", r.get("zip") or ""]
+                    for r in _preview_bureau_addresses()
+                ],
+                "empty_text": "No bureau addresses are configured yet."
+            },
+        ],
+    }
+
+    data["accounting_tables_records"] = {
+        "title": "Accounting Tables & Records",
+        "description": "Reusable accounting-side records. Shared tables remain usable by Accounting even when the Credit Repair module is disabled for a workspace.",
+        "cards": [
+            {
+                "title": "Accounting-side records",
+                "items": [
+                    f"Invoice Service Items ({invoice_item_count})",
+                    "Discount records",
+                    "Payment methods / billing terms",
+                    "Merchant service records",
+                    "Card network fee rates",
+                ],
+                "meta": "These are maintained from Accounting Settings because they power invoices, billing, and bookkeeping."
+            }
+        ],
+        "invoice_defaults": {
+            "sales_tax_rate": str(sales_tax_rate_value),
+            "invoice_default_message": invoice_default_message,
+        },
+        "tables": [
+            {
+                "title": "Current invoice service items",
+                "note": "Live rows from invoice_service_items.",
+                "columns": ["Name", "Type", "Default Amount", "Active"],
+                "rows": [
+                    [r.get("item_name") or "", r.get("invoice_type") or "", _money_display(r.get("default_amount")), "Yes" if r.get("is_active") else "No"]
+                    for r in _preview_invoice_service_items()
+                ],
+                "empty_text": "No invoice service items are configured yet."
+            }
+        ],
+    }
+
+    data["credit_repair_templates"] = {
+        "title": "Credit Repair Templates",
+        "description": "Credit-repair client workflow templates and dispute-side template libraries.",
+        "cards": [
+            {
+                "title": "Credit-repair template families",
+                "items": [
+                    f"Email templates: {email_template_count}",
+                    f"Letter templates: {letter_template_count}",
+                    "Agreement templates",
+                    "Disclosure templates",
+                    "Welcome email templates",
+                    "Client update templates",
+                    "Dispute letter templates",
+                    "Consultation summary templates",
+                ],
+                "meta": "These belong to Credit Repair Settings because they support intake, disputes, and client communication."
+            }
+        ],
+        "tables": [
+            {
+                "title": "Email templates",
+                "note": "Live rows from email_templates.",
+                "columns": ["Name", "Preview"],
+                "rows": [
+                    [r.get("name") or "", r.get("preview") or ""]
+                    for r in _preview_email_templates()
+                ],
+                "empty_text": "No email templates are configured yet."
+            },
+            {
+                "title": "Letter templates",
+                "note": "Live rows from letter_templates.",
+                "columns": ["Name", "Group", "Letter Type", "Bureau", "Tone"],
+                "rows": [
+                    [r.get("name") or "", r.get("template_group") or "", r.get("letter_type") or "", r.get("bureau") or "", str(r.get("tone_level") or "")]
+                    for r in _preview_letter_templates()
+                ],
+                "empty_text": "No letter templates are configured yet."
+            },
+        ],
+    }
+
+    data["accounting_templates"] = {
+        "title": "Accounting Templates",
+        "description": "Templates that support invoices, receipts, reminders, and accounting communications.",
+        "cards": [
+            {
+                "title": "Accounting template families",
+                "items": [
+                    "Invoice templates",
+                    "Receipt templates",
+                    "Billing reminder templates",
+                    "Past-due notice templates",
+                    "Statement / accounting communication templates",
+                ],
+                "meta": "These remain separate from dispute/client process templates so billing logic can evolve independently."
+            }
+        ],
+        "tables": [
+            {
+                "title": "Accounting template roadmap",
+                "note": "This is the planned accounting template layer.",
+                "columns": ["Template Family", "Primary Use"],
+                "rows": [
+                    ["Invoice templates", "Invoice issue / print / PDF layouts"],
+                    ["Receipt templates", "Payment confirmations and receipts"],
+                    ["Billing reminder templates", "Upcoming, due-now, and past-due notices"],
+                    ["Statement templates", "Customer statements and account summaries"],
+                ],
+                "empty_text": "No accounting templates are configured yet."
+            }
+        ],
+    }
+
+    data["appearance"]["title"] = "Global Theme System"
+    data["appearance"]["description"] = "Software-wide themes, palette tokens, and approved visual controls for Login, Lobby, Settings, dashboards, and module shells."
+
+    return data.get(section) or data['credit_repair_configuration']
+
+
+
+
+def _module_runtime_content(module_key: str) -> dict:
+    catalog = module_shell_catalog()
+    info = catalog[module_key]
+    runtime = {
+        "title": info["title"],
+        "description": info["description"],
+        "sections": info["sections"],
+        "summary_cards": [],
+        "callout": "",
+    }
+
+    if module_key == "credit_repair":
+        review_pending = _try_db_value("select count(*) as c from client_documents where lower(coalesce(review_status,'pending')) = 'pending'", default=0) or 0
+        upload_open = _try_db_value("select count(*) as c from client_upload_requests where lower(coalesce(status,'open')) = 'open'", default=0) or 0
+        followups_due = _try_db_value("select count(*) as c from client_followups where lower(coalesce(status,'open'))='open' and due_date is not null and due_date <= current_date + 7", default=0) or 0
+        active_clients = _try_db_value("select count(*) as c from clients where coalesce(is_active,true)=true", default=0) or 0
+        runtime["summary_cards"] = [
+            {"label": "Active Clients", "value": str(active_clients), "subtext": "Current active client records"},
+            {"label": "Review Queue", "value": str(review_pending), "subtext": "Documents pending review"},
+            {"label": "Open Upload Requests", "value": str(upload_open), "subtext": "Portal / upload-link requests still open"},
+            {"label": "Follow-Ups Due", "value": str(followups_due), "subtext": "Due within the next 7 days"},
+        ]
+        runtime["callout"] = "The Credit Repair Dashboard remains the operational center of the credit-repair side of the software. The Lobby is the entry point for all business and personal workspaces. Client Search and Create New Client stay inside the Credit Repair Dashboard for the selected business."
+
+    if module_key == "accounting":
+        open_invoice_count = _try_db_value("select count(*) as c from client_invoices where lower(coalesce(status,'')) = 'unpaid' and lower(coalesce(invoice_type,'')) not in ('monthly','recurring')", default=0) or 0
+        open_invoice_amount = _try_db_value("select coalesce(sum(amount),0) as total from client_invoices where lower(coalesce(status,'')) = 'unpaid' and lower(coalesce(invoice_type,'')) not in ('monthly','recurring')", default=0) or 0
+        recurring_invoice_count = _try_db_value("select count(*) as c from client_invoices where lower(coalesce(invoice_type,'')) in ('monthly','recurring')", default=0) or 0
+        payment_count = _try_db_value("select count(*) as c from payments", default=0) or 0
+        payment_total = _try_db_value("select coalesce(sum(amount),0) as total from payments", default=0) or 0
+        chart_count = _try_db_value("select count(*) as c from chart_of_accounts", default=0) or 0
+        active_recurring = _try_db_value("select count(*) as c from recurring_invoice_schedules where is_active = true", default=0) or 0
+
+        runtime["summary_cards"] = [
+            {"label": "Open Invoices", "value": str(open_invoice_count), "subtext": f"Open non-recurring balance {_money_display(open_invoice_amount)}"},
+            {"label": "Recurring", "value": str(recurring_invoice_count), "subtext": f"Active schedules {active_recurring}"},
+            {"label": "Payments Logged", "value": str(payment_count), "subtext": f"Total logged {_money_display(payment_total)}"},
+            {"label": "Chart Accounts", "value": str(chart_count), "subtext": "Bookkeeping structure records"},
+        ]
+        runtime["sections"] = module_shell_catalog()["accounting"]["sections"]
+        runtime["callout"] = "Accounting is now a standalone module. Sales holds invoices, recurring invoices, payments, customers, and products/services, while Bookkeeping holds transactions, reconciliation, and chart of accounts. Client Billing remains the fast operational screen for one client at a time."
+
+    elif module_key == "reports":
+        runtime["summary_cards"] = [
+            {"label": "Operational Focus", "value": "8+", "subtext": "Active clients, billing-day lists, follow-ups, redisputes, review queue, and more"},
+            {"label": "Financial Focus", "value": "7+", "subtext": "Payments, unpaid invoices, aging, processor fees, discounts, gross vs net"},
+        ]
+        runtime["callout"] = "Reports should eventually be exportable/printable and serve both daily operations and accountant-ready summaries."
+    elif module_key == "marketing":
+        runtime["callout"] = "Marketing will eventually handle opt-in/out, newsletters, campaign templates, partner materials, AI content planning, and social scheduling."
+    elif module_key == "presentations":
+        runtime["callout"] = "Presentations should support short/long/partner decks, export as PDF or locked PowerPoint, and email directly to clients."
+    elif module_key == "education":
+        runtime["callout"] = "Education should power both the staff library and the future client portal learning center."
+    elif module_key == "compliance":
+        runtime["callout"] = "Compliance / Legal should become the Useful / Relevant Information library for bureau links, CFPB resources, rules, disclosures, and state-by-state references."
+    elif module_key == "help":
+        runtime["callout"] = "Help belongs at the platform level and should eventually cover the Credit Repair Dashboard, billing, disputes, portal use, and staff workflows."
+
+    return runtime
+
+
+def render_settings_page(request: Request, section: str = "backup", message: str = "", error: str = "", extra_context: dict | None = None, scope: str = "global"):
+    current_profile = get_current_profile_context(request)
+    scope_meta = settings_scope_meta(scope)
+    allowed_sections = {s["key"] for s in settings_section_catalog(scope)}
+    default_section = next(iter(settings_section_catalog(scope)), {}).get("key", "backup")
+    section = section if section in allowed_sections else default_section
+    context = {
+        "request": request,
+        "page_title": scope_meta["page_title"],
+        "settings_subtitle": scope_meta["subtitle"],
+        "settings_base_href": scope_meta["base_href"],
+        "settings_scope": scope,
+        "active_module": "settings",
+        "active_section": section,
+        "settings_sections": settings_section_catalog(scope),
+        "settings_content": _settings_content_runtime(section),
+        "backup_history": list_backups(),
+        "message": message,
+        "error": error,
+        "current_client": get_current_client_context(request),
+        "current_profile": current_profile,
+        "current_theme": active_theme_background_for_request(request, "module", current_profile),
+        "active_theme_key": get_active_theme_key(request),
+        "theme_runtime": active_theme_runtime_for_request(request, "module", current_profile),
+        "theme_catalog": THEME_CATALOG,
+        "lobby_theme": get_lobby_theme(request),
+        "software_name": SOFTWARE_NAME,
+        "software_tagline": SOFTWARE_TAGLINE,
+        "active_theme_pack": get_theme_pack(THEME_PACK_LIBRARY, get_active_theme_key()),
+        "theme_pack_library": THEME_PACK_LIBRARY,
+    }
+    if extra_context:
+        context.update(extra_context)
+    return templates.TemplateResponse("settings.html", context)
+
+
+
+
+def get_software_registration_data() -> dict:
+    return {
+        'license_key': system_setting('license_key', ''),
+        'registration_name': system_setting('registration_name', ''),
+        'registration_company': system_setting('registration_company', ''),
+        'registration_address': system_setting('registration_address', ''),
+        'registration_phone': system_setting('registration_phone', ''),
+        'registration_email': system_setting('registration_email', ''),
+        'registration_website': system_setting('registration_website', ''),
+    }
+
+
+def _fetch_accounting_client_options(limit: int = 500, profile_id: str = '', profile_type: str = 'corporate') -> list[dict]:
+    pid = (profile_id or '').strip()
+    ptype = (profile_type or 'corporate').strip().lower() or 'corporate'
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select column_name
+                from information_schema.columns
+                where table_schema = 'public' and table_name = 'clients'
+                """
+            )
+            cols = {str(r[0]) for r in (cur.fetchall() or []) if r and r[0]}
+
+            def expr(column_name: str, fallback_sql: str = "''") -> str:
+                return column_name if column_name in cols else fallback_sql
+
+            email_expr = expr('primary_email', expr('email', "''"))
+            phone_expr = expr('phone', "''")
+            address1_expr = expr('address_line1', "''")
+            apt_expr = expr('apt_unit', "''")
+            city_expr = expr('city', "''")
+            state_expr = expr('state', "''")
+            zip_expr = expr('zip', expr('zip_code', "''"))
+            active_expr = expr('is_active', 'TRUE')
+            profile_id_expr = expr('business_profile_id', "''")
+            profile_type_expr = expr('business_profile_type', "'corporate'")
+
+            where_sql = ''
+            params = []
+            if pid:
+                where_sql = f" WHERE COALESCE({profile_id_expr}, '') = %s AND LOWER(COALESCE({profile_type_expr}, %s)) = %s"
+                params.extend([pid, ptype, ptype])
+
+            query = f"""
+                select id::text as id,
+                       trim(concat_ws(' ', nullif(first_name,''), nullif(last_name,''))) as name,
+                       coalesce({email_expr}, '') as email,
+                       coalesce({phone_expr}, '') as phone,
+                       coalesce({address1_expr}, '') as address_line1,
+                       coalesce({apt_expr}, '') as apt_unit,
+                       coalesce({city_expr}, '') as city,
+                       coalesce({state_expr}, '') as state,
+                       coalesce({zip_expr}, '') as zip,
+                       coalesce({active_expr}, TRUE) as is_active
+                from clients
+                {where_sql}
+                order by lower(coalesce(last_name,'')), lower(coalesce(first_name,''))
+                limit %s
+            """
+            params.append(limit)
+            cur.execute(query, tuple(params))
+            cols_out = [d[0] for d in (cur.description or [])]
+            return [dict(zip(cols_out, row)) for row in (cur.fetchall() or [])]
+    except Exception:
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _format_accounting_sidebar_groups(base_path: str = "/ui/accounting-dashboard") -> list[dict]:
+    groups = []
+    for sec in module_shell_catalog()["accounting"]["sections"]:
+        sec_key = sec.get("key") or sec.get("title", "").strip().lower().replace(" ", "_")
+        group = {
+            "key": sec_key,
+            "title": sec.get("title") or sec_key.replace("_", " ").title(),
+            "href": f"{base_path}?section={sec_key}",
+            "children": [],
+        }
+        for child in sec.get("children", []) or []:
+            child_key = child.get("key") or child.get("title", "").strip().lower().replace(" ", "_")
+            group["children"].append({
+                "key": child_key,
+                "title": child.get("title") or child_key.replace("_", " ").title(),
+                "href": f"{base_path}?section={sec_key}&subsection={child_key}",
+            })
+        groups.append(group)
+    return groups
+
+
+
+
+
+
+def ensure_accounting_settings_table(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS accounting_settings (
+            setting_key text PRIMARY KEY,
+            setting_value text,
+            updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+def get_accounting_sales_tax_rate(cur) -> Decimal:
+    ensure_accounting_settings_table(cur)
+    cur.execute("SELECT COALESCE(setting_value, '0') FROM accounting_settings WHERE setting_key = 'sales_tax_rate' LIMIT 1")
+    row = cur.fetchone()
+    return _safe_decimal(row[0] if row else '0')
+
+
+def set_accounting_sales_tax_rate(cur, rate_value) -> Decimal:
+    ensure_accounting_settings_table(cur)
+    rate = _safe_decimal(rate_value or '0')
+    if rate < Decimal('0.00'):
+        rate = Decimal('0.00')
+    cur.execute(
+        """
+        INSERT INTO accounting_settings (setting_key, setting_value, updated_at)
+        VALUES ('sales_tax_rate', %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (setting_key)
+        DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = CURRENT_TIMESTAMP
+        """,
+        (f'{rate:.4f}',)
+    )
+    return rate
+
+
+def get_accounting_text_setting(cur, key: str, default: str = '') -> str:
+    ensure_accounting_settings_table(cur)
+    cur.execute("SELECT COALESCE(setting_value, %s) FROM accounting_settings WHERE setting_key = %s LIMIT 1", (default, key))
+    row = cur.fetchone()
+    return str(row[0] if row else default or '')
+
+
+def set_accounting_text_setting(cur, key: str, value: str = '') -> str:
+    ensure_accounting_settings_table(cur)
+    cleaned = str(value or '').strip()
+    cur.execute(
+        """
+        INSERT INTO accounting_settings (setting_key, setting_value, updated_at)
+        VALUES (%s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (setting_key)
+        DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = CURRENT_TIMESTAMP
+        """,
+        (key, cleaned)
+    )
+    return cleaned
+
+
+def get_accounting_invoice_default_message(cur) -> str:
+    default = 'We accept payments by Zelle, Venmo, PayPal, Cash App, cash, Visa, Mastercard, Discover, or American Express.'
+    return get_accounting_text_setting(cur, 'invoice_default_message', default)
+
+
+def _next_run_by_frequency(start_dt: date, frequency: str) -> date:
+    freq = str(frequency or 'monthly').strip().lower()
+    if freq == 'weekly':
+        return start_dt + timedelta(days=7)
+    if freq == 'biweekly':
+        return start_dt + timedelta(days=14)
+    return add_months_preserve_day(start_dt, 1)
+
+
+def _invoice_line_is_product(line_item: dict) -> bool:
+    raw = str((line_item or {}).get('invoice_type') or '').strip().lower()
+    return raw == 'product'
+
+
+def _compute_invoice_tax(subtotal_amount: Decimal, discount_amount: Decimal, line_items: list[dict], sales_tax_rate: Decimal | None = None) -> tuple[Decimal, Decimal]:
+    subtotal_amount = _safe_decimal(subtotal_amount)
+    discount_amount = _safe_decimal(discount_amount)
+    taxable_base = subtotal_amount - discount_amount
+    if taxable_base < Decimal('0.00'):
+        taxable_base = Decimal('0.00')
+    if not any(_invoice_line_is_product(li) for li in (line_items or [])):
+        return Decimal('0.00'), taxable_base
+    rate = _safe_decimal(sales_tax_rate or '0')
+    tax_amount = (taxable_base * rate / Decimal('100.00')).quantize(Decimal('0.01')) if rate > 0 else Decimal('0.00')
+    final_amount = taxable_base + tax_amount
+    return tax_amount, final_amount
+
+def _mask_ssn_last4(value: str) -> str:
+    digits = only_digits(value or '')
+    if len(digits) >= 4:
+        return f"XXX-XX-{digits[-4:]}"
+    return ''
+
+
+def _accounting_rows_all_invoices(limit: int = 500, selected_client_id: str = '', sort_by: str = 'client_name', sort_dir: str = 'asc') -> list[dict]:
+    rows = _try_db_rows(
+        """
+        select i.id::text as id,
+               i.client_id::text as client_id,
+               coalesce(i.invoice_number,'') as invoice_number,
+               trim(concat_ws(' ', coalesce(c.first_name,''), coalesce(c.last_name,''))) as client_name,
+               coalesce(i.invoice_type,'') as invoice_type,
+               coalesce(i.status,'') as status,
+               i.issue_date as issue_date,
+               i.issue_date as invoice_date,
+               i.due_date,
+               coalesce(i.amount,0) as amount,
+               coalesce(i.item_description,'') as item_description
+        from client_invoices i
+        left join clients c on c.id = i.client_id
+        where lower(coalesce(i.invoice_type,'')) not in ('monthly','recurring')
+          and (%s = '' or i.client_id = %s::uuid)
+        limit %s
+        """,
+        (selected_client_id, selected_client_id, limit),
+    )
+    reverse = _accounting_normalize_sort_dir(sort_dir) == 'desc'
+    return sorted(rows, key=lambda r: _accounting_invoice_sort_value(r, sort_by), reverse=reverse)
+
+
+
+
+def _accounting_rows_all_recurring(selected_client_id: str = '', limit: int = 500) -> list[dict]:
+    return _try_db_rows(
+        """
+        select r.id::text as id,
+               trim(concat_ws(' ', coalesce(c.first_name,''), coalesce(c.last_name,''))) as client_name,
+               coalesce(i.invoice_number,'') as label,
+               coalesce(i.item_description,'Recurring Invoice') as description,
+               coalesce(i.amount,0) as amount,
+               coalesce(r.issue_day::text,'') as billing_day,
+               r.next_run_date,
+               coalesce(r.frequency,'monthly') as frequency,
+               coalesce(r.remaining_count::text,'') as remaining_count,
+               coalesce(r.is_active,false) as is_active
+        from recurring_invoice_schedules r
+        left join clients c on c.id = r.client_id
+        left join client_invoices i on i.id = r.source_invoice_id
+        where (%s = '' or r.client_id = %s::uuid)
+        order by lower(trim(concat_ws(' ', coalesce(c.last_name,''), coalesce(c.first_name,'')))), coalesce(r.next_run_date, current_date)
+        limit %s
+        """,
+        (selected_client_id, selected_client_id, limit),
+    )
+
+
+def _accounting_rows_payments(limit: int = 500) -> list[dict]:
+    return _try_db_rows(
+        """
+        select p.id::text as id,
+               p.payment_date,
+               trim(concat_ws(' ', coalesce(c.first_name,''), coalesce(c.last_name,''))) as client_name,
+               coalesce(p.amount,0) as amount,
+               coalesce(p.method,'') as method,
+               coalesce(p.purpose,'') as purpose,
+               coalesce(p.reference,'') as reference
+        from payments p
+        left join clients c on c.id = p.client_id
+        order by coalesce(p.payment_date, p.created_at::date) desc, p.created_at desc
+        limit %s
+        """,
+        (limit,),
+    )
+
+
+def _accounting_rows_customers(limit: int = 500) -> list[dict]:
+    return _try_db_rows(
+        """
+        select c.id::text as id,
+               trim(concat_ws(' ', coalesce(c.first_name,''), coalesce(c.last_name,''))) as client_name,
+               trim(concat_ws(', ',
+                    trim(concat_ws(' ', coalesce(c.address_line1,''), nullif(c.apt_unit,''))),
+                    trim(concat_ws(' ', nullif(c.city,''), nullif(c.state,''), nullif(c.zip_code,'')))
+               )) as residential_address,
+               coalesce(c.phone,'') as phone,
+               coalesce(c.primary_email, c.email, '') as email,
+               c.date_of_birth,
+               coalesce(c.ssn_last4,'') as ssn_last4,
+               coalesce(c.lifecycle_status,'') as lifecycle_status,
+               coalesce(c.is_active,true) as is_active
+        from clients c
+        order by lower(coalesce(c.last_name,'')), lower(coalesce(c.first_name,''))
+        limit %s
+        """,
+        (limit,),
+    )
+
+
+def _accounting_rows_services(limit: int = 500) -> list[dict]:
+    rows = []
+    try:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                items = fetch_invoice_items(cur, include_inactive=True)
+        finally:
+            conn.close()
+        rows = [item for item in items if str(item.get('invoice_type') or '') == 'service']
+    except Exception:
+        rows = []
+    return rows[:limit]
+
+
+def _accounting_rows_products(limit: int = 500) -> list[dict]:
+    rows = []
+    try:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                items = fetch_invoice_items(cur, include_inactive=True)
+        finally:
+            conn.close()
+        rows = [item for item in items if str(item.get('invoice_type') or '') == 'product']
+    except Exception:
+        rows = []
+    return rows[:limit]
+
+
+
+
+def _accounting_rows_discounts(limit: int = 500) -> list[dict]:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                items = fetch_invoice_items(cur, include_inactive=True)
+    except Exception:
+        return []
+    rows = [item for item in items if str(item.get('invoice_type') or '').startswith('discount_')]
+    rows.sort(key=lambda r: (str(r.get('item_name') or '').lower(), str(r.get('id') or '')))
+    return rows[:limit]
+
+
+def _accounting_rows_chart_of_accounts(limit: int = 500) -> list[dict]:
+    return _try_db_rows(
+        """
+        select id::text as id,
+               coalesce(account_code,'') as account_code,
+               coalesce(account_name,'') as account_name,
+               coalesce(account_type,'') as account_type,
+               coalesce(detail_type,'') as detail_type,
+               coalesce(is_active,true) as is_active
+        from chart_of_accounts
+        order by coalesce(account_code,''), lower(coalesce(account_name,''))
+        limit %s
+        """,
+        (limit,),
+    )
+
+
+
+def _accounting_edit_item(cur, item_id: str) -> dict:
+    item = fetch_invoice_item_by_id(cur, item_id)
+    return item or {}
+
+
+def _action_cell(actions: list[dict]) -> dict:
+    return {'type': 'actions', 'actions': actions}
+
+
+def _toggle_switch_cell(form_action: str, hidden_fields: dict, is_active: bool) -> dict:
+    return {
+        'type': 'toggle',
+        'form_action': form_action,
+        'hidden_fields': hidden_fields,
+        'is_active': bool(is_active),
+        'left_label': 'Deactivate',
+        'right_label': 'Activate',
+    }
+
+def _accounting_normalize_sort_dir(value: str | None) -> str:
+    return 'desc' if str(value or '').strip().lower() == 'desc' else 'asc'
+
+
+def _accounting_sort_link(section: str, subsection: str, sort_by: str, sort_dir: str, selected_client_id: str = '', extra: dict | None = None) -> str:
+    params = {'section': section, 'subsection': subsection, 'sort_by': sort_by, 'sort_dir': sort_dir}
+    if selected_client_id:
+        params['client_id'] = selected_client_id
+    if extra:
+        for k, v in extra.items():
+            if v not in (None, ''):
+                params[k] = v
+    return '/ui/accounting-dashboard?' + urlencode(params)
+
+
+def _accounting_sort_header(label: str, section: str, subsection: str, sort_key: str, current_sort_by: str, current_sort_dir: str, selected_client_id: str = '') -> dict:
+    return {
+        'type': 'sort_header',
+        'label': label,
+        'sort_key': sort_key,
+        'up_href': _accounting_sort_link(section, subsection, sort_key, 'asc', selected_client_id),
+        'down_href': _accounting_sort_link(section, subsection, sort_key, 'desc', selected_client_id),
+        'active_dir': current_sort_dir if current_sort_by == sort_key else '',
+    }
+
+
+def _accounting_invoice_sort_value(row: dict, sort_by: str):
+    sort_by = (sort_by or 'client_name').strip().lower()
+    if sort_by == 'invoice_date':
+        return row.get('invoice_date') or row.get('issue_date') or date.min
+    if sort_by == 'invoice_number':
+        return str(row.get('invoice_number') or '').lower()
+    if sort_by == 'due_date':
+        return row.get('due_date') or date.min
+    if sort_by == 'status':
+        return str(row.get('status') or '').lower()
+    if sort_by == 'amount':
+        try:
+            return Decimal(str(row.get('amount') or '0'))
+        except Exception:
+            return Decimal('0.00')
+    return str(row.get('client_name') or '').lower()
+
+
+def _accounting_invoice_headers(current_sort_by: str, current_sort_dir: str, selected_client_id: str = '') -> list:
+    return [
+        _accounting_sort_header('Client', 'sales', 'invoices', 'client_name', current_sort_by, current_sort_dir, selected_client_id),
+        _accounting_sort_header('Invoice Date', 'sales', 'invoices', 'invoice_date', current_sort_by, current_sort_dir, selected_client_id),
+        _accounting_sort_header('Invoice #', 'sales', 'invoices', 'invoice_number', current_sort_by, current_sort_dir, selected_client_id),
+        _accounting_sort_header('Due Date', 'sales', 'invoices', 'due_date', current_sort_by, current_sort_dir, selected_client_id),
+        _accounting_sort_header('Status', 'sales', 'invoices', 'status', current_sort_by, current_sort_dir, selected_client_id),
+        _accounting_sort_header('Amount', 'sales', 'invoices', 'amount', current_sort_by, current_sort_dir, selected_client_id),
+        'Description',
+        'Actions',
+    ]
+
+
+def _accounting_build_client_snapshot(profile: dict | None) -> dict:
+    profile = profile or {}
+    return {
+        'id': profile.get('id') or '',
+        'name': ' '.join([x for x in [profile.get('first_name'), profile.get('last_name')] if x]).strip(),
+        'address_line1': profile.get('address_line1') or '',
+        'apt_unit': profile.get('apt_unit') or '',
+        'city': profile.get('city') or '',
+        'state': profile.get('state') or '',
+        'zip': profile.get('zip') or profile.get('zip_code') or '',
+        'phone': profile.get('phone') or '',
+        'email': profile.get('primary_email') or profile.get('email') or '',
+    }
+
+
+def _accounting_invoice_edit_payload(invoice_id: str) -> dict:
+    invoice_id = str(invoice_id or '').strip()
+    if not invoice_id:
+        return {}
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ci.id::text, ci.client_id::text, COALESCE(ci.invoice_number,''), ci.issue_date::text,
+                       COALESCE(ci.item_description,''), COALESCE(ci.notes,''), COALESCE(ci.amount,0)::text
+                FROM client_invoices ci
+                WHERE ci.id = %s::uuid
+                """,
+                (invoice_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return {}
+            profile = fetch_client_profile(cur, row[1], include_sensitive=False) or {}
+            meta = _parse_discount_meta(row[5] or '')
+            line_items = meta.get('line_items') or []
+            normalized = []
+            for item in line_items:
+                invoice_type = str(item.get('invoice_type') or 'service').strip().lower()
+                item_kind = 'product' if invoice_type == 'product' else 'service'
+                qty_raw = item.get('quantity') or 1
+                try:
+                    qty = int(str(qty_raw))
+                except Exception:
+                    qty = 1
+                if qty <= 0:
+                    qty = 1
+                total_regular = _safe_decimal(item.get('regular_amount') or '0')
+                unit_amount = _safe_decimal(item.get('unit_amount') or (total_regular / qty if qty else total_regular))
+                normalized.append({
+                    'item_id': str(item.get('item_id') or ''),
+                    'item_kind': item_kind,
+                    'quantity': qty,
+                    'regular_amount': f"{unit_amount:.2f}",
+                    'discount_item_id': str(item.get('discount_item_id') or ''),
+                })
+            if not normalized:
+                normalized = [{'item_id': '', 'item_kind': 'service', 'quantity': 1, 'regular_amount': row[6] or '0.00', 'discount_item_id': ''}]
+            return {'invoice_id': row[0], 'client_id': row[1], 'invoice_number': row[2], 'invoice_date': row[3] or '', 'notes': meta.get('user_notes') or '', 'line_items': normalized, 'client': _accounting_build_client_snapshot(profile)}
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+
+def _accounting_focus_payload(section: str, subsection: str, selected_client_id: str = '', accounting_client: dict | None = None, show_add: bool = False, edit_item: dict | None = None, accounting_settings: dict | None = None, sort_by: str = 'client_name', sort_dir: str = 'asc', edit_invoice: dict | None = None) -> dict:
+    accounting_client = accounting_client or {}
+    accounting_settings = accounting_settings or {'sales_tax_rate': '0'}
+    edit_item = edit_item or {}
+    edit_invoice = edit_invoice or {}
+    selected_name = " ".join([x for x in [accounting_client.get('first_name'), accounting_client.get('last_name')] if x]).strip()
+    focus = {
+        'title': 'Accounting Dashboard',
+        'description': 'Standalone accounting workspace for system-wide financial management while client Billing stays fast for daily client work.',
+        'actions': [],
+        'tables': [],
+        'notes': [],
+        'forms': [],
+    }
+    if section == 'sales':
+        if subsection == 'invoices':
+            rows = _accounting_rows_all_invoices(selected_client_id=selected_client_id, sort_by=sort_by, sort_dir=sort_dir)
+            focus.update({
+                'title': 'Sales / Invoices',
+                'description': 'All actual invoices across all clients. Invoices generated by recurring setups land here as normal open invoices. You can create or edit invoices here without leaving Accounting.',
+                'actions': [
+                    {'label': 'Create Invoice', 'href': '', 'disabled': False},
+                    {'label': 'Billing & Invoice Configuration', 'href': '/ui/accounting-settings?section=billing_invoice_configuration', 'secondary': True},
+                    {'label': 'Go to Recurring Invoices', 'href': '/ui/accounting-dashboard?section=sales&subsection=recurring_invoices', 'secondary': True},
+                ],
+                'tables': [{
+                    'title': 'All Client Invoices',
+                    'columns': _accounting_invoice_headers(sort_by, sort_dir, selected_client_id),
+                    'rows': [[
+                        r.get('client_name') or '',
+                        format_short_date(r.get('invoice_date') or r.get('issue_date')),
+                        r.get('invoice_number') or '',
+                        format_short_date(r.get('due_date')),
+                        str(r.get('status') or '').title(),
+                        _money_display(r.get('amount')),
+                        r.get('item_description') or '',
+                        _action_cell([
+                            {'label': 'Edit', 'href': _accounting_sort_link('sales', 'invoices', sort_by, sort_dir, (r.get('client_id') or selected_client_id or ''), {'edit_invoice_id': r.get('id') or ''}), 'secondary': True, 'title': 'Edit this invoice in the Accounting popup.'},
+                            {'label': 'Delete', 'form_action': '/ui/accounting/delete-invoice', 'danger': True, 'confirm': 'Delete this invoice?', 'hidden_fields': {'invoice_id': r.get('id') or '', 'selected_client_id': selected_client_id, 'return_subsection': 'invoices'}},
+                        ])
+                    ] for r in rows],
+                    'empty_text': 'No non-recurring invoices found yet.'
+                }],
+                'notes': ['Invoices are listed alphabetically by client by default.', 'Click Edit to reopen the same popup used for creating an invoice.', 'Delete works directly from Accounting.']
+            })
+        elif subsection == 'recurring_invoices':
+            schedule_rows = _accounting_rows_all_recurring(selected_client_id=selected_client_id)
+            focus.update({
+                'title': 'Sales / Recurring Invoices',
+                'description': 'Recurring Invoices stores the future schedule/setup only. Actual invoices generated from those schedules land in Invoices as normal open invoices.',
+                'actions': [
+                    {'label': 'Create Recurring Invoice', 'href': '', 'disabled': False},
+                    {'label': 'Go to Invoices', 'href': '/ui/accounting-dashboard?section=sales&subsection=invoices', 'secondary': True},
+                ],
+                'tables': [
+                    {
+                        'title': 'Recurring Invoice Setups',
+                        'columns': ['Client', 'Label', 'Description', 'Amount', 'Billing Day', 'Frequency', 'Next Invoice Date', 'Status'],
+                        'rows': [[r.get('client_name') or '', r.get('label') or '', r.get('description') or '', _money_display(r.get('amount')), r.get('billing_day') or '', str(r.get('frequency') or 'monthly').replace('_',' ').title(), format_short_date(r.get('next_run_date')), 'Active' if r.get('is_active') else 'Inactive'] for r in schedule_rows],
+                        'empty_text': 'No recurring setups found yet.'
+                    }
+                ],
+            })
+        elif subsection == 'payments':
+            rows = _accounting_rows_payments()
+            focus.update({
+                'title': 'Sales / Payments',
+                'description': 'All logged payments across all clients.',
+                'tables': [{
+                    'title': 'All Payments',
+                    'columns': ['Date', 'Client', 'Amount', 'Method', 'Purpose', 'Reference'],
+                    'rows': [[format_short_date(r.get('payment_date')), r.get('client_name') or '', _money_display(r.get('amount')), r.get('method') or '', r.get('purpose') or '', r.get('reference') or ''] for r in rows],
+                    'empty_text': 'No payments found yet.'
+                }],
+            })
+        elif subsection == 'customers':
+            rows = _accounting_rows_customers()
+            focus.update({
+                'title': 'Sales / Customers',
+                'description': 'Customer workspace for quick client access from Accounting. This view is intentionally limited to core identity/contact fields.',
+                'actions': [
+                    {'label': 'Search Client', 'href': '/ui/credit-repair-dashboard', 'secondary': True},
+                    {'label': 'Add New Client', 'href': '/ui/client/new', 'secondary': True},
+                    {'label': 'Edit Selected Client', 'href': f'/ui/client/{selected_client_id}/edit' if selected_client_id else '', 'disabled': not selected_client_id},
+                ],
+                'tables': [{
+                    'title': 'Customers / Clients',
+                    'columns': ['Client', 'Residential Address', 'Phone', 'Email', 'DOB', 'SSN', 'Status', 'Active'],
+                    'rows': [[r.get('client_name') or '', r.get('residential_address') or '', r.get('phone') or '', r.get('email') or '', format_short_date(r.get('date_of_birth')), _mask_ssn_last4(r.get('ssn_last4') or ''), r.get('lifecycle_status') or '', 'Yes' if r.get('is_active') else 'No'] for r in rows],
+                    'empty_text': 'No customers found yet.'
+                }],
+                'notes': ['Keep this view limited to name, address, phone, email, date of birth, and SSN visibility.', 'Use the Credit Repair Dashboard for the full client workflow.'],
+            })
+        elif subsection in {'services', 'products_services'}:
+            rows = _accounting_rows_services()
+            active_rows = [r for r in rows if bool(r.get('is_active'))]
+            inactive_rows = [r for r in rows if not bool(r.get('is_active'))]
+            focus.update({
+                'title': 'Sales / Services',
+                'description': 'Services are your non-taxable credit repair and support services. Use the switch to deactivate a service instead of deleting it if you may use it again later.',
+                'actions': [
+                    {'label': 'Add Service', 'href': f"/ui/accounting-dashboard?section=sales&subsection=services{'&client_id=' + selected_client_id if selected_client_id else ''}&show_add=1"},
+                    {'label': 'Go to Products', 'href': f"/ui/accounting-dashboard?section=sales&subsection=products{'&client_id=' + selected_client_id if selected_client_id else ''}", 'secondary': True},
+                    {'label': 'Go to Discounts', 'href': f"/ui/accounting-dashboard?section=sales&subsection=discounts{'&client_id=' + selected_client_id if selected_client_id else ''}", 'secondary': True},
+                ],
+                'tables': [
+                    {
+                        'title': 'Active Services',
+                        'columns': ['Name', 'Description', 'Default Amount', 'Status', 'Actions'],
+                        'rows': [[
+                            r.get('item_name') or '',
+                            r.get('default_description') or '',
+                            r.get('price_display') or _money_display(r.get('default_amount')),
+                            _toggle_switch_cell('/ui/accounting/toggle-invoice-item-active', {'item_id': r.get('id') or '', 'selected_client_id': selected_client_id, 'return_subsection': 'services'}, bool(r.get('is_active'))),
+                            _action_cell([
+                                {'label': 'Edit', 'href': f"/ui/accounting-dashboard?section=sales&subsection=services{'&client_id=' + selected_client_id if selected_client_id else ''}&show_add=1&edit_item_id={r.get('id') or ''}", 'secondary': True},
+                                {'label': 'Delete', 'form_action': '/ui/accounting/delete-invoice-item', 'danger': True, 'confirm': 'Delete this service?', 'hidden_fields': {'item_id': r.get('id') or '', 'selected_client_id': selected_client_id, 'return_subsection': 'services'}},
+                            ])
+                        ] for r in active_rows],
+                        'empty_text': 'No active services found yet.'
+                    },
+                    {
+                        'title': 'Inactive Services',
+                        'columns': ['Name', 'Description', 'Default Amount', 'Status', 'Actions'],
+                        'rows': [[
+                            r.get('item_name') or '',
+                            r.get('default_description') or '',
+                            r.get('price_display') or _money_display(r.get('default_amount')),
+                            _toggle_switch_cell('/ui/accounting/toggle-invoice-item-active', {'item_id': r.get('id') or '', 'selected_client_id': selected_client_id, 'return_subsection': 'services'}, bool(r.get('is_active'))),
+                            _action_cell([
+                                {'label': 'Edit', 'href': f"/ui/accounting-dashboard?section=sales&subsection=services{'&client_id=' + selected_client_id if selected_client_id else ''}&show_add=1&edit_item_id={r.get('id') or ''}", 'secondary': True},
+                                {'label': 'Delete', 'form_action': '/ui/accounting/delete-invoice-item', 'danger': True, 'confirm': 'Delete this service?', 'hidden_fields': {'item_id': r.get('id') or '', 'selected_client_id': selected_client_id, 'return_subsection': 'services'}},
+                            ])
+                        ] for r in inactive_rows],
+                        'empty_text': 'No inactive services found.'
+                    },
+                ],
+                'forms': ([{
+                    'title': ('Edit Service' if edit_item else 'Add Service'),
+                    'action': '/ui/accounting/save-invoice-item',
+                    'submit_label': ('Update Service' if edit_item else 'Save Service'),
+                    'cancel_href': f"/ui/accounting-dashboard?section=sales&subsection=services{'&client_id=' + selected_client_id if selected_client_id else ''}",
+                    'hidden_fields': {
+                        'selected_client_id': selected_client_id,
+                        'return_subsection': 'services',
+                        'item_kind': 'service',
+                        'item_id': edit_item.get('id') or '',
+                    },
+                    'fields': [
+                        {'name': 'item_name', 'label': 'Service Name', 'type': 'text', 'required': True, 'placeholder': 'Standard credit repair monthly service', 'value': edit_item.get('item_name') or ''},
+                        {'name': 'default_amount', 'label': 'Default Amount', 'type': 'number', 'step': '0.01', 'required': True, 'placeholder': '0.00', 'value': str(edit_item.get('default_amount') or '')},
+                        {'name': 'default_description', 'label': 'Default Description', 'type': 'textarea', 'placeholder': 'Appears on invoices by default', 'value': edit_item.get('default_description') or ''}
+                    ]
+                }] if show_add else []),
+                'notes': ['Services are non-taxable by default in your workflow.', 'Use the red/green switch to deactivate or reactivate a service without deleting it.'],
+            })
+        elif subsection == 'products':
+            rows = _accounting_rows_products()
+            active_rows = [r for r in rows if bool(r.get('is_active'))]
+            inactive_rows = [r for r in rows if not bool(r.get('is_active'))]
+            focus.update({
+                'title': 'Sales / Products',
+                'description': 'Products stay separate from services because product invoices can trigger sales tax. Use the switch to deactivate a product and keep it in the inactive list for later reactivation.',
+                'actions': [
+                    {'label': 'Add Product', 'href': f"/ui/accounting-dashboard?section=sales&subsection=products{'&client_id=' + selected_client_id if selected_client_id else ''}&show_add=1"},
+                    {'label': 'Go to Services', 'href': f"/ui/accounting-dashboard?section=sales&subsection=services{'&client_id=' + selected_client_id if selected_client_id else ''}", 'secondary': True},
+                    {'label': 'Go to Discounts', 'href': f"/ui/accounting-dashboard?section=sales&subsection=discounts{'&client_id=' + selected_client_id if selected_client_id else ''}", 'secondary': True},
+                ],
+                'tables': [
+                    {
+                        'title': 'Active Products',
+                        'columns': ['Name', 'Description', 'Default Amount', 'Taxable', 'Status', 'Actions'],
+                        'rows': [[
+                            r.get('item_name') or '',
+                            r.get('default_description') or '',
+                            r.get('price_display') or _money_display(r.get('default_amount')),
+                            'Yes',
+                            _toggle_switch_cell('/ui/accounting/toggle-invoice-item-active', {'item_id': r.get('id') or '', 'selected_client_id': selected_client_id, 'return_subsection': 'products'}, bool(r.get('is_active'))),
+                            _action_cell([
+                                {'label': 'Edit', 'href': f"/ui/accounting-dashboard?section=sales&subsection=products{'&client_id=' + selected_client_id if selected_client_id else ''}&show_add=1&edit_item_id={r.get('id') or ''}", 'secondary': True},
+                                {'label': 'Delete', 'form_action': '/ui/accounting/delete-invoice-item', 'danger': True, 'confirm': 'Delete this product?', 'hidden_fields': {'item_id': r.get('id') or '', 'selected_client_id': selected_client_id, 'return_subsection': 'products'}},
+                            ])
+                        ] for r in active_rows],
+                        'empty_text': 'No active products found yet.'
+                    },
+                    {
+                        'title': 'Inactive Products',
+                        'columns': ['Name', 'Description', 'Default Amount', 'Taxable', 'Status', 'Actions'],
+                        'rows': [[
+                            r.get('item_name') or '',
+                            r.get('default_description') or '',
+                            r.get('price_display') or _money_display(r.get('default_amount')),
+                            'Yes',
+                            _toggle_switch_cell('/ui/accounting/toggle-invoice-item-active', {'item_id': r.get('id') or '', 'selected_client_id': selected_client_id, 'return_subsection': 'products'}, bool(r.get('is_active'))),
+                            _action_cell([
+                                {'label': 'Edit', 'href': f"/ui/accounting-dashboard?section=sales&subsection=products{'&client_id=' + selected_client_id if selected_client_id else ''}&show_add=1&edit_item_id={r.get('id') or ''}", 'secondary': True},
+                                {'label': 'Delete', 'form_action': '/ui/accounting/delete-invoice-item', 'danger': True, 'confirm': 'Delete this product?', 'hidden_fields': {'item_id': r.get('id') or '', 'selected_client_id': selected_client_id, 'return_subsection': 'products'}},
+                            ])
+                        ] for r in inactive_rows],
+                        'empty_text': 'No inactive products found.'
+                    },
+                ],
+                'forms': ([{
+                    'title': ('Edit Product' if edit_item else 'Add Product'),
+                    'action': '/ui/accounting/save-invoice-item',
+                    'submit_label': ('Update Product' if edit_item else 'Save Product'),
+                    'cancel_href': f"/ui/accounting-dashboard?section=sales&subsection=products{'&client_id=' + selected_client_id if selected_client_id else ''}",
+                    'hidden_fields': {
+                        'selected_client_id': selected_client_id,
+                        'return_subsection': 'products',
+                        'item_kind': 'product',
+                        'item_id': edit_item.get('id') or '',
+                    },
+                    'fields': [
+                        {'name': 'item_name', 'label': 'Product Name', 'type': 'text', 'required': True, 'placeholder': 'Physical planner / binder / kit', 'value': edit_item.get('item_name') or ''},
+                        {'name': 'default_amount', 'label': 'Default Amount', 'type': 'number', 'step': '0.01', 'required': True, 'placeholder': '0.00', 'value': str(edit_item.get('default_amount') or '')},
+                        {'name': 'default_description', 'label': 'Default Description', 'type': 'textarea', 'placeholder': 'Appears on invoices by default', 'value': edit_item.get('default_description') or ''}
+                    ]
+                }] if show_add else []),
+                'notes': ['Products are separated from services because they can trigger sales tax on invoices.', 'Use the red/green switch to move products between the active and inactive lists.'],
+            })
+        elif subsection == 'discounts':
+            rows = _accounting_rows_discounts()
+            focus.update({
+                'title': 'Sales / Discounts',
+                'description': 'Discounts are separated from Services and Products and listed here as their own sales records.',
+                'actions': [
+                    {'label': 'Add Discount', 'href': f"/ui/accounting-dashboard?section=sales&subsection=discounts{'&client_id=' + selected_client_id if selected_client_id else ''}&show_add=1"},
+                    {'label': 'Go to Services', 'href': f"/ui/accounting-dashboard?section=sales&subsection=services{'&client_id=' + selected_client_id if selected_client_id else ''}", 'secondary': True},
+                    {'label': 'Go to Products', 'href': f"/ui/accounting-dashboard?section=sales&subsection=products{'&client_id=' + selected_client_id if selected_client_id else ''}", 'secondary': True},
+                ],
+                'tables': [{
+                    'title': 'Discounts',
+                    'columns': ['Name', 'Description', 'Discount Type', 'Default Amount', 'Active', 'Actions'],
+                    'rows': [[r.get('item_name') or '', r.get('default_description') or '', 'Percentage' if r.get('discount_mode') == 'percent' else 'Fixed amount', (str(r.get('default_amount') or '') + '%' if r.get('discount_mode') == 'percent' else (r.get('price_display') or _money_display(r.get('default_amount')))), 'Yes' if r.get('is_active') else 'No', _action_cell([{'label': 'Edit', 'href': f"/ui/accounting-dashboard?section=sales&subsection=discounts{'&client_id=' + selected_client_id if selected_client_id else ''}&show_add=1&edit_item_id={r.get('id') or ''}", 'secondary': True}, {'label': 'Delete', 'form_action': '/ui/accounting/delete-invoice-item', 'danger': True, 'confirm': 'Delete this discount?', 'hidden_fields': {'item_id': r.get('id') or '', 'selected_client_id': selected_client_id, 'return_subsection': 'discounts'}}]) ] for r in rows],
+                    'empty_text': 'No discounts found yet.'
+                }],
+                'forms': ([{
+                    'title': ('Edit Discount' if edit_item else 'Add Discount'),
+                    'action': '/ui/accounting/save-invoice-item',
+                    'submit_label': ('Update Discount' if edit_item else 'Save Discount'),
+                    'cancel_href': f"/ui/accounting-dashboard?section=sales&subsection=discounts{'&client_id=' + selected_client_id if selected_client_id else ''}",
+                    'hidden_fields': {
+                        'selected_client_id': selected_client_id,
+                        'return_subsection': 'discounts',
+                        'item_kind': 'discount',
+                        'item_id': edit_item.get('id') or '',
+                    },
+                    'fields': [
+                        {'name': 'item_name', 'label': 'Discount Name', 'type': 'text', 'required': True, 'placeholder': 'Referral discount', 'value': edit_item.get('item_name') or ''},
+                        {'name': 'discount_mode', 'label': 'Discount Type', 'type': 'select', 'required': True, 'options': [('fixed', 'Fixed amount'), ('percent', 'Percent')], 'value': edit_item.get('discount_mode') or 'fixed'},
+                        {'name': 'default_amount', 'label': 'Default Amount', 'type': 'number', 'step': '0.01', 'required': True, 'placeholder': '0.00', 'value': str(edit_item.get('default_amount') or '')},
+                        {'name': 'default_description', 'label': 'Default Description', 'type': 'textarea', 'placeholder': 'Appears on invoices by default', 'value': edit_item.get('default_description') or ''}
+                    ]
+                }] if show_add else []),
+                'notes': ['Services and Products remain separate from Discounts.'],
+            })
+        elif subsection == 'customer_statements':
+            focus.update({
+                'title': 'Sales / Customer Statements',
+                'description': 'Customer statements will be generated here once statement logic is built.',
+                'notes': ['Future: statement date range, open balance, payment history, PDF export.'],
+            })
+        elif subsection == 'estimates':
+            focus.update({
+                'title': 'Sales / Estimates',
+                'description': 'Estimate/quote workspace placeholder created under Sales.',
+                'notes': ['Future: quote templates, conversion from estimate to invoice, approval flow.'],
+            })
+        else:
+            focus.update({
+                'title': 'Sales',
+                'description': 'Sales contains Estimates, Invoices, Payments, Recurring Invoices, Customer Statements, Customers, Services, Products, and Discounts.',
+                'notes': ['Recurring Invoices is the setup/schedule only. Generated invoices land in Invoices as normal open invoices.', 'Client Billing remains the fast operational screen for a single client.'],
+            })
+    elif section == 'bookkeeping':
+        if subsection == 'chart_of_accounts':
+            rows = _accounting_rows_chart_of_accounts()
+            focus.update({
+                'title': 'Bookkeeping / Chart of Accounts',
+                'description': 'Chart of Accounts now lives under Bookkeeping.',
+                'tables': [{
+                    'title': 'Chart of Accounts',
+                    'columns': ['Code', 'Account Name', 'Account Type', 'Detail Type', 'Active'],
+                    'rows': [[r.get('account_code') or '', r.get('account_name') or '', r.get('account_type') or '', r.get('detail_type') or '', 'Yes' if r.get('is_active') else 'No'] for r in rows],
+                    'empty_text': 'No chart-of-accounts records found yet.'
+                }],
+                'notes': ['You said you already have a chart-of-accounts list. This is the menu it belongs in.'],
+            })
+        elif subsection == 'transactions':
+            focus.update({
+                'title': 'Bookkeeping / Transactions',
+                'description': 'Transaction ledger shell. Imported bank activity, manual adjustments, and linked accounting events will live here.',
+                'notes': ['Next layer: transaction table and source links.', 'Next layer: invoice/payment/deposit cross-reference.'],
+            })
+        elif subsection == 'reconciliation':
+            focus.update({
+                'title': 'Bookkeeping / Reconciliation',
+                'description': 'Reconciliation shell for matching transactions, invoices, payments, and deposits.',
+                'notes': ['Next layer: bank statement period workspace.', 'Next layer: unmatched difference tracking.'],
+            })
+        else:
+            focus.update({
+                'title': 'Bookkeeping',
+                'description': 'Bookkeeping contains Transactions, Reconciliation, and Chart of Accounts.',
+            })
+    elif section == 'banking':
+        focus.update({
+            'title': 'Banking',
+            'description': 'Banking will hold bank accounts, deposits, imports, and cash-management tools.',
+            'notes': ['Next layer: deposit batches and bank import review.'],
+        })
+    elif section == 'payroll':
+        focus.update({
+            'title': 'Payroll',
+            'description': 'Payroll shell created. Employees, contractors, payroll runs, and payroll liabilities can land here later.',
+        })
+    elif section == 'accounting_reports':
+        focus.update({
+            'title': 'Accounting Reports',
+            'description': 'Accounting reports live here separately from operational Credit Repair Dashboard reports.',
+            'notes': ['Next layer: A/R aging, payments by method, deposit summaries, sales by service, P&L light.'],
+        })
+    else:
+        recent_invoices = _preview_recent_invoices()
+        recent_payments = _preview_recent_payments()
+        focus.update({
+            'title': 'Accounting Dashboard',
+            'description': 'System-wide accounting dashboard for invoices, recurring billing, payments, deposits, and reconciliation.',
+            'tables': [
+                {'title': 'Recent Invoices', 'columns': ['Client', 'Invoice Date', 'Invoice #', 'Due Date', 'Status', 'Amount'], 'rows': [[r.get('client_name') or '', format_short_date(r.get('invoice_date') or r.get('issue_date')), r.get('invoice_number') or '', format_short_date(r.get('due_date')), str(r.get('status') or '').title(), _money_display(r.get('amount'))] for r in sorted(recent_invoices, key=lambda x: str(x.get('client_name') or '').lower())], 'empty_text': 'No invoices found yet.'},
+                {'title': 'Recent Payments', 'columns': ['Date', 'Client', 'Amount', 'Method', 'Purpose', 'Reference'], 'rows': [[format_short_date(r.get('payment_date')), r.get('client_name') or '', _money_display(r.get('amount')), r.get('method') or '', r.get('purpose') or '', r.get('reference') or ''] for r in recent_payments], 'empty_text': 'No payments found yet.'},
+            ],
+            'notes': ['Sales now holds Invoices, Payments, Recurring Invoices, Customers, Services, Products, and Discounts.', 'Bookkeeping holds Transactions, Reconciliation, and Chart of Accounts.'],
+        })
+    if selected_name:
+        focus['selected_client_name'] = selected_name
+    return focus
+
+
+def render_accounting_module(request: Request, client_id: str = '', launch: str = '', message: str = '', error: str = ''):
+    runtime = _module_runtime_content('accounting')
+    message = message or (request.query_params.get('message') or '').strip()
+    error = error or (request.query_params.get('error') or '').strip()
+    current_client = get_current_client_context(request)
+    current_profile = get_current_profile_context(request)
+    profile_id = (current_profile.get('id') or '').strip() if current_profile else ''
+    profile_type = (current_profile.get('type') or 'corporate').strip().lower() if current_profile else 'corporate'
+    selected_client_id = (client_id or request.query_params.get('client_id') or current_client.get('id') or '').strip()
+    selected_section = (request.query_params.get('section') or 'dashboard').strip().lower()
+    selected_subsection = (request.query_params.get('subsection') or '').strip().lower()
+    edit_corporate_id = (request.query_params.get('edit_corporate_id') or '').strip()
+    open_editor = (request.query_params.get('open_editor') or '').strip()
+    query_items = []
+    try:
+        query_items = list(request.query_params.multi_items())
+    except Exception:
+        query_items = list(request.query_params.items())
+    filtered_items = [
+        (k, v)
+        for (k, v) in query_items
+        if k not in {'edit_corporate_id', 'edit_personal_id', 'open_editor', 'return_to', 'profile_id', 'personal_profile_id'}
+    ]
+    current_return_target = request.url.path + (("?" + urlencode(filtered_items, doseq=True)) if filtered_items else '')
+    requested_return_to = (request.query_params.get('return_to') or '').strip()
+    effective_return_target = _safe_ui_return_target(requested_return_to or current_return_target, current_return_target or '/ui/accounting-dashboard')
+    modal_return_target = _safe_ui_return_target(requested_return_to, effective_return_target)
+    edit_corporate_profile = {}
+    client_options = _fetch_accounting_client_options(profile_id=profile_id, profile_type=profile_type)
+    accounting_client = {}
+    accounting_settings = {'sales_tax_rate': '0'}
+    edit_item = {}
+    edit_item_id = (request.query_params.get('edit_item_id') or '').strip()
+    accounting_invoice_items = []
+    accounting_discount_items = []
+    invoice_default_message = ''
+    edit_invoice_id = (request.query_params.get('edit_invoice_id') or '').strip()
+    edit_invoice = {}
+    sort_by = (request.query_params.get('sort_by') or 'client_name').strip().lower()
+    sort_dir = _accounting_normalize_sort_dir(request.query_params.get('sort_dir'))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            ensure_default_invoice_items(cur)
+            accounting_settings = {'sales_tax_rate': f"{get_accounting_sales_tax_rate(cur):.4f}"}
+            invoice_default_message = get_accounting_invoice_default_message(cur)
+            all_items = fetch_invoice_items(cur, include_inactive=False)
+            accounting_invoice_items = [i for i in all_items if not bool(i.get('is_discount'))]
+            accounting_discount_items = [i for i in all_items if bool(i.get('is_discount'))]
+            if selected_client_id:
+                accounting_client = fetch_client_profile(cur, selected_client_id, include_sensitive=False) or {}
+            if edit_item_id:
+                edit_item = _accounting_edit_item(cur, edit_item_id)
+            if edit_invoice_id:
+                edit_invoice = _accounting_invoice_edit_payload(edit_invoice_id)
+                if edit_invoice and not selected_client_id:
+                    selected_client_id = str(edit_invoice.get('client_id') or '').strip()
+                    if selected_client_id:
+                        accounting_client = fetch_client_profile(cur, selected_client_id, include_sensitive=False) or accounting_client
+    sidebar_groups = _format_accounting_sidebar_groups()
+    valid_sections = {g['key'] for g in sidebar_groups}
+    if selected_section not in valid_sections:
+        selected_section = 'dashboard'
+    if not selected_subsection:
+        default_map = {
+            'dashboard': '',
+            'sales': 'invoices',
+            'bookkeeping': 'transactions',
+            'banking': '',
+            'payroll': '',
+            'accounting_reports': '',
+        }
+        selected_subsection = default_map.get(selected_section, '')
+    valid_children = {c['key'] for g in sidebar_groups if g['key'] == selected_section for c in g.get('children', [])}
+    if selected_subsection and valid_children and selected_subsection not in valid_children:
+        selected_subsection = next(iter(valid_children)) if valid_children else ''
+    show_add = (request.query_params.get('show_add') or '').strip().lower() in {'1', 'true', 'yes'}
+    focus = _accounting_focus_payload(selected_section, selected_subsection, selected_client_id, accounting_client, show_add=show_add, edit_item=edit_item, accounting_settings=accounting_settings, sort_by=sort_by, sort_dir=sort_dir, edit_invoice=edit_invoice)
+    is_hybrid_business = bool(current_profile and current_profile.get('type') != 'personal' and str(current_profile.get('module_mode') or current_profile.get('mode') or '').strip().lower() == 'credit_repair_accounting')
+    local_nav = []
+    if is_hybrid_business:
+        local_nav.append({'key': 'credit_repair', 'label': 'Credit Repair Dashboard', 'href': f"/ui/credit-repair-dashboard?profile_id={quote_plus(profile_id)}" if profile_id else '/ui/credit-repair-dashboard'})
+    local_nav.extend([
+        {'key': 'accounting', 'label': 'Accounting Dashboard', 'href': f"/ui/accounting-dashboard?{'personal_profile_id' if profile_type == 'personal' else 'profile_id'}={quote_plus(profile_id)}" if profile_id else '/ui/accounting-dashboard'},
+        {'key': 'reports', 'label': 'Reports', 'href': '/ui/reports'},
+        {'key': 'settings', 'label': 'Global Settings', 'href': '/ui/global-settings?section=software_registration'},
+        {'key': 'logout', 'label': 'Log Out', 'href': '/ui/logout'},
+    ])
+    if open_editor == 'corporate' and edit_corporate_id:
+        edit_corporate_profile = fetch_corporate_profile(edit_corporate_id) or {}
+        if not edit_corporate_profile and current_profile and str(current_profile.get('id') or '') == edit_corporate_id:
+            edit_corporate_profile = dict(current_profile)
+    return templates.TemplateResponse(
+        'module_shell.html',
+        {
+            'request': request,
+            'active_module': 'accounting',
+            'page_title': current_profile.get('business_name') or current_profile.get('full_name') or current_profile.get('name') or runtime['title'],
+            'module_description': runtime['description'],
+            'module_sections': runtime['sections'],
+            'module_sidebar_groups': sidebar_groups,
+            'selected_section': selected_section,
+            'selected_subsection': selected_subsection,
+            'module_focus': focus,
+            'summary_cards': runtime.get('summary_cards', []),
+            'module_callout': runtime.get('callout', ''),
+            'current_client': current_client,
+            'current_profile': current_profile,
+            'current_theme': active_theme_for_request(request, current_profile),
+            'theme_catalog': THEME_CATALOG,
+            'lobby_theme': get_lobby_theme(request),
+            'software_name': SOFTWARE_NAME,
+            'software_tagline': SOFTWARE_TAGLINE,
+            'parent_label': 'Lobby',
+            'parent_href': '/ui/lobby',
+            'local_nav': local_nav,
+            'message': message,
+            'error': error,
+            'accounting_client_options': client_options,
+            'accounting_selected_client_id': selected_client_id,
+            'accounting_client': accounting_client,
+            'accounting_launch': launch or request.query_params.get('launch') or '',
+            'accounting_settings': accounting_settings,
+            'accounting_invoice_items': accounting_invoice_items,
+            'accounting_discount_items': accounting_discount_items,
+            'accounting_invoice_default_message': invoice_default_message,
+            'accounting_sales_tax_rate': accounting_settings.get('sales_tax_rate', '0'),
+            'today_iso': date.today().isoformat(),
+            'accounting_edit_invoice': edit_invoice,
+            'accounting_sort_by': sort_by,
+            'accounting_sort_dir': sort_dir,
+            'accounting_page_title': (focus.get('title') if isinstance(focus, dict) and focus.get('title') else runtime['title']),
+            'edit_corporate_profile': edit_corporate_profile,
+            'open_editor': open_editor,
+            'current_return_target': effective_return_target,
+            'modal_return_target': modal_return_target,
+        },
+    )
+
+
+def render_module_shell(request: Request, module_key: str):
+    if module_key == 'accounting':
+        return render_accounting_module(request)
+    current_profile = get_current_profile_context(request)
+    info = _module_runtime_content(module_key)
+    if module_key == 'global_reports':
+        local_nav = [
+            {'key': 'lobby', 'label': 'Lobby', 'href': '/ui/lobby'},
+            {'key': 'global_reports', 'label': 'Global Reports', 'href': '/ui/global-reports'},
+            {'key': 'global_settings', 'label': 'Global Settings', 'href': '/ui/global-settings?section=software_registration'},
+            {'key': 'logout', 'label': 'Log Out', 'href': '/ui/logout'},
+        ]
+    elif module_key in {'credit_repair', 'marketing', 'presentations', 'reports', 'education', 'compliance', 'help'}:
+        local_nav = [
+            {'key': 'presentations', 'label': 'Presentations', 'href': '/ui/presentations'},
+            {'key': 'marketing', 'label': 'Marketing', 'href': '/ui/marketing'},
+            {'key': 'reports', 'label': 'Reports', 'href': '/ui/reports'},
+            {'key': 'education', 'label': 'Education', 'href': '/ui/education'},
+            {'key': 'compliance', 'label': 'Compliance / Legal', 'href': '/ui/compliance'},
+            {'key': 'help', 'label': 'Help', 'href': '/ui/help'},
+            {'key': 'settings', 'label': 'Credit Repair Settings', 'href': '/ui/credit-repair-settings?section=credit_repair_configuration'},
+            {'key': 'logout', 'label': 'Log Out', 'href': '/ui/logout'},
+        ]
+    else:
+        local_nav = [
+            {'key': 'lobby', 'label': 'Lobby', 'href': '/ui/lobby'},
+            {'key': 'global_reports', 'label': 'Global Reports', 'href': '/ui/global-reports'},
+            {'key': 'global_settings', 'label': 'Global Settings', 'href': '/ui/global-settings?section=software_registration'},
+            {'key': 'logout', 'label': 'Log Out', 'href': '/ui/logout'},
+        ]
+    use_module_title_only = module_key in {'global_reports', 'help'}
+    resolved_page_title = info.get('title', module_key.replace('_', ' ').title()) if use_module_title_only else ((current_profile.get('business_name') or current_profile.get('full_name') or current_profile.get('name') or info.get('title', module_key.replace('_', ' ').title())) if current_profile else info.get('title', module_key.replace('_', ' ').title()))
+    return templates.TemplateResponse(
+        'module_shell.html',
+        {
+            'request': request,
+            'active_module': module_key,
+            'page_title': resolved_page_title,
+            'module_description': info.get('description', ''),
+            'module_sections': info.get('sections', []),
+            'module_sidebar_groups': [],
+            'selected_section': '',
+            'selected_subsection': '',
+            'module_focus': {},
+            'summary_cards': info.get('summary_cards', []),
+            'module_callout': info.get('callout', ''),
+            'current_client': get_current_client_context(request),
+            'current_profile': current_profile,
+            'current_theme': active_theme_for_request(request, current_profile),
+            'theme_catalog': THEME_CATALOG,
+            'lobby_theme': get_lobby_theme(request),
+            'software_name': SOFTWARE_NAME,
+            'software_tagline': SOFTWARE_TAGLINE,
+            'parent_label': 'Lobby',
+            'parent_href': '/ui/lobby',
+            'local_nav': local_nav,
+            'message': '',
+            'error': '',
+            'today_iso': date.today().isoformat(),
+            'accounting_edit_invoice': None,
+            'accounting_sort_by': '',
+            'accounting_sort_dir': '',
+            'accounting_page_title': '',
+        },
+    )
+
+
+def _user_editor_redirect(section: str = 'users', user_id: str = '', is_new: bool = False, error: str = '', message: str = ''):
+    params = {'section': section}
+    if user_id:
+        params['edit_user_id'] = user_id
+    elif is_new:
+        params['edit_user_id'] = 'new'
+    if error:
+        params['error'] = error
+    if message:
+        params['message'] = message
+    return RedirectResponse(url='/ui/global-settings?' + urlencode(params), status_code=303)
+
+
+def validate_user_password_policy(password: str) -> str:
+    raw = password or ''
+    if len(raw) < 8:
+        raise ValueError('Password must be at least 8 characters.')
+    if not re.search(r'[A-Z]', raw):
+        raise ValueError('Password must include at least 1 uppercase letter.')
+    if not re.search(r'[a-z]', raw):
+        raise ValueError('Password must include at least 1 lowercase letter.')
+    if not re.search(r'\d', raw):
+        raise ValueError('Password must include at least 1 number.')
+    if not re.search(r'[^A-Za-z0-9]', raw):
+        raise ValueError('Password must include at least 1 symbol.')
+    return raw
+
+
+EMAIL_PATTERN = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+CARD_BRAND_OPTIONS = [
+    ("visa", "Visa"),
+    ("mastercard", "MasterCard"),
+    ("amex", "American Express"),
+    ("discover", "Discover"),
+]
+CARD_BRAND_LABELS = {value: label for value, label in CARD_BRAND_OPTIONS}
+ALT_PAYMENT_METHODS = {"zelle", "venmo", "cashapp", "paypal"}
+OFFLINE_PAYMENT_METHODS = {"cash", "ach", "money order", "other"}
+
+
+def format_card_number_for_display(card_number: str, card_brand: str = '') -> str:
+    digits = only_digits(card_number or '')
+    if not digits:
+        return ''
+    brand = (card_brand or '').strip().lower()
+    if brand == 'amex' or len(digits) == 15:
+        return f"{digits[:4]}-{digits[4:10]}-{digits[10:15]}".rstrip('-')
+    return '-'.join([digits[i:i+4] for i in range(0, min(len(digits), 16), 4)]).rstrip('-')
+
+
+def mask_card_number(card_number: str, card_brand: str = '') -> str:
+    digits = only_digits(card_number or '')
+    if len(digits) < 4:
+        return ''
+    tail = digits[-4:]
+    brand = (card_brand or '').strip().lower()
+    if brand == 'amex' or len(digits) == 15:
+        return f"XXXX-XXXXXX-X{tail}"
+    return f"XXXX-XXXX-XXXX-{tail}"
+
+
+def luhn_checksum_is_valid(card_number: str) -> bool:
+    digits = [int(ch) for ch in only_digits(card_number or '')]
+    if not digits:
+        return False
+    total = 0
+    parity = len(digits) % 2
+    for idx, d in enumerate(digits):
+        if idx % 2 == parity:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+def validate_card_brand_and_number(card_brand: str, card_number: str) -> tuple[bool, str]:
+    brand = (card_brand or '').strip().lower()
+    digits = only_digits(card_number or '')
+    if not digits:
+        return True, ''
+
+    def is_mastercard(d: str) -> bool:
+        if len(d) != 16:
+            return False
+        prefix2 = int(d[:2]) if len(d) >= 2 and d[:2].isdigit() else -1
+        prefix4 = int(d[:4]) if len(d) >= 4 and d[:4].isdigit() else -1
+        return 51 <= prefix2 <= 55 or 2221 <= prefix4 <= 2720
+
+    def is_discover(d: str) -> bool:
+        if len(d) != 16:
+            return False
+        if d.startswith('6011') or d.startswith('65'):
+            return True
+        prefix3 = int(d[:3]) if len(d) >= 3 and d[:3].isdigit() else -1
+        return 644 <= prefix3 <= 649
+
+    rules = {
+        'visa': lambda d: len(d) == 16 and d.startswith('4'),
+        'mastercard': is_mastercard,
+        'amex': lambda d: len(d) == 15 and (d.startswith('34') or d.startswith('37')),
+        'discover': is_discover,
+    }
+    if brand and brand in rules and not rules[brand](digits):
+        hints = {
+            'visa': 'Visa must be 16 digits in this system and start with 4.',
+            'mastercard': 'MasterCard must be 16 digits and start with 51-55 or 2221-2720.',
+            'amex': 'American Express must be 15 digits and start with 34 or 37.',
+            'discover': 'Discover must be 16 digits and start with 6011, 65, or 644-649.',
+        }
+        return False, f"Card number does not match the selected card type ({CARD_BRAND_LABELS.get(brand, brand.title())}). {hints.get(brand, '')}".strip()
+    if brand in rules and not luhn_checksum_is_valid(digits):
+        return False, 'Card number failed the card checksum validation.'
+    return True, ''
+
+
+def validate_cvv_for_brand(card_brand: str, cvv: str) -> tuple[bool, str]:
+    digits = only_digits(cvv or '')
+    if not digits:
+        return True, ''
+    is_amex = (card_brand or '').strip().lower() == 'amex'
+    expected = 4 if is_amex else 3
+    code_name = 'CID' if is_amex else 'CVV'
+    if len(digits) != expected:
+        return False, f"{code_name} must be {expected} digits for the selected card type."
+    return True, ''
+
+
+def _normalize_payment_method(value: str) -> str:
+    raw = (value or 'zelle').strip().lower()
+    return raw if raw in PAYMENT_METHOD_LABELS else 'zelle'
+
+
+PAYMENT_METHODS = [
+    ("credit card", "Credit Card"),
+    ("zelle", "Zelle"),
+    ("venmo", "Venmo"),
+    ("cashapp", "Cash App"),
+    ("paypal", "PayPal"),
+    ("cash", "Cash"),
+    ("ach", "ACH"),
+    ("money order", "Money Order"),
+    ("other", "Other"),
+]
+PAYMENT_METHOD_LABELS = {value: label for value, label in PAYMENT_METHODS}
 BILLING_GROUPS = ["1st", "15th", "custom"]
-PRICING_PLANS = [
-    "consultation only",
-    "couple/family discount",
-    "intensive 6-month program",
-    "standard program",
+PRICING_PLAN_OPTIONS = [
+    ("standard_12", "Credit Repair Program — 12 Months"),
+    ("premium_6", "Intensive Credit Repair Program — 6 Months"),
+    ("standalone_consultation", "Consultation Only / Not Candidate"),
+    ("fraud_identity_theft", "Fraud / Identity Theft Route"),
 ]
-CONSULTATION_FEES = [75, 100, 150]
+PRICING_PLAN_LABELS = {value: label for value, label in PRICING_PLAN_OPTIONS}
+PRICING_PLAN_DEFAULTS = {
+    "standard_12": {
+        "consultation_review_fee": Decimal("175.00"),
+        "monthly_fee": Decimal("125.00"),
+        "invoice_items": [
+            {
+                "item_name": "Credit Repair Consultation, Education and Credit Review Fee",
+                "invoice_type": "consultation",
+                "default_amount": Decimal("175.00"),
+                "default_description": "Credit repair consultation, education, three-bureau credit review, evaluation, recommendations, and administration fee.",
+            },
+            {
+                "item_name": "Standard 12 Months of Disputes and Credit Restoration",
+                "invoice_type": "monthly",
+                "default_amount": Decimal("125.00"),
+                "default_description": "Standard 12-month credit restoration program. Monthly billing for disputes and credit restoration services.",
+            },
+        ],
+    },
+    "premium_6": {
+        "consultation_review_fee": Decimal("299.00"),
+        "monthly_fee": Decimal("250.00"),
+        "invoice_items": [
+            {
+                "item_name": "Premium Consultation and Credit & Finance Review Fee",
+                "invoice_type": "consultation",
+                "default_amount": Decimal("299.00"),
+                "default_description": "Premium consultation, education, and credit & finance review fee.",
+            },
+            {
+                "item_name": "Premium Plan 6 Months of Disputes",
+                "invoice_type": "monthly",
+                "default_amount": Decimal("250.00"),
+                "default_description": "Premium 6-month dispute and credit restoration plan.",
+            },
+        ],
+    },
+    "standalone_consultation": {
+        "consultation_review_fee": Decimal("100.00"),
+        "monthly_fee": Decimal("0.00"),
+        "invoice_items": [
+            {
+                "item_name": "Consultation Fee and Credit Review",
+                "invoice_type": "consultation",
+                "default_amount": Decimal("100.00"),
+                "default_description": "Standalone consultation, education, and credit review.",
+            },
+        ],
+    },
+    "fraud_identity_theft": {
+        "consultation_review_fee": Decimal("0.00"),
+        "monthly_fee": Decimal("0.00"),
+        "invoice_items": [],
+    },
+}
+PRICING_PLANS = [value for value, _label in PRICING_PLAN_OPTIONS]
+
+
+def _billing_program_slug(name: str) -> str:
+    base = re.sub(r'[^a-z0-9]+', '_', (name or '').strip().lower()).strip('_')
+    return base[:48] or 'custom_program'
+
+
+def ensure_billing_programs_table(cur):
+    """Program catalog for credit-repair billing programs.
+
+    This is intentionally separate from invoice_service_items because a Program has
+    both a recurring/monthly credit-repair fee and a separate consultation / credit
+    education fee. Invoice service items remain the line-item catalog used when an
+    actual invoice is built.
+    """
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS billing_programs (
+            id uuid PRIMARY KEY,
+            program_key text UNIQUE NOT NULL,
+            program_name text NOT NULL,
+            description text,
+            consultation_fee numeric(12,2) DEFAULT 0,
+            monthly_fee numeric(12,2) DEFAULT 0,
+            source_type text DEFAULT 'system',
+            is_active boolean DEFAULT TRUE,
+            created_at timestamp DEFAULT CURRENT_TIMESTAMP,
+            updated_at timestamp DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    for key, label in PRICING_PLAN_OPTIONS:
+        defaults = PRICING_PLAN_DEFAULTS.get(key, {})
+        description = ''
+        for item in defaults.get('invoice_items', []):
+            if item.get('invoice_type') == 'monthly':
+                description = str(item.get('default_description') or '')
+                break
+        if not description and defaults.get('invoice_items'):
+            description = str(defaults['invoice_items'][0].get('default_description') or '')
+        cur.execute("SELECT id FROM billing_programs WHERE program_key = %s LIMIT 1", (key,))
+        if cur.fetchone():
+            cur.execute("""
+                UPDATE billing_programs
+                SET program_name = %s,
+                    description = COALESCE(NULLIF(description, ''), %s),
+                    consultation_fee = COALESCE(consultation_fee, %s),
+                    monthly_fee = COALESCE(monthly_fee, %s),
+                    source_type = COALESCE(source_type, 'system'),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE program_key = %s
+            """, (
+                label,
+                description,
+                defaults.get('consultation_review_fee') or Decimal('0.00'),
+                defaults.get('monthly_fee') or Decimal('0.00'),
+                key,
+            ))
+        else:
+            cur.execute("""
+                INSERT INTO billing_programs
+                    (id, program_key, program_name, description, consultation_fee, monthly_fee, source_type, is_active)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s, 'system', TRUE)
+            """, (
+                str(uuid4()), key, label, description,
+                defaults.get('consultation_review_fee') or Decimal('0.00'),
+                defaults.get('monthly_fee') or Decimal('0.00'),
+            ))
+
+
+def fetch_billing_program_options(cur, include_inactive: bool = False) -> list[dict]:
+    ensure_billing_programs_table(cur)
+    cur.execute("""
+        SELECT program_key, program_name, COALESCE(description, ''),
+               COALESCE(consultation_fee, 0)::text, COALESCE(monthly_fee, 0)::text,
+               COALESCE(source_type, 'custom'), COALESCE(is_active, TRUE)
+        FROM billing_programs
+        {where_clause}
+        ORDER BY CASE WHEN COALESCE(source_type, 'custom') = 'system' THEN 0 ELSE 1 END,
+                 program_name
+    """.format(where_clause='' if include_inactive else 'WHERE COALESCE(is_active, TRUE) = TRUE'))
+    programs = []
+    for key, name, description, consultation_fee, monthly_fee, source_type, is_active in cur.fetchall():
+        consultation = _safe_decimal(consultation_fee or '0')
+        monthly = _safe_decimal(monthly_fee or '0')
+        programs.append({
+            'value': key,
+            'label': name,
+            'description': description,
+            'consultation_fee': f'{consultation:.2f}',
+            'monthly_fee': f'{monthly:.2f}',
+            'consultation_fee_display': format_currency(consultation),
+            'monthly_fee_display': format_currency(monthly),
+            'source_type': source_type,
+            'is_active': bool(is_active),
+        })
+    return programs
+
+
+def billing_program_exists(cur, program_key: str) -> bool:
+    ensure_billing_programs_table(cur)
+    cur.execute("SELECT 1 FROM billing_programs WHERE program_key = %s AND COALESCE(is_active, TRUE) = TRUE LIMIT 1", (program_key,))
+    return bool(cur.fetchone())
+
+
+def billing_program_label_from_options(options: list[dict], program_key: str) -> str:
+    for option in options or []:
+        if option.get('value') == program_key:
+            return option.get('label') or program_key
+    return PRICING_PLAN_LABELS.get(program_key or 'standard_12', program_key or '—')
+
+CONSULTATION_FEES = [100, 175, 299]
 APPOINTMENT_MODES = ["in_person", "phone", "virtual"]
-BUREAUS = ["equifax", "experian", "transunion"]
-DISPUTE_REASONS = ["never late", "not included in bankruptcy", "not mine", "other"]
+BUREAUS = ["equifax", "transunion", "experian"]
+DISPUTE_REASONS = ["late payment history inaccurate", "missing / inaccurate date of first delinquency", "missing information / incomplete reporting", "charge-off inaccurate", "collection inaccurate", "repossession inaccurate", "duplicate", "not mine", "never late", "not included in bankruptcy", "other"]
 NEGATIVE_ITEM_STATUSES = ["corrected", "disputed", "open", "removed", "verified"]
-PERSONAL_ERROR_TYPES = ["address", "associated person", "employer", "name", "other", "phone", "ssn variation"]
+PERSONAL_ERROR_TYPES = ["address", "remark", "associated person", "employer", "name", "other", "phone", "ssn variation"]
 PERSONAL_ERROR_STATUSES = ["corrected", "disputed", "open", "removed", "verified"]
 REQUESTED_ACTIONS = ["delete", "correct", "update", "investigate"]
 INQUIRY_DISPUTE_REASONS = ["not my inquiry", "did not apply", "unauthorized pull", "other"]
 INQUIRY_REQUESTED_ACTIONS = ["delete", "investigate"]
-CREDIT_TYPES = ["car loan", "credit card", "other", "personal loan", "secured credit card", "secured loan", "store card"]
+CREDIT_TYPES = ["credit card", "personal loan", "auto loan"]
+PREAPPROVAL_LINKS = [
+    {"name": "Citibank", "url": "https://online.citi.com/US/ag/cards/pre-qualify?OC=CC-CITI-3D5&intc=citihpmenu_creditcards_pq~tnt_614909_&vac="},
+    {"name": "CreditOne", "url": "https://www.creditonebank.com/pre-qualification/data-entry/index"},
+    {"name": "Capital One", "url": "https://www.capitalone.com/apply/credit-cards/preapprove/"},
+    {"name": "Chase", "url": "https://secure.chase.com/web/oao/application/card?cfgCode=PREAPPROVEDCONCC&flowVersion=REACT&cellCode=6954&cellCode=63D5#/origination/preapproved/index/index"},
+    {"name": "Discover Card", "url": "https://www.discovercard.com/application/preapproval/initial?ICMPGN=PUB_HDR_CARDS_PREQUAL"},
+    {"name": "Home Depot", "url": "https://citiretailservices.citibankonline.com/apply/home-depot-credit-card?app=PQ01&siteId=PLCN_HOMEDEPOT&sc=30052&cmp=A~Z~P~P~1~5~ZZZZ~PQ~HD~ZZ"},
+    {"name": "Bank of America", "url": "https://secure.bankofamerica.com/secure-offers/public/customizedOffers/?subchannel=ECBAN"},
+    {"name": "Discover Check Status", "url": "https://www.discovercard.com/application/self-service/?page=check-status"},
+    {"name": "Indigo", "url": "https://www.indigocard.com/apply-form?cid=359700649"},
+    {"name": "First Progress", "url": "https://firstprogress.com/"},
+    {"name": "OpenSky", "url": "https://app.openskycc.com/OpenSky/Apply?utm_source=RedVentures&NID=2733"},
+    {"name": "Ikea", "url": "https://www.ikea.com/us/en/customer-service/services/finance-options/"},
+    {"name": "Regions Bank", "url": "https://apply.regions.com/creditcards/gettingstarted"},
+    {"name": "Kohl’s", "url": "https://www.kohls.com/sale-event/my-kohls-charge.jsp"},
+    {"name": "Petal", "url": "https://registration.petalcard.com/get-started"},
+    {"name": "CareCredit", "url": "https://www.carecredit.com/apply/"},
+    {"name": "Tempurpedic", "url": "https://www.tempurpedic.com/finance-your-purchase/"},
+    {"name": "Mission Lane", "url": "https://apply.missionlane.com/prequalification?invite-code=MLPQDC7115&utm_medium=Paid_Search&utm_source=Google&utm_pt_name=B&src=GPS-BND-CLASSIC-0921&c=17125970628&a=135715070305&d=c&ad=596036997578&k=mission%20lane&n=g&pos=&gclid=CjwKCAjwwdWVBhA4EiwAjcYJEJGJvdXoXmUPj-bbs-_OIpvPiFi0t_8-PChcJBefCgyeEPn8KOk5lxoC9qAQAvD_BwE"},
+    {"name": "Wells Fargo", "url": "https://web.secure.wellsfargo.com/credit-cards/yourinfo/?product_code=CC&subproduct_code=MC&sub_channel=SEM&vendor_code=G&Placement_ID=71700000082175996_43700062797984323"},
+    {"name": "Barclays RCI", "url": "https://cards.barclaycardus.com/banking/credit-card/rci/bcus_storefront/prequal/dbfd2fae-d226-42d1-8e39-b7b739d1b734/?proveEnabled=true&referrerid="},
+    {"name": "Barclays JetBlue", "url": "https://cards.barclaycardus.com/banking/credit-card/jetblue/bcus_storefront/prequal/bb0278f2-4a59-4610-bd4b-ed4dfb5b9450/?xsessionid=CAE1FD76BDB349A865AA931F2486EBBC"},
+    {"name": "All Barclays Credit Cards", "url": "https://cards.barclaycardus.com/banking/cards/#///"},
+    {"name": "Apple Card", "url": "https://card.apple.com/apply/start?referrer=cid%3Dapy-200-10000045"},
+    {"name": "Alphaeon", "url": "https://go.alphaeoncredit.com/credit-portal/apply/eds/intro"},
+    {"name": "Navy Federal", "url": "https://www.navyfederal.org/loans-cards/credit-cards/prequalification.html"},
+    {"name": "MyFortiva", "url": "https://www.myfortiva.com/prequalify/"},
+    {"name": "Synchrony", "url": "https://www.synchrony.com/financing/credit-cards"},
+    {"name": "TD Bank", "url": "https://createpersonalprofile.td.com/aproa/customer/prospect?"},
+    {"name": "Amazon Store Card", "url": "https://www.amazon.com/Synchrony-Bank-Amazon-com-Store-Card/dp/B008A0GNA8"},
+    {"name": "PayPal", "url": "https://www.paypal.com/credit-application/co/landing?present=clpCOB32CONTROLSINQUIRY&track=cltSEM062022&utm_medium=google&utm_source=sem&utm_campaign=B0005PPJ&kid=301178661346&gclsrc=aw.ds&gad_source=1&gad_campaignid=23350534733&gbraid=0AAAAADsjovwmJ66Cm0bC0rWV-l-Uy0217&gclid=Cj0KCQjwj47OBhCmARIsAF5wUEH_xKeHltLZaQGxaKSI0b_eaI2jkqAhOLvMFSGhy9KWmSxBQfik-W0aAiQiEALw_wcB"},
+]
+PREAPPROVAL_LINKS = sorted(PREAPPROVAL_LINKS, key=lambda x: (x.get("name") or "").casefold())
+
+LENDER_CATEGORIES = [
+    ("credit card", "Credit Card Lender"),
+    ("personal loan", "Personal Loan Lender"),
+    ("auto loan", "Auto Loan Lender"),
+]
+DEFAULT_CREDIT_CARD_LENDERS = [
+    {"name": item.get("name") or "", "address_line1": "", "address_line2": "", "city": "", "state": "", "zip_code": "", "phone": "", "website": item.get("url") or "", "category": "credit card"}
+    for item in PREAPPROVAL_LINKS if (item.get("name") or "").strip()
+]
+DEFAULT_PREQUAL_LINKS = [
+    {"name": item.get("name") or "", "url": item.get("url") or "", "credit_type": "credit card"}
+    for item in PREAPPROVAL_LINKS if (item.get("name") or "").strip()
+]
+
+DEFAULT_LENDER_DIRECTORY = [
+    {"name": "SoFi", "address_line1": "234 1st St", "address_line2": "", "city": "San Francisco", "state": "CA", "zip_code": "94105", "phone": "855-456-7634", "website": "https://www.sofi.com/personal-loans/"},
+    {"name": "LendingClub Bank", "address_line1": "595 Market St #200", "address_line2": "", "city": "San Francisco", "state": "CA", "zip_code": "94105", "phone": "888-596-3157", "website": "https://www.lendingclub.com/personal-loans"},
+    {"name": "Discover Personal Loans", "address_line1": "2500 Lake Cook Rd", "address_line2": "", "city": "Riverwoods", "state": "IL", "zip_code": "60015", "phone": "866-248-1255", "website": "https://www.discover.com/personal-loans/"},
+    {"name": "Rocket Loans", "address_line1": "1050 Woodward Ave", "address_line2": "", "city": "Detroit", "state": "MI", "zip_code": "48226", "phone": "800-333-7625", "website": "https://www.rocketloans.com/personal-loans"},
+    {"name": "Upgrade", "address_line1": "275 Battery St", "address_line2": "", "city": "San Francisco", "state": "CA", "zip_code": "94111", "phone": "844-319-3900", "website": "https://www.upgrade.com/personal-loans"},
+    {"name": "Upstart", "address_line1": "2950 S Delaware St", "address_line2": "", "city": "San Mateo", "state": "CA", "zip_code": "94403", "phone": "855-438-8778", "website": "https://www.upstart.com/personal-loans"},
+    {"name": "LightStream", "address_line1": "214 N Tryon St", "address_line2": "", "city": "Charlotte", "state": "NC", "zip_code": "28202", "phone": "866-516-7911", "website": "https://www.lightstream.com/personal-loans"},
+    {"name": "Prosper", "address_line1": "221 Main St #300", "address_line2": "", "city": "San Francisco", "state": "CA", "zip_code": "94105", "phone": "866-615-6319", "website": "https://www.prosper.com/personal-loans"},
+    {"name": "U.S. Bank Personal Loans", "address_line1": "800 Nicollet Mall", "address_line2": "", "city": "Minneapolis", "state": "MN", "zip_code": "55402", "phone": "877-625-5249", "website": "https://www.usbank.com/loans-credit-lines/personal-loans.html"},
+    {"name": "Wells Fargo Personal Loans", "address_line1": "420 Montgomery St", "address_line2": "", "city": "San Francisco", "state": "CA", "zip_code": "94104", "phone": "877-526-6332", "website": "https://www.wellsfargo.com/personal-loans/"},
+    {"name": "OneMain Financial", "address_line1": "601 NW 2nd St", "address_line2": "", "city": "Evansville", "state": "IN", "zip_code": "47708", "phone": "800-961-5577", "website": "https://www.onemainfinancial.com/personal-loans"},
+    {"name": "Axos Bank Personal Loans", "address_line1": "9205 W Russell Rd", "address_line2": "", "city": "Las Vegas", "state": "NV", "zip_code": "89148", "phone": "866-923-3625", "website": "https://www.axosbank.com/personal/borrow/personal-loans"},
+]
+
+
 OUTBOUND_REFERRAL_STATUSES = ["completed", "contacted", "declined", "referred"]
 REFERRAL_PARTNER_TYPES = ["accountant", "ADP", "banker", "bankruptcy attorney", "client", "estate attorney", "insurance agent", "lender", "mortgage lender", "other", "realtor", "title company"]
 FOLLOWUP_TYPES = ["call back", "document reminder", "general", "payment follow-up", "redispute", "review bureau response", "send docs", "waiting on IDs"]
-FOLLOWUP_STATUSES = ["done", "open", "waiting"]
+FOLLOWUP_STATUSES = ["open", "waiting", "done", "cancelled"]
+
+RELATIONSHIP_LABELS = [
+    "associated",
+    "spouse",
+    "husband",
+    "wife",
+    "partner",
+    "ex-spouse",
+    "father",
+    "mother",
+    "parent",
+    "stepfather",
+    "stepmother",
+    "son",
+    "daughter",
+    "child",
+    "stepson",
+    "stepdaughter",
+    "brother",
+    "sister",
+    "sibling",
+    "grandfather",
+    "grandmother",
+    "grandparent",
+    "grandson",
+    "granddaughter",
+    "grandchild",
+    "uncle",
+    "aunt",
+    "cousin",
+    "nephew",
+    "niece",
+    "father in law",
+    "mother in law",
+    "brother in law",
+    "sister in law",
+    "son in law",
+    "daughter in law",
+    "fiance",
+    "roommate",
+    "friend",
+    "caregiver",
+    "guardian",
+    "manager",
+    "supervisor",
+    "employee",
+    "employer",
+    "coworker",
+    "client",
+    "consultant",
+    "co-borrower",
+    "business partner",
+    "other",
+]
 
 DOCUMENT_CATEGORIES = [
     "service_agreement",
@@ -120,11 +3572,14 @@ DOCUMENT_CATEGORIES = [
     "concealed_weapons_permit",
     "green_card",
     "foreign_passport",
+    "birth_certificate",
     "utility_bill_electricity",
     "utility_bill_water",
     "utility_bill_gas",
     "utility_bill_cable",
     "bank_statement",
+    "pay_stub",
+    "w2_1099_form",
     "credit_card_offer",
     "personal_loan_offer",
     "car_loan_offer",
@@ -141,9 +3596,9 @@ DOCUMENT_SECTIONS = [
 ]
 DOCUMENT_SECTION_LABELS = {k: v for k, v in DOCUMENT_SECTIONS}
 DOCUMENT_REFERENCE_DEFAULT_LABELS = {
-    "experian": "Report Number",
-    "transunion": "File#",
-    "equifax": "Confirmation#",
+    "experian": "Report #",
+    "transunion": "File #",
+    "equifax": "Confirmation #",
 }
 DOCUMENT_SECTION_CATEGORY_OPTIONS = {
     "agreements": [
@@ -172,6 +3627,7 @@ DOCUMENT_SECTION_CATEGORY_OPTIONS = {
         ("concealed_weapons_permit", "Concealed Weapons Permit"),
         ("green_card", "Green Card"),
         ("foreign_passport", "Foreign Passport"),
+        ("birth_certificate", "Birth Certificate"),
         ("government_issued_id", "Government Issued ID"),
         ("social_security_card", "Social Security Card"),
         ("utility_bill_electricity", "Utility Bill - Electricity"),
@@ -179,6 +3635,8 @@ DOCUMENT_SECTION_CATEGORY_OPTIONS = {
         ("utility_bill_gas", "Utility Bill - Gas"),
         ("utility_bill_cable", "Utility Bill - Cable"),
         ("bank_statement", "Bank Statement"),
+        ("pay_stub", "Pay Stub"),
+        ("w2_1099_form", "W2 or 1099 Form"),
     ],
     "credit_offers": [
         ("credit_card_offer", "Credit Card Offer"),
@@ -203,10 +3661,10 @@ UPLOAD_REQUEST_TYPE_OPTIONS = [
 ID_DOCUMENT_CATEGORIES = {
     "driver_license_front", "driver_license_back", "state_id_front", "state_id_back", "passport",
     "voter_registration", "work_permit", "concealed_weapons_permit", "green_card", "foreign_passport",
-    "government_issued_id", "social_security_card"
+    "birth_certificate", "government_issued_id", "social_security_card"
 }
 PROOF_OF_ADDRESS_CATEGORIES = {
-    "utility_bill_electricity", "utility_bill_water", "utility_bill_gas", "utility_bill_cable", "bank_statement"
+    "utility_bill_electricity", "utility_bill_water", "utility_bill_gas", "utility_bill_cable", "bank_statement", "pay_stub", "w2_1099_form"
 }
 CREDIT_OFFER_CATEGORIES = {"credit_card_offer", "personal_loan_offer", "car_loan_offer"}
 COLLECTION_MAIL_CATEGORIES = {"collection_company_mail", "validation_letter", "settlement_offer", "attorney_letter"}
@@ -275,12 +3733,27 @@ def enc_text(value: Optional[str]) -> Optional[bytes]:
     return fernet().encrypt(v.encode("utf-8"))
 
 
-def dec_text(value: Optional[bytes]) -> str:
+def _coerce_encrypted_value(value) -> Optional[bytes]:
     if value is None:
+        return None
+    if isinstance(value, memoryview):
+        return value.tobytes()
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        return value.encode("utf-8")
+    return None
+
+
+def dec_text(value: Optional[bytes]) -> str:
+    raw = _coerce_encrypted_value(value)
+    if raw is None:
         return ""
     try:
-        return fernet().decrypt(value).decode("utf-8")
-    except InvalidToken:
+        return fernet().decrypt(raw).decode("utf-8")
+    except (InvalidToken, TypeError, ValueError):
         return ""
 
 
@@ -352,6 +3825,10 @@ def normalize_phone_input(value: Optional[str]) -> str:
     return f"{digits[0:3]}-{digits[3:6]}-{digits[6:10]}"
 
 
+def normalize_apt_unit_input(value: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
 def normalize_ssn_input(value: Optional[str]) -> str:
     digits = only_digits(value)
     if not digits:
@@ -390,13 +3867,15 @@ def normalize_reference_value(bureau: str, value: str) -> str:
     if not raw:
         return ''
     bureau = (bureau or '').lower().strip()
-    compact = raw.replace(' ', '')
-    if bureau == 'transunion':
-        compact = compact.replace('File#', '').replace('file#', '').replace('FILE#', '').strip()
-    elif bureau == 'equifax':
-        compact = compact.replace('Confirmation#', '').replace('confirmation#', '').replace('CONFIRMATION#', '').strip()
-    elif bureau == 'experian':
-        compact = compact.replace('ReportNumber', '').replace('reportnumber', '').replace('REPORTNUMBER', '').strip()
+    compact = re.sub(r'\s+', '', raw)
+    label_patterns = {
+        'transunion': [r'file\s*#?', r'filenumber'],
+        'equifax': [r'confirmation\s*#?', r'confirmationnumber'],
+        'experian': [r'report\s*#?', r'reportnumber'],
+    }
+    for expr in label_patterns.get(bureau, []):
+        compact = re.sub(expr, '', compact, flags=re.IGNORECASE)
+    compact = compact.strip(':-# ')
     return compact
 
 
@@ -455,16 +3934,23 @@ def extract_text_from_document(file_path: str, file_name: str = '') -> tuple[str
                 return '', "PDF text extraction library is not available. Install one with: pip install pypdf"
             reader = PdfReader(path)
             pages = []
+            attempted_pages = 0
             for page in getattr(reader, 'pages', []) or []:
+                attempted_pages += 1
                 try:
                     extracted = page.extract_text() or ''
                 except Exception:
                     extracted = ''
-                if extracted:
+                if extracted and extracted.strip():
                     pages.append(extracted)
             combined = '\n\n'.join(pages).strip()
             if not combined:
-                return '', 'No extractable text found. This file may be a scanned image PDF and may need OCR or manual review.'
+                page_label = f' across {attempted_pages} page(s)' if attempted_pages else ''
+                return '', (
+                    'No extractable text was found in this PDF'
+                    f'{page_label}. This usually means the report is image-only or scanner-based. '
+                    'Upload a text-based export or run OCR before analysis.'
+                )
             return combined, ''
         return '', 'This file type is not currently supported for automatic text extraction.'
     except Exception as exc:
@@ -532,7 +4018,7 @@ def _document_client_match(profile: dict, file_name: str = '', extracted_text: s
 
 
 def _assess_uploaded_document_for_client(cur, client_id: str, file_name: str = '', file_path: str = '') -> tuple[str, int, str]:
-    profile = fetch_client_profile(cur, client_id, include_sensitive=False)
+    profile = fetch_client_profile(cur, client_id, include_sensitive=True)
     extracted_text = ''
     if file_path:
         extracted_text, _ = extract_text_from_document(file_path, file_name)
@@ -578,106 +4064,315 @@ def _detect_creditor_name(block: str) -> str:
     return 'Unclear tradeline'
 
 
-def _suggest_account_strategy(account: dict) -> dict:
-    status_text = (account.get('status_text') or '').lower()
-    notes = []
-    reason = 'other'
-    action = 'investigate'
-    strategy = 'Review reporting for accuracy, completeness, and verifiability before mailing the dispute.'
-    if account.get('late_count', 0) > 0 and 'charge' not in status_text and 'collect' not in status_text:
-        reason = 'never late'
-        action = 'correct'
-        strategy = 'Payment-history challenge candidate if the client confirms the reported late month(s) are inaccurate.'
-    if any(k in status_text for k in ['charge off', 'chargeoff', 'collection', 'repossession', 'bankruptcy']):
-        reason = 'other'
-        action = 'investigate'
-        strategy = 'Derogatory status challenge candidate. Verify ownership, status coding, dates, and completeness before asserting any stronger basis.'
-    if 'repo' in status_text or 'repossession' in status_text:
-        notes.append('Check whether the file shows a redeemed or cured repossession status before phrasing the dispute.')
-    if account.get('missing_required_data'):
-        notes.append('Possible incomplete reporting issue detected.')
-    if account.get('account_age_years', 0) >= 8 and account.get('is_open'):
-        notes.append('Preserve-history caution: older open tradeline may be helping average age.')
-    if not notes:
-        notes.append('Use the selected report/response and the client’s attested facts to refine the final letter language.')
-    return {
-        'suggested_reason': reason,
-        'suggested_action': action,
-        'strategy_note': ' '.join(notes) + ' ' + strategy,
-    }
 
-
-def _extract_personal_info_candidates(text: str, bureau: str) -> list[dict]:
-    items = []
-    lines = [ln.strip() for ln in (text or '').splitlines() if ln.strip()]
-    patterns = [
-        ('name', r'^(?:name|consumer\s+name|also\s+known\s+as|aka)\s*[:#-]?\s*(.+)$'),
-        ('address', r'^(?:address|current\s+address|previous\s+address|former\s+address)\s*[:#-]?\s*(.+)$'),
-        ('employer', r'^(?:employer|employers)\s*[:#-]?\s*(.+)$'),
-        ('phone', r'^(?:phone|telephone)\s*[:#-]?\s*(.+)$'),
-        ('ssn variation', r'^(?:ssn|social\s+security)\s*[:#-]?\s*(.+)$'),
+def _format_profile_current_address(profile: dict) -> str:
+    parts = [
+        (profile or {}).get('address_line1', ''),
+        (profile or {}).get('address_line2', ''),
+        ' '.join([p for p in [(profile or {}).get('city', ''), (profile or {}).get('state', ''), (profile or {}).get('zip', '')] if p]).strip()
     ]
+    return ', '.join([p.strip() for p in parts if p and p.strip()])
+
+
+ANALYSIS_NOISE_PATTERNS = [
+    r'\byou have the right\b',
+    r'\byou are receiving this information because\b',
+    r'\bconsumer financial protection bureau\b',
+    r'\bfederal trade commission\b',
+    r'\bcommonly asked questions about credit files\b',
+    r'\bvisit us at\b',
+    r'\bcall us at\b',
+    r'\bif an item states "deleted"\b',
+    r'\bconfirmation number\b',
+    r'\bend of report\b',
+    r'\bpage\s+\d+\s+of\s+\d+\b',
+    r'\bsecurity freeze\b',
+    r'\bfraud alert\b',
+    r'\bopt out\b',
+    r'\bconsumer reporting agenc(?:y|ies)\b',
+    r'\brecover from identity theft\b',
+    r'\bsummary of your rights\b',
+    r'\bcompany information\b',
+    r'\bprefix descriptions\b',
+    r'\bstate member banks\b',
+    r'\bbranches and agencies of foreign banks\b',
+    r'\bcredit files\b',
+]
+ANALYSIS_REMARK_PATTERNS = [
+    ('deceased', 'consumer deceased'),
+    ('blocked', 'blocked information / blocked file notice'),
+    ('consumer statement', 'consumer statement'),
+    ('victim statement', 'victim statement'),
+    ('fraud alert', 'fraud alert'),
+    ('security freeze', 'security freeze'),
+    ('active duty alert', 'active duty alert'),
+]
+HARD_INQUIRY_SECTION_STARTS = [
+    'hard inquiries',
+    'inquiries shared with others',
+    'requests viewed by others',
+    'regular inquiries',
+]
+HARD_INQUIRY_SECTION_STOPS = [
+    'soft inquiries',
+    'inquiries that do not impact',
+    'company information - prefix descriptions',
+    'prefix descriptions',
+    'summary of your rights',
+    'commonly asked questions',
+]
+
+
+def _normalize_analysis_whitespace(text: str) -> str:
+    return re.sub(r'\s+', ' ', (text or '').strip())
+
+
+def _normalize_address_key(value: str) -> str:
+    value = (value or '').lower()
+    value = value.replace('florida', 'fl')
+    value = re.sub(r'[^a-z0-9]+', ' ', value).strip()
+    return value
+
+
+def _is_analysis_noise_line(line: str) -> bool:
+    raw = (line or '').strip()
+    if not raw:
+        return True
+    low = _normalize_analysis_whitespace(raw).lower()
+    if re.search(r'page\s+\d+\s+of\s+\d+', low):
+        return True
+    if re.search(r'\b\d{8,}-[a-z0-9-]+\b', low):
+        return True
+    if re.fullmatch(r'[-–—:|•·\s]+', raw):
+        return True
+    if re.fullmatch(r'\d{1,2}[/.-]\d{2,4}', raw):
+        return True
+    if re.fullmatch(r'\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}', raw):
+        return True
+    for pattern in ANALYSIS_NOISE_PATTERNS:
+        if re.search(pattern, low):
+            return True
+    if low.startswith(('if you are sending your request by mail', 'in addition, all consumers', 'as an alternative to')):
+        return True
+    if raw.count('©') >= 1:
+        return True
+    return False
+
+
+def _analysis_lines(text: str) -> list[str]:
+    raw = (text or '').replace('\r\n', '\n').replace('\r', '\n')
+    lines = []
+    for line in raw.split('\n'):
+        line = re.sub(r'\s+', ' ', line).strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def _looks_like_address(value: str) -> bool:
+    s = _normalize_analysis_whitespace(value)
+    if not s or _is_analysis_noise_line(s):
+        return False
+    street = r'\b\d{1,6}\s+[A-Za-z0-9#./-]+(?:\s+[A-Za-z0-9#./-]+){0,6}\s+(?:st|street|ave|avenue|rd|road|dr|drive|ct|court|ln|lane|way|blvd|boulevard|ter|terrace|trl|trail|cir|circle|pl|place|pkwy|parkway)\b'
+    if re.search(street, s, flags=re.IGNORECASE):
+        return True
+    if re.search(street + r'.*\b(?:fl|florida|ga|georgia|tx|texas|ny|new york|ca|california)\b', s, flags=re.IGNORECASE):
+        return True
+    return False
+
+
+def _clean_address_value(value: str) -> str:
+    s = _normalize_analysis_whitespace(value)
+    s = re.sub(r'^(?:current|previous|former)\s+address\s*[:#-]?\s*', '', s, flags=re.IGNORECASE)
+    s = s.strip(' -:,;')
+    return s
+
+
+def _trim_creditor_name(value: str) -> str:
+    s = _normalize_analysis_whitespace(value)
+    if not s:
+        return ''
+    s = re.sub(r'\s*[:|].*$', '', s)
+    s = re.split(r'\s+(?:PO BOX|P\.O\. BOX)\b', s, maxsplit=1, flags=re.IGNORECASE)[0]
+    s = re.split(r'\s+\d{2,6}\s+[A-Za-z]', s, maxsplit=1)[0]
+    s = s.strip(' -:,')
+    return s
+
+
+def _is_likely_creditor_name(value: str) -> bool:
+    s = _trim_creditor_name(value)
+    if not s or s.lower() == 'unclear tradeline':
+        return False
+    if _is_analysis_noise_line(s):
+        return False
+    if re.fullmatch(r'[\d/*xX .:$-]+', s):
+        return False
+    if re.match(r'^\d{1,2}[/.-]\d{2,4}', s):
+        return False
+    tokens = [t for t in re.split(r'\s+', s) if t]
+    if not tokens:
+        return False
+    alpha_tokens = [t for t in tokens if re.search(r'[A-Za-z]', t)]
+    if not alpha_tokens:
+        return False
+    generic = {'account', 'accounts', 'credit', 'report', 'information', 'company', 'consumer', 'date', 'status'}
+    if len(alpha_tokens) == 1 and alpha_tokens[0].lower() in generic:
+        return False
+    return True
+
+
+def _account_reason_defaults(reason: str) -> tuple[str, str]:
+    mapping = {
+        'late payment history inaccurate': ('correct', 'Review the reported late-payment history against the source report and the client’s records before mailing.'),
+        'missing / inaccurate date of first delinquency': ('correct', 'Check the reporting for a complete and accurate first-delinquency date before mailing.'),
+        'missing information / incomplete reporting': ('investigate', 'Review whether the account is missing required reporting details or contains incomplete status/date information.'),
+        'charge-off inaccurate': ('investigate', 'Review charge-off coding, dates, balances, and completeness before mailing.'),
+        'collection inaccurate': ('investigate', 'Review ownership, collection reporting dates, and completeness before mailing.'),
+        'repossession inaccurate': ('investigate', 'Review repossession status, balance history, and date accuracy before mailing.'),
+        'duplicate': ('delete', 'Review whether the same account is reporting more than once before mailing.'),
+        'not mine': ('investigate', 'Confirm ownership and permissible reporting before mailing.'),
+        'other': ('investigate', 'Review reporting for accuracy, completeness, and verifiability before mailing the dispute.'),
+    }
+    return mapping.get(reason or 'other', mapping['other'])
+
+
+def _detect_negative_account_reason(block_text: str) -> str:
+    low = (block_text or '').lower()
+    if 'date of first delinquency' in low and any(k in low for k in ['missing', 'inaccurate', 'incorrect', 'not reported', 'incomplete']):
+        return 'missing / inaccurate date of first delinquency'
+    if 'charge off' in low or 'chargeoff' in low:
+        return 'charge-off inaccurate'
+    if 'collection' in low or 'collections' in low:
+        return 'collection inaccurate'
+    if 'repo' in low or 'repossession' in low:
+        return 'repossession inaccurate'
+    if re.search(r'\b(?:30|60|90|120)\b', low) or 'late payment' in low or re.search(r'\blate\b', low):
+        return 'late payment history inaccurate'
+    if 'past due' in low or 'derog' in low or 'incomplete' in low or 'cannot be verified' in low:
+        return 'missing information / incomplete reporting'
+    return ''
+
+
+def _extract_address_candidates(text: str, bureau: str, current_address: str = '') -> list[dict]:
+    items = []
+    lines = _analysis_lines(text)
     seen = set()
-    for line in lines:
-        for info_type, pattern in patterns:
-            m = re.search(pattern, line, flags=re.IGNORECASE)
-            if not m:
-                continue
-            value = m.group(1).strip()
-            key = (_normalize_key_token(info_type), _normalize_key_token(value))
+    current_key = _normalize_address_key(current_address)
+    for idx, line in enumerate(lines):
+        if _is_analysis_noise_line(line):
+            continue
+        low = line.lower()
+        candidates = []
+        if any(tag in low for tag in ['current address', 'previous address', 'former address', 'address on file', 'reported address']):
+            value = _clean_address_value(line)
+            if _looks_like_address(value):
+                candidates.append((value, line))
+            elif idx + 1 < len(lines) and _looks_like_address(lines[idx + 1]) and not _is_analysis_noise_line(lines[idx + 1]):
+                candidates.append((_clean_address_value(lines[idx + 1]), line + ' ' + lines[idx + 1]))
+        elif _looks_like_address(line):
+            candidates.append((_clean_address_value(line), line))
+        for value, raw in candidates:
+            key = _normalize_address_key(value)
             if not value or key in seen:
-                break
+                continue
             seen.add(key)
+            if current_key and key == current_key:
+                continue
             items.append({
                 'bureau': bureau,
-                'info_type': info_type,
+                'info_type': 'address',
                 'reported_value': value,
-                'correct_value': '',
-                'suggested_action': 'delete' if info_type in {'address', 'employer', 'phone'} else 'correct',
+                'correct_value': current_address or '',
+                'suggested_action': 'correct',
                 'confidence': 'high',
-                'raw_excerpt': line,
+                'raw_excerpt': raw,
                 'comparison_status': 'new_candidate',
-                'strategy_note': 'Review whether this identity/profile element is inaccurate, outdated, or should be removed from the bureau file.',
+                'strategy_note': 'If this is not the client’s current address, request removal and give the correct current address.',
             })
-            break
     return items
+
+
+def _extract_remark_candidates(text: str, bureau: str) -> list[dict]:
+    items = []
+    seen = set()
+    for line in _analysis_lines(text):
+        if _is_analysis_noise_line(line):
+            continue
+        low = line.lower()
+        matched = ''
+        for needle, mapped in ANALYSIS_REMARK_PATTERNS:
+            if needle in low:
+                matched = mapped
+                break
+        if not matched:
+            continue
+        key = _normalize_key_token(line)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append({
+            'bureau': bureau,
+            'info_type': 'remark',
+            'reported_value': _normalize_analysis_whitespace(line),
+            'correct_value': '',
+            'suggested_action': 'delete',
+            'confidence': 'medium',
+            'raw_excerpt': line,
+            'comparison_status': 'new_candidate',
+            'strategy_note': 'If this remark is inaccurate, outdated, or should no longer appear, request removal.',
+        })
+    return items
+
+
+def _extract_personal_info_candidates(text: str, bureau: str, current_address: str = '') -> list[dict]:
+    return _extract_address_candidates(text, bureau, current_address=current_address) + _extract_remark_candidates(text, bureau)
+
+
+def _extract_inquiry_furnisher(line: str) -> str:
+    cleaned = re.sub(r'(?:hard\s+inquir(?:y|ies)|soft\s+inquir(?:y|ies)|inquiries|inquiry)', '', line, flags=re.IGNORECASE)
+    cleaned = re.sub(r'(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})', '', cleaned)
+    cleaned = re.sub(r'\bdate\b\s*:?\s*', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\s*[:|].*$', '', cleaned)
+    cleaned = cleaned.strip(' -:,;')
+    return _trim_creditor_name(cleaned)
 
 
 def _extract_inquiry_candidates(text: str, bureau: str) -> list[dict]:
     items = []
-    lines = [ln.strip() for ln in (text or '').splitlines() if ln.strip()]
-    inquiry_section = False
     seen = set()
-    for line in lines:
+    section = None
+    for line in _analysis_lines(text):
         low = line.lower()
-        if 'inquir' in low:
-            inquiry_section = True
-            if len(low) < 20:
-                continue
-        if inquiry_section or ('inquiry' in low and len(line) > 10):
-            date_match = re.search(r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})', line)
-            inquiry_date = _parse_flexible_date(date_match.group(1)) if date_match else ''
-            cleaned = re.sub(r'(hard\s+inquir(?:y|ies)|soft\s+inquir(?:y|ies)|inquiries|inquiry)', '', line, flags=re.IGNORECASE)
-            cleaned = re.sub(r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})', '', cleaned)
-            cleaned = re.sub(r'\s+', ' ', cleaned).strip(' -:|,')
-            furnisher = cleaned[:120] if cleaned else ''
-            if not furnisher:
-                continue
-            key = (_normalize_key_token(furnisher), inquiry_date)
-            if key in seen:
-                continue
-            seen.add(key)
-            items.append({
-                'bureau': bureau,
-                'furnisher_name': furnisher,
-                'inquiry_date': inquiry_date,
-                'suggested_reason': 'not my inquiry',
-                'suggested_action': 'delete',
-                'confidence': 'medium' if inquiry_date else 'low',
-                'raw_excerpt': line,
-                'comparison_status': 'new_candidate',
-                'strategy_note': 'Confirm whether the client recognizes this inquiry and whether there was a permissible purpose before mailing the dispute.',
-            })
+        if any(tag in low for tag in HARD_INQUIRY_SECTION_STOPS):
+            section = None
+        if any(tag in low for tag in HARD_INQUIRY_SECTION_STARTS):
+            section = 'hard'
+            continue
+        if _is_analysis_noise_line(line):
+            continue
+        if section != 'hard' and 'hard inquiry' not in low and 'hard inquiries' not in low:
+            continue
+        if 'prefix are' in low or 'with this prefix' in low or 'do not impact your credit' in low:
+            continue
+        furnisher = _extract_inquiry_furnisher(line)
+        if not _is_likely_creditor_name(furnisher):
+            continue
+        inquiry_date = _first_date_in_text(line)
+        key = (_normalize_key_token(furnisher), inquiry_date)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append({
+            'bureau': bureau,
+            'furnisher_name': furnisher,
+            'inquiry_date': inquiry_date,
+            'suggested_reason': 'not my inquiry',
+            'suggested_action': 'delete',
+            'confidence': 'high' if inquiry_date else 'medium',
+            'raw_excerpt': line,
+            'comparison_status': 'new_candidate',
+            'strategy_note': 'Only hard inquiries are staged here. Confirm whether the client authorized this inquiry before mailing.',
+        })
     return items
 
 
@@ -686,48 +4381,56 @@ def _extract_account_candidates(text: str, bureau: str) -> list[dict]:
     items = []
     seen = set()
     for block in blocks:
-        low = block.lower()
-        if not any(k in low for k in ['late', 'charge', 'collect', 'repo', 'bankrupt', 'past due', 'derog', 'account', 'tradeline']):
+        lines = [ln for ln in _analysis_lines(block) if not _is_analysis_noise_line(ln)]
+        if not lines:
             continue
-        if 'inquiry' in low and 'account' not in low:
+        joined = ' | '.join(lines)
+        low = joined.lower()
+        if 'inquir' in low or 'address' in low or 'consumer statement' in low:
             continue
-        creditor_name = _detect_creditor_name(block)
-        acct_fragment = _detect_account_number_fragment(block)
-        late_count = len(re.findall(r'\b30\b|\b60\b|\b90\b|\b120\b|late', low))
+        reason = _detect_negative_account_reason(joined)
+        if not reason:
+            continue
+        creditor_name = ''
+        for line in lines[:6]:
+            candidate = _trim_creditor_name(line)
+            if _is_likely_creditor_name(candidate):
+                creditor_name = candidate
+                break
+        if not creditor_name:
+            candidate = _trim_creditor_name(_detect_creditor_name('\n'.join(lines[:8])))
+            if _is_likely_creditor_name(candidate):
+                creditor_name = candidate
+        if not _is_likely_creditor_name(creditor_name):
+            continue
+        acct_fragment = _detect_account_number_fragment(block) or _detect_account_number_fragment(' '.join(lines[:6]))
+        key = (_normalize_key_token(creditor_name), _extract_last4(acct_fragment))
+        if key in seen:
+            continue
+        seen.add(key)
+        action, strategy_note = _account_reason_defaults(reason)
         status_bits = []
-        for keyword in ['open', 'closed', 'charge off', 'chargeoff', 'collection', 'collections', 'repossession', 'repo', 'redeemed', 'bankruptcy', 'past due', 'late']:
+        for keyword in ['open', 'closed', 'charge off', 'chargeoff', 'collection', 'collections', 'repossession', 'repo', 'bankruptcy', 'past due', 'late']:
             if keyword in low:
                 status_bits.append(keyword)
-        status_text = ', '.join(dict.fromkeys(status_bits)) or 'review account status'
-        missing_required_data = bool(re.search(r'date of first delinquency|first delinquency', low) and 'missing' in low)
-        acct_key = (_normalize_key_token(creditor_name), _extract_last4(acct_fragment))
-        if acct_key in seen:
-            continue
-        seen.add(acct_key)
-        open_state = 'open' in low and 'closed' not in low
-        age_years = 0
-        age_match = re.search(r'(\d+)\s+year', low)
-        if age_match:
-            try:
-                age_years = int(age_match.group(1))
-            except ValueError:
-                age_years = 0
-        item = {
+        status_text = ', '.join(dict.fromkeys(status_bits)) or reason
+        items.append({
             'bureau': bureau,
             'creditor_name': creditor_name,
             'account_number_fragment': acct_fragment,
-            'account_status': 'open' if open_state else ('closed' if 'closed' in low else ''),
+            'account_status': 'closed' if 'closed' in low else ('open' if 'open' in low else ''),
             'status_text': status_text,
-            'late_count': late_count,
-            'is_open': open_state,
-            'account_age_years': age_years,
-            'missing_required_data': missing_required_data,
+            'late_count': len(re.findall(r'\b(?:30|60|90|120)\b|\blate\b', low)),
+            'is_open': 'open' in low and 'closed' not in low,
+            'account_age_years': 0,
+            'missing_required_data': reason == 'missing / inaccurate date of first delinquency',
             'confidence': 'medium',
-            'raw_excerpt': block[:1500],
+            'raw_excerpt': '\n'.join(lines[:12]),
             'comparison_status': 'new_candidate',
-        }
-        item.update(_suggest_account_strategy(item))
-        items.append(item)
+            'suggested_reason': reason,
+            'suggested_action': action,
+            'strategy_note': strategy_note,
+        })
     return items
 
 
@@ -767,82 +4470,496 @@ def _build_live_dispute_maps(cur, client_id: str, bureau: str) -> dict:
     return {'accounts': accounts, 'personal_info': personal, 'inquiries': inquiries}
 
 
+
+
+def _extract_bureau_metadata(text: str, bureau: str) -> dict:
+    raw = (text or '')
+    bureau = (bureau or '').lower().strip()
+    reference_value = ''
+    document_date = ''
+    reference_label = _default_reference_label_for_bureau(bureau)
+    if bureau == 'equifax':
+        m = re.search(r'CREDIT\s+FILE\s*[: ]\s*([A-Za-z]+\s+\d{1,2},\s+\d{4}|[A-Za-z]+\s+\d{4}|\d{1,2}/\d{1,2}/\d{2,4}).{0,80}?Confirmation\s*#\s*([0-9]{10})', raw, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            document_date = m.group(1).strip()
+            reference_value = m.group(2).strip()
+    elif bureau == 'transunion':
+        m = re.search(r'File\s+Number\s*:?\s*([0-9\-]{6,})', raw, flags=re.IGNORECASE)
+        if m:
+            reference_value = m.group(1).strip()
+        m = re.search(r'(?:Date\s+Created|Credit\s+Report\s+Date)\s*:?\s*([0-9]{2}/[0-9]{2}/[0-9]{4})', raw, flags=re.IGNORECASE)
+        if m:
+            document_date = m.group(1).strip()
+    elif bureau == 'experian':
+        m = re.search(r'Report\s+Number\s*:?\s*([0-9]{4}-[0-9]{4}-[0-9]{2})', raw, flags=re.IGNORECASE)
+        if m:
+            reference_value = m.group(1).strip()
+        m = re.search(r'Date\s+Generated\s*:?\s*([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})', raw, flags=re.IGNORECASE)
+        if m:
+            document_date = m.group(1).strip()
+    return {
+        'reference_label': reference_label,
+        'reference_value': normalize_reference_value(bureau, reference_value),
+        'document_date': document_date,
+    }
+
+
+def _valid_name_variations_for_profile(profile: dict) -> set[str]:
+    first = re.sub(r'\s+', ' ', (profile.get('first_name') or '').strip()).upper()
+    middle = re.sub(r'\s+', ' ', (profile.get('middle_name') or '').strip()).upper()
+    last = re.sub(r'\s+', ' ', (profile.get('last_name') or '').strip()).upper()
+    vals = set()
+    if first and last:
+        vals.add(f"{first} {last}".strip())
+        if middle:
+            vals.add(f"{first} {middle} {last}".strip())
+            vals.add(f"{first} {middle[:1]} {last}".strip())
+    return {re.sub(r'\s+', ' ', v).strip() for v in vals if v.strip()}
+
+
+def _extract_name_candidates_from_report(text: str, bureau: str, profile: dict) -> list[dict]:
+    allowed = _valid_name_variations_for_profile(profile)
+    if not allowed:
+        return []
+    items, seen = [], set()
+    lines = _analysis_lines(text)
+    current = []
+    in_names = False
+    for line in lines:
+        low = line.lower()
+        if bureau == 'experian':
+            if low == 'names':
+                in_names = True
+                current = []
+                continue
+            if in_names and low.startswith(('addresses', 'social security', 'year of birth', 'accounts')):
+                in_names = False
+        elif bureau == 'equifax':
+            if 'name on file' in low:
+                candidate = re.sub(r'^.*name on file\s*:?\s*', '', line, flags=re.IGNORECASE).strip()
+                current = [candidate] if candidate else []
+                in_names = True
+                continue
+            if in_names and ('social security' in low or 'current address' in low):
+                in_names = False
+        elif bureau == 'transunion':
+            if low == 'name':
+                in_names = True
+                current = []
+                continue
+            if in_names and low.startswith(('current address', 'previous address', 'date reported', 'employers', 'phone numbers')):
+                in_names = False
+
+        if not in_names:
+            continue
+        if 'name id #' in low:
+            candidate = re.sub(r'Name\s+ID\s*#.*$', '', ' '.join(current), flags=re.IGNORECASE).strip()
+            current = []
+            norm = re.sub(r'\s+', ' ', candidate).strip().upper()
+            if norm and norm not in allowed:
+                key = _normalize_key_token(norm)
+                if key not in seen:
+                    seen.add(key)
+                    items.append({
+                        'bureau': bureau,
+                        'info_type': 'name',
+                        'reported_value': candidate,
+                        'correct_value': sorted(allowed)[0],
+                        'suggested_action': 'delete',
+                        'confidence': 'high',
+                        'raw_excerpt': candidate,
+                        'comparison_status': 'new_candidate',
+                        'strategy_note': 'Reported name variation is not one of the allowed client name variations and should be removed.',
+                    })
+            continue
+        if bureau == 'equifax':
+            norm = re.sub(r'\s+', ' ', ' '.join(current + [line])).strip().upper()
+            current = [norm]
+            if norm and norm not in allowed:
+                key = _normalize_key_token(norm)
+                if key not in seen:
+                    seen.add(key)
+                    items.append({
+                        'bureau': bureau,
+                        'info_type': 'name',
+                        'reported_value': norm.title(),
+                        'correct_value': sorted(allowed)[0].title(),
+                        'suggested_action': 'delete',
+                        'confidence': 'high',
+                        'raw_excerpt': norm,
+                        'comparison_status': 'new_candidate',
+                        'strategy_note': 'Reported name variation is not one of the allowed client name variations and should be removed.',
+                    })
+                in_names = False
+            continue
+        current.append(line)
+    return items
+
+
+def _extract_equifax_account_candidates(text: str) -> list[dict]:
+    items = []
+    parts = re.split(r'(?=\b(?:Account Name|[A-Z0-9/&.,\- ]{4,})\b.*?Account #\s*[-:])', text, flags=re.IGNORECASE)
+    seen = set()
+    banned_fragments = [
+        'inquiries', 'consumer statement', 'address id', 'current address', 'former address',
+        'name on file', 'social security number', 'employment data', 'public records', 'bankruptcy public records'
+    ]
+    for block in parts:
+        low = block.lower()
+        if 'account #' not in low and 'account number' not in low:
+            continue
+        if any(fragment in low for fragment in banned_fragments):
+            continue
+        if not any(k in low for k in ['charge off', 'charge-off', 'collection', 'past due', 'included in bankruptcy', 'date of 1st delinquency', 'late payment', 'repo', 'written off']):
+            continue
+        creditor = ''
+        m = re.search(r'^(?:\s*)([A-Z0-9/&.,\- ]{3,})\s*;?', block.strip(), flags=re.MULTILINE)
+        if m:
+            creditor = _trim_creditor_name(m.group(1))
+        m2 = re.search(r'Original Creditor\s*[-:]\s*([^;\n]+)', block, flags=re.IGNORECASE)
+        if not creditor and m2:
+            creditor = _trim_creditor_name(m2.group(1))
+        if not _is_likely_creditor_name(creditor):
+            continue
+        acct = _detect_account_number_fragment(block)
+        if not acct:
+            continue
+        reason = _detect_negative_account_reason(block)
+        if not reason:
+            reason = 'other'
+        action, strategy_note = _account_reason_defaults(reason if reason in DISPUTE_REASONS else 'other')
+        key = (_normalize_key_token(creditor), _extract_last4(acct))
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append({
+            'bureau': 'equifax',
+            'creditor_name': creditor,
+            'account_number_fragment': acct,
+            'account_status': 'closed' if 'date closed' in low or 'closed' in low else ('open' if 'open' in low else ''),
+            'status_text': reason,
+            'late_count': len(re.findall(r'\b(?:30|60|90|120|150|180)\b|\blate\b', low)),
+            'is_open': 'open' in low and 'closed' not in low,
+            'account_age_years': 0,
+            'missing_required_data': 'date of 1st delinquency' in low and ('not reported' in low or 'missing' in low),
+            'confidence': 'high',
+            'raw_excerpt': '\n'.join(_analysis_lines(block)[:18]),
+            'comparison_status': 'new_candidate',
+            'suggested_reason': reason if reason in DISPUTE_REASONS else 'other',
+            'suggested_action': action,
+            'strategy_note': strategy_note,
+        })
+    return items
+
+
+def _extract_transunion_account_candidates(text: str) -> list[dict]:
+    items, seen = [], set()
+    if 'accounts with adverse information' not in text.lower():
+        return []
+    adverse_part = re.split(r'satisfactory accounts', text, flags=re.IGNORECASE)[0]
+    blocks = re.split(r'(?=(?:[A-Z0-9/&.,\- ]{4,}\*{2,}|[A-Z0-9/&.,\- ]{4,}\nAccount Information))', adverse_part)
+    for block in blocks:
+        low = block.lower()
+        if 'account information' not in low:
+            continue
+        if 'inquiries' in low or 'employment' in low or 'address' in low:
+            continue
+        if not any(k in low for k in ['pay status', 'past due', 'charge', 'bankruptcy', 'collection', 'remarks', '>']):
+            continue
+        lines = _analysis_lines(block)
+        first_line = lines[0] if lines else ''
+        creditor = _trim_creditor_name(re.sub(r'\*+', '', first_line))
+        if not _is_likely_creditor_name(creditor):
+            continue
+        acct = _detect_account_number_fragment(first_line + ' ' + block)
+        if not acct:
+            continue
+        reason = 'other'
+        if 'included in bankruptcy' in low or 'bankruptcy' in low:
+            reason = 'not included in bankruptcy'
+        elif 'charge off' in low or 'charge-off' in low:
+            reason = 'charge-off inaccurate'
+        elif 'collection' in low:
+            reason = 'collection inaccurate'
+        elif 'past due' in low or 'derog' in low or re.search(r'>[^<]+<', block):
+            reason = 'late payment history inaccurate'
+        action, strategy_note = _account_reason_defaults(reason if reason in DISPUTE_REASONS else 'other')
+        key = (_normalize_key_token(creditor), _extract_last4(acct))
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append({
+            'bureau': 'transunion',
+            'creditor_name': creditor,
+            'account_number_fragment': acct,
+            'account_status': 'closed' if 'date closed' in low or 'closed' in low else ('open' if 'open' in low else ''),
+            'status_text': reason,
+            'late_count': len(re.findall(r'\b(?:30|60|90|120|150|180)\b|\blate\b', low)),
+            'is_open': 'open' in low and 'closed' not in low,
+            'account_age_years': 0,
+            'missing_required_data': False,
+            'confidence': 'high',
+            'raw_excerpt': '\n'.join(lines[:18]),
+            'comparison_status': 'new_candidate',
+            'suggested_reason': reason if reason in DISPUTE_REASONS else 'other',
+            'suggested_action': action,
+            'strategy_note': strategy_note,
+        })
+    return items
+
+
+def _extract_experian_account_candidates(text: str) -> list[dict]:
+    items, seen = [], set()
+    if 'potentially negative' not in text.lower():
+        return []
+    parts = re.split(r'(?=POTENTIALLY NEGATIVE)', text, flags=re.IGNORECASE)
+    for block in parts:
+        if 'potentially negative' not in block.lower():
+            continue
+        lines = _analysis_lines(block)
+        if not lines:
+            continue
+        m = re.search(r'Account Name\s+(.+)', block, flags=re.IGNORECASE)
+        creditor = _trim_creditor_name(m.group(1)) if m else ''
+        if not _is_likely_creditor_name(creditor):
+            continue
+        acct_match = re.search(r'Account Number\s+([A-Z0-9X*]+)', block, flags=re.IGNORECASE)
+        acct = acct_match.group(1).strip() if acct_match else _detect_account_number_fragment(block)
+        if not acct:
+            continue
+        low = block.lower()
+        if 'inquiries' in low or 'address' in low or 'consumer statement' in low:
+            continue
+        reason = 'other'
+        if 'charge off' in low or 'charged off' in low or 'written off' in low:
+            reason = 'charge-off inaccurate'
+        elif 'collection' in low:
+            reason = 'collection inaccurate'
+        elif re.search(r'\b30\b|\b60\b|\b90\b|\b120\b|\b150\b|\b180\b', low):
+            reason = 'late payment history inaccurate'
+        action, strategy_note = _account_reason_defaults(reason if reason in DISPUTE_REASONS else 'other')
+        key = (_normalize_key_token(creditor), _extract_last4(acct))
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append({
+            'bureau': 'experian',
+            'creditor_name': creditor,
+            'account_number_fragment': acct,
+            'account_status': 'closed' if 'cls closed' in low or 'closed' in low else ('open' if 'open' in low else ''),
+            'status_text': reason,
+            'late_count': len(re.findall(r'\b(?:30|60|90|120|150|180)\b|\blate\b', low)),
+            'is_open': 'open' in low and 'closed' not in low,
+            'account_age_years': 0,
+            'missing_required_data': False,
+            'confidence': 'high',
+            'raw_excerpt': '\n'.join(lines[:18]),
+            'comparison_status': 'new_candidate',
+            'suggested_reason': reason if reason in DISPUTE_REASONS else 'other',
+            'suggested_action': action,
+            'strategy_note': strategy_note,
+        })
+    return items
+
+
+def _extract_transunion_inquiry_candidates(text: str) -> list[dict]:
+    items, seen = [], set()
+    regular_split = re.split(r'Regular Inquiries', text, flags=re.IGNORECASE)
+    if len(regular_split) < 2:
+        return []
+    section = regular_split[1]
+    section = re.split(r'Promotional Inquiries|Account Review Inquiries|Soft Inquiries', section, flags=re.IGNORECASE)[0]
+    for chunk in re.split(r'(?=Name\s|[A-Z][A-Z0-9/&.,\- ]{3,}\nLocation)', section):
+        if 'requested on' not in chunk.lower():
+            continue
+        lines = _analysis_lines(chunk)
+        candidate = ''
+        for line in lines:
+            if line.lower() in {'name', 'location', 'phone', 'requested on', 'inquiry type', 'permissible purpose'}:
+                continue
+            if _is_likely_creditor_name(line):
+                candidate = _trim_creditor_name(line)
+                break
+        if not candidate:
+            continue
+        dates = re.findall(r'\d{2}/\d{2}/\d{4}', chunk)
+        inquiry_date = dates[0] if dates else ''
+        if not inquiry_date:
+            continue
+        key = (_normalize_key_token(candidate), inquiry_date)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append({
+            'bureau': 'transunion',
+            'furnisher_name': candidate,
+            'inquiry_date': inquiry_date,
+            'suggested_reason': 'not my inquiry',
+            'suggested_action': 'delete',
+            'confidence': 'high',
+            'raw_excerpt': '\n'.join(lines[:10]),
+            'comparison_status': 'new_candidate',
+            'strategy_note': 'Only Regular Inquiries should be staged from TransUnion. Promotional, account review, and soft inquiries are ignored.',
+        })
+    return items
+
+
+def _extract_experian_inquiry_candidates(text: str) -> list[dict]:
+    items, seen = [], set()
+    if 'hard inquiries' not in text.lower():
+        return []
+    section = re.split(r'Hard Inquiries', text, flags=re.IGNORECASE)[1]
+    section = re.split(r'Soft Inquiries', section, flags=re.IGNORECASE)[0]
+    chunks = re.split(r'(?=[A-Z][A-Z0-9/&.,\- ]+\nInquired on)', section)
+    for chunk in chunks:
+        if 'inquired on' not in chunk.lower():
+            continue
+        lines = _analysis_lines(chunk)
+        furnisher = _trim_creditor_name(lines[0]) if lines else ''
+        if not _is_likely_creditor_name(furnisher):
+            continue
+        m = re.search(r'Inquired on\s+([0-9]{2}/[0-9]{2}/[0-9]{4})', chunk, flags=re.IGNORECASE)
+        inquiry_date = m.group(1) if m else ''
+        if not inquiry_date:
+            continue
+        key = (_normalize_key_token(furnisher), inquiry_date)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append({
+            'bureau': 'experian',
+            'furnisher_name': furnisher,
+            'inquiry_date': inquiry_date,
+            'suggested_reason': 'not my inquiry',
+            'suggested_action': 'delete',
+            'confidence': 'high',
+            'raw_excerpt': '\n'.join(lines[:8]),
+            'comparison_status': 'new_candidate',
+            'strategy_note': 'Only Hard Inquiries should be staged from Experian.',
+        })
+    return items
+
+
+def _extract_bureau_personal_candidates(text: str, bureau: str, current_address: str, profile: dict) -> list[dict]:
+    items = _extract_address_candidates(text, bureau, current_address=current_address) + _extract_remark_candidates(text, bureau)
+    items.extend(_extract_name_candidates_from_report(text, bureau, profile))
+    return items
+
+
+def _dedupe_analysis_candidates(items: list[dict], key_builder) -> list[dict]:
+    deduped = []
+    seen = set()
+    for item in items:
+        key = key_builder(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 def analyze_document_text(cur, client_id: str, bureau: str, text: str) -> dict:
     bureau = (bureau or '').lower().strip()
-    account_candidates = _extract_account_candidates(text, bureau)
-    personal_candidates = _extract_personal_info_candidates(text, bureau)
-    inquiry_candidates = _extract_inquiry_candidates(text, bureau)
+    profile = fetch_client_profile(cur, client_id, include_sensitive=False) or {}
+    current_address = _format_profile_current_address(profile)
+    parser_notes = []
+    lowered_text = (text or '').lower()
+    if bureau == 'equifax':
+        account_candidates = _extract_equifax_account_candidates(text)
+        personal_candidates = _extract_bureau_personal_candidates(text, bureau, current_address=current_address, profile=profile)
+        inquiry_candidates = _extract_inquiry_candidates(text, bureau)
+    elif bureau == 'transunion':
+        if 'accounts with adverse information' not in lowered_text:
+            parser_notes.append('TransUnion adverse-account section was not found, so only clearly labeled adverse tradelines were staged.')
+        if 'regular inquiries' not in lowered_text:
+            parser_notes.append('TransUnion Regular Inquiries section was not found, so no inquiry rows were staged automatically.')
+        account_candidates = _extract_transunion_account_candidates(text)
+        personal_candidates = _extract_bureau_personal_candidates(text, bureau, current_address=current_address, profile=profile)
+        inquiry_candidates = _extract_transunion_inquiry_candidates(text)
+    elif bureau == 'experian':
+        if 'potentially negative' not in lowered_text:
+            parser_notes.append('Experian Potentially Negative section was not found, so no negative tradelines were staged automatically.')
+        if 'hard inquiries' not in lowered_text:
+            parser_notes.append('Experian Hard Inquiries section was not found, so no inquiry rows were staged automatically.')
+        account_candidates = _extract_experian_account_candidates(text)
+        personal_candidates = _extract_bureau_personal_candidates(text, bureau, current_address=current_address, profile=profile)
+        inquiry_candidates = _extract_experian_inquiry_candidates(text)
+    else:
+        account_candidates = _extract_account_candidates(text, bureau)
+        personal_candidates = _extract_personal_info_candidates(text, bureau, current_address=current_address)
+        inquiry_candidates = _extract_inquiry_candidates(text, bureau)
+
+    account_candidates = _dedupe_analysis_candidates(account_candidates, lambda i: (_normalize_key_token(i.get('creditor_name', '')), _extract_last4(i.get('account_number_fragment', ''))))
+    personal_candidates = _dedupe_analysis_candidates(personal_candidates, lambda i: (_normalize_key_token(i.get('info_type', '')), _normalize_key_token(i.get('reported_value', ''))))
+    inquiry_candidates = _dedupe_analysis_candidates(inquiry_candidates, lambda i: (_normalize_key_token(i.get('furnisher_name', '')), i.get('inquiry_date', '') or ''))
     live_maps = _build_live_dispute_maps(cur, client_id, bureau)
 
     matched_account_keys = set()
     for item in account_candidates:
         key = (_normalize_key_token(item.get('creditor_name', '')), _extract_last4(item.get('account_number_fragment', '')))
-        if key in live_maps['accounts']:
+        existing = live_maps['accounts'].get(key)
+        if existing:
             item['comparison_status'] = 'matches_active'
-            item['matched_dispute_id'] = live_maps['accounts'][key]['id']
+            item['matched_dispute_id'] = existing.get('id')
             matched_account_keys.add(key)
+
     matched_personal_keys = set()
     for item in personal_candidates:
         key = (_normalize_key_token(item.get('info_type', '')), _normalize_key_token(item.get('reported_value', '')))
-        if key in live_maps['personal_info']:
+        existing = live_maps['personal_info'].get(key)
+        if existing:
             item['comparison_status'] = 'matches_active'
-            item['matched_dispute_id'] = live_maps['personal_info'][key]['id']
+            item['matched_dispute_id'] = existing.get('id')
             matched_personal_keys.add(key)
+
     matched_inquiry_keys = set()
     for item in inquiry_candidates:
         key = (_normalize_key_token(item.get('furnisher_name', '')), item.get('inquiry_date', '') or '')
-        if key in live_maps['inquiries']:
+        existing = live_maps['inquiries'].get(key)
+        if existing:
             item['comparison_status'] = 'matches_active'
-            item['matched_dispute_id'] = live_maps['inquiries'][key]['id']
+            item['matched_dispute_id'] = existing.get('id')
             matched_inquiry_keys.add(key)
 
     missing_accounts = []
     for key, item in live_maps['accounts'].items():
         if key not in matched_account_keys:
-            missing_accounts.append(f"{item.get('creditor_name')} {item.get('account_number_last4') or ''}".strip())
+            missing_accounts.append(f"{item.get('creditor_name') or 'Unknown'} {item.get('account_number_last4') or ''}".strip())
+
     missing_personal = []
     for key, item in live_maps['personal_info'].items():
         if key not in matched_personal_keys:
             missing_personal.append(f"{item.get('info_type')}: {item.get('reported_value')}")
+
     missing_inquiries = []
     for key, item in live_maps['inquiries'].items():
         if key not in matched_inquiry_keys:
             missing_inquiries.append(f"{item.get('furnisher_name')} {item.get('inquiry_date') or ''}".strip())
 
-    needs_review = []
+    address_count = sum(1 for i in personal_candidates if i.get('info_type') == 'address')
+    remark_count = sum(1 for i in personal_candidates if i.get('info_type') == 'remark')
+    name_count = sum(1 for i in personal_candidates if i.get('info_type') == 'name')
+    needs_review = list(parser_notes)
     if not account_candidates and not personal_candidates and not inquiry_candidates:
-        needs_review.append('No structured items were extracted automatically. Review the document manually or upload a text-based PDF/report.')
-    if len(account_candidates) < 1:
-        needs_review.append('Account extraction was limited. Some report formats or scanned PDFs may require manual review.')
+        needs_review.append('No dispute-ready items were extracted automatically. Review the document manually or upload a text-based PDF/report.')
+    if not account_candidates:
+        needs_review.append('No negative tradelines were extracted automatically from this file.')
+    if not inquiry_candidates:
+        needs_review.append('No hard inquiries were staged from this file.')
+    if address_count == 0:
+        needs_review.append('No removable report addresses were detected automatically.')
+    if remark_count == 0:
+        needs_review.append('No disputeable remarks were detected automatically.')
+    if name_count == 0:
+        needs_review.append('No invalid name variations were detected automatically.')
 
     comparison_summary = {
-        'accounts': {
-            'found': len(account_candidates),
-            'matched_active': sum(1 for i in account_candidates if i.get('comparison_status') == 'matches_active'),
-            'new_candidates': sum(1 for i in account_candidates if i.get('comparison_status') == 'new_candidate'),
-            'possibly_removed_from_current_report': missing_accounts,
-        },
-        'personal_info': {
-            'found': len(personal_candidates),
-            'matched_active': sum(1 for i in personal_candidates if i.get('comparison_status') == 'matches_active'),
-            'new_candidates': sum(1 for i in personal_candidates if i.get('comparison_status') == 'new_candidate'),
-            'possibly_removed_from_current_report': missing_personal,
-        },
-        'inquiries': {
-            'found': len(inquiry_candidates),
-            'matched_active': sum(1 for i in inquiry_candidates if i.get('comparison_status') == 'matches_active'),
-            'new_candidates': sum(1 for i in inquiry_candidates if i.get('comparison_status') == 'new_candidate'),
-            'possibly_removed_from_current_report': missing_inquiries,
-        },
+        'accounts': {'found': len(account_candidates), 'matching_active': len(matched_account_keys), 'active_missing_from_report': missing_accounts},
+        'personal_info': {'found': len(personal_candidates), 'matching_active': len(matched_personal_keys), 'active_missing_from_report': missing_personal},
+        'inquiries': {'found': len(inquiry_candidates), 'matching_active': len(matched_inquiry_keys), 'active_missing_from_report': missing_inquiries},
         'needs_review': needs_review,
     }
-    return {
-        'accounts': account_candidates,
-        'personal_info': personal_candidates,
-        'inquiries': inquiry_candidates,
-        'comparison_summary': comparison_summary,
-    }
-
+    return {'accounts': account_candidates, 'personal_info': personal_candidates, 'inquiries': inquiry_candidates, 'comparison_summary': comparison_summary}
 
 def create_analysis_run(cur, client_id: str, bureau: str, source_document_id: str, source_kind: str, extracted_text: str, comparison_summary: dict) -> str:
     cur.execute("""
@@ -855,8 +4972,19 @@ def create_analysis_run(cur, client_id: str, bureau: str, source_document_id: st
     return cur.fetchone()[0]
 
 
+def _selected_by_default_for_analysis_item(item: dict) -> bool:
+    comparison_status = (item.get('comparison_status') or 'new_candidate').strip().lower()
+    confidence = (item.get('confidence') or 'medium').strip().lower()
+    if comparison_status in {'matches_active', 'imported', 'duplicate'}:
+        return False
+    if comparison_status == 'needs_review' and confidence == 'low':
+        return False
+    return True
+
+
 def save_analysis_items(cur, run_id: str, client_id: str, bureau: str, result: dict):
     for item in result.get('accounts', []):
+        selected_by_default = _selected_by_default_for_analysis_item(item)
         cur.execute("""
             INSERT INTO dispute_analysis_accounts
               (run_id, client_id, bureau, creditor_name, account_number_fragment, account_status, status_text, late_count,
@@ -864,38 +4992,40 @@ def save_analysis_items(cur, run_id: str, client_id: str, bureau: str, result: d
                raw_excerpt, selected_by_default)
             VALUES
               (%s::uuid, %s::uuid, %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), %s,
-               NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), %s, %s, NULLIF(%s,'')::uuid, NULLIF(%s,''), TRUE)
+               NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), %s, %s, NULLIF(%s,'')::uuid, NULLIF(%s,''), %s)
         """, (
             run_id, client_id, bureau, item.get('creditor_name'), item.get('account_number_fragment'), item.get('account_status'),
             item.get('status_text'), item.get('late_count') or None, item.get('suggested_reason'), item.get('suggested_action'),
             item.get('strategy_note'), item.get('confidence', 'medium'), item.get('comparison_status', 'new_candidate'),
-            item.get('matched_dispute_id'), item.get('raw_excerpt')
+            item.get('matched_dispute_id'), item.get('raw_excerpt'), selected_by_default
         ))
     for item in result.get('personal_info', []):
+        selected_by_default = _selected_by_default_for_analysis_item(item)
         cur.execute("""
             INSERT INTO dispute_analysis_personal_info
               (run_id, client_id, bureau, info_type, reported_value, correct_value, suggested_action, strategy_note,
                confidence, comparison_status, matched_dispute_id, raw_excerpt, selected_by_default)
             VALUES
               (%s::uuid, %s::uuid, %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''),
-               %s, %s, NULLIF(%s,'')::uuid, NULLIF(%s,''), TRUE)
+               %s, %s, NULLIF(%s,'')::uuid, NULLIF(%s,''), %s)
         """, (
             run_id, client_id, bureau, item.get('info_type'), item.get('reported_value'), item.get('correct_value'),
             item.get('suggested_action'), item.get('strategy_note'), item.get('confidence', 'medium'),
-            item.get('comparison_status', 'new_candidate'), item.get('matched_dispute_id'), item.get('raw_excerpt')
+            item.get('comparison_status', 'new_candidate'), item.get('matched_dispute_id'), item.get('raw_excerpt'), selected_by_default
         ))
     for item in result.get('inquiries', []):
+        selected_by_default = _selected_by_default_for_analysis_item(item)
         cur.execute("""
             INSERT INTO dispute_analysis_inquiries
               (run_id, client_id, bureau, furnisher_name, inquiry_date, suggested_reason, suggested_action, strategy_note,
                confidence, comparison_status, matched_dispute_id, raw_excerpt, selected_by_default)
             VALUES
               (%s::uuid, %s::uuid, %s, NULLIF(%s,''), NULLIF(%s,'')::date, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''),
-               %s, %s, NULLIF(%s,'')::uuid, NULLIF(%s,''), TRUE)
+               %s, %s, NULLIF(%s,'')::uuid, NULLIF(%s,''), %s)
         """, (
             run_id, client_id, bureau, item.get('furnisher_name'), item.get('inquiry_date'), item.get('suggested_reason'),
             item.get('suggested_action'), item.get('strategy_note'), item.get('confidence', 'medium'),
-            item.get('comparison_status', 'new_candidate'), item.get('matched_dispute_id'), item.get('raw_excerpt')
+            item.get('comparison_status', 'new_candidate'), item.get('matched_dispute_id'), item.get('raw_excerpt'), selected_by_default
         ))
 
 
@@ -919,13 +5049,60 @@ def analyze_selected_source_document(cur, client_id: str, document_id: str) -> d
     if bureau not in BUREAUS:
         raise ValueError('The selected document must have a bureau set before it can be analyzed.')
     extracted_text, extraction_error = extract_text_from_document(doc['file_path'], doc['file_name'])
+    match_status, match_score, match_summary = _document_client_match(
+        fetch_client_profile(cur, client_id, include_sensitive=False),
+        file_name=doc.get('file_name', ''),
+        extracted_text=extracted_text,
+    )
     comparison_summary = {'needs_review': [extraction_error] if extraction_error else []}
+    if match_status in {'partial_match', 'possible_mismatch'} and match_summary:
+        comparison_summary.setdefault('needs_review', []).append(match_summary)
     if extraction_error:
         run_id = create_analysis_run(cur, client_id, bureau, document_id, _document_kind_label(doc.get('doc_section', '')), '', comparison_summary)
-        return {'run_id': run_id, 'bureau': bureau, 'counts': {'accounts': 0, 'personal_info': 0, 'inquiries': 0}, 'error': extraction_error}
+        return {
+            'run_id': run_id,
+            'bureau': bureau,
+            'counts': {'accounts': 0, 'personal_info': 0, 'inquiries': 0},
+            'error': extraction_error,
+            'client_match_status': match_status,
+            'client_match_score': match_score,
+            'client_match_summary': match_summary,
+        }
+    meta = _extract_bureau_metadata(extracted_text, bureau)
+    existing_ref = (doc.get('reference_value') or '').strip()
+    existing_doc_date = (doc.get('document_date') or '').strip()
+    parsed_doc_date = _coerce_iso_date(meta.get('document_date') or '')
+    normalized_reference_value = normalize_reference_value(bureau, meta.get('reference_value') or '')
+    if normalized_reference_value and not reference_value_is_valid(bureau, normalized_reference_value):
+        comparison_summary.setdefault('needs_review', []).append(
+            f"Detected {_default_reference_label_for_bureau(bureau)} could not be validated automatically: {normalized_reference_value}"
+        )
+        normalized_reference_value = ''
+    if (normalized_reference_value and not existing_ref) or (parsed_doc_date and not existing_doc_date):
+        cur.execute("""
+            UPDATE client_documents
+            SET reference_label = CASE WHEN COALESCE(reference_label,'') = '' THEN %s ELSE reference_label END,
+                reference_value = CASE WHEN COALESCE(reference_value,'') = '' THEN %s ELSE reference_value END,
+                document_date = CASE WHEN document_date IS NULL AND %s IS NOT NULL THEN %s ELSE document_date END
+            WHERE id = %s::uuid
+        """, (
+            meta.get('reference_label') or _default_reference_label_for_bureau(bureau),
+            normalized_reference_value or '',
+            parsed_doc_date,
+            parsed_doc_date,
+            document_id
+        ))
     result = analyze_document_text(cur, client_id, bureau, extracted_text)
-    comparison_summary = result.get('comparison_summary', {})
-    run_id = create_analysis_run(cur, client_id, bureau, document_id, _document_kind_label(doc.get('doc_section', '')), extracted_text, comparison_summary)
+    result_summary = result.get('comparison_summary', {}) or {}
+    needs_review = list(result_summary.get('needs_review', []) or [])
+    if match_status in {'partial_match', 'possible_mismatch'} and match_summary:
+        needs_review.append(match_summary)
+    if comparison_summary.get('needs_review'):
+        needs_review.extend([n for n in comparison_summary['needs_review'] if n and n not in needs_review])
+    if needs_review:
+        result_summary['needs_review'] = needs_review
+    result['comparison_summary'] = result_summary
+    run_id = create_analysis_run(cur, client_id, bureau, document_id, _document_kind_label(doc.get('doc_section', '')), extracted_text, result_summary)
     save_analysis_items(cur, run_id, client_id, bureau, result)
     return {
         'run_id': run_id,
@@ -936,6 +5113,9 @@ def analyze_selected_source_document(cur, client_id: str, document_id: str) -> d
             'inquiries': len(result.get('inquiries', [])),
         },
         'error': '',
+        'client_match_status': match_status,
+        'client_match_score': match_score,
+        'client_match_summary': match_summary,
     }
 
 
@@ -960,7 +5140,7 @@ def fetch_latest_analysis_by_bureau(cur, client_id: str) -> dict:
             SELECT id::text, COALESCE(creditor_name,''), COALESCE(account_number_fragment,''), COALESCE(account_status,''),
                    COALESCE(status_text,''), COALESCE(suggested_reason,''), COALESCE(suggested_action,''), COALESCE(strategy_note,''),
                    COALESCE(confidence,'medium'), COALESCE(comparison_status,'new_candidate'), COALESCE(imported_dispute_id::text,''),
-                   COALESCE(raw_excerpt,'')
+                   COALESCE(raw_excerpt,''), COALESCE(selected_by_default, TRUE)
             FROM dispute_analysis_accounts
             WHERE run_id = %s::uuid
             ORDER BY comparison_status, creditor_name
@@ -969,14 +5149,14 @@ def fetch_latest_analysis_by_bureau(cur, client_id: str) -> dict:
             {
                 'id': r[0], 'creditor_name': r[1], 'account_number_fragment': r[2], 'account_status': r[3], 'status_text': r[4],
                 'suggested_reason': r[5], 'suggested_action': r[6], 'strategy_note': r[7], 'confidence': r[8],
-                'comparison_status': r[9], 'imported_dispute_id': r[10], 'raw_excerpt': r[11]
+                'comparison_status': r[9], 'imported_dispute_id': r[10], 'raw_excerpt': r[11], 'selected_by_default': bool(r[12])
             }
             for r in cur.fetchall()
         ]
         cur.execute("""
             SELECT id::text, COALESCE(info_type,''), COALESCE(reported_value,''), COALESCE(correct_value,''), COALESCE(suggested_action,''),
                    COALESCE(strategy_note,''), COALESCE(confidence,'medium'), COALESCE(comparison_status,'new_candidate'),
-                   COALESCE(imported_dispute_id::text,''), COALESCE(raw_excerpt,'')
+                   COALESCE(imported_dispute_id::text,''), COALESCE(raw_excerpt,''), COALESCE(selected_by_default, TRUE)
             FROM dispute_analysis_personal_info
             WHERE run_id = %s::uuid
             ORDER BY comparison_status, info_type, reported_value
@@ -984,14 +5164,14 @@ def fetch_latest_analysis_by_bureau(cur, client_id: str) -> dict:
         personal = [
             {
                 'id': r[0], 'info_type': r[1], 'reported_value': r[2], 'correct_value': r[3], 'suggested_action': r[4],
-                'strategy_note': r[5], 'confidence': r[6], 'comparison_status': r[7], 'imported_dispute_id': r[8], 'raw_excerpt': r[9]
+                'strategy_note': r[5], 'confidence': r[6], 'comparison_status': r[7], 'imported_dispute_id': r[8], 'raw_excerpt': r[9], 'selected_by_default': bool(r[10])
             }
             for r in cur.fetchall()
         ]
         cur.execute("""
             SELECT id::text, COALESCE(furnisher_name,''), inquiry_date, COALESCE(suggested_reason,''), COALESCE(suggested_action,''),
                    COALESCE(strategy_note,''), COALESCE(confidence,'medium'), COALESCE(comparison_status,'new_candidate'),
-                   COALESCE(imported_dispute_id::text,''), COALESCE(raw_excerpt,'')
+                   COALESCE(imported_dispute_id::text,''), COALESCE(raw_excerpt,''), COALESCE(selected_by_default, TRUE)
             FROM dispute_analysis_inquiries
             WHERE run_id = %s::uuid
             ORDER BY comparison_status, inquiry_date DESC NULLS LAST, furnisher_name
@@ -1000,7 +5180,7 @@ def fetch_latest_analysis_by_bureau(cur, client_id: str) -> dict:
             {
                 'id': r[0], 'furnisher_name': r[1], 'inquiry_date': str(r[2]) if r[2] else '', 'suggested_reason': r[3],
                 'suggested_action': r[4], 'strategy_note': r[5], 'confidence': r[6], 'comparison_status': r[7],
-                'imported_dispute_id': r[8], 'raw_excerpt': r[9]
+                'imported_dispute_id': r[8], 'raw_excerpt': r[9], 'selected_by_default': bool(r[10])
             }
             for r in cur.fetchall()
         ]
@@ -1027,80 +5207,201 @@ def fetch_latest_analysis_by_bureau(cur, client_id: str) -> dict:
     return results
 
 
-def _match_existing_account_dispute(cur, client_id: str, bureau: str, creditor_name: str, last4: str) -> Optional[str]:
-    cur.execute("""
-        SELECT id::text
-        FROM client_account_disputes
-        WHERE client_id = %s::uuid
-          AND lower(COALESCE(bureau,'')) IN ('', lower(%s))
-          AND lower(COALESCE(creditor_name,'')) = lower(%s)
-          AND COALESCE(account_number_last4,'') = %s
-        ORDER BY created_at DESC
-        LIMIT 1
-    """, (client_id, bureau, creditor_name, last4))
-    row = cur.fetchone()
-    return row[0] if row else None
 
 
-def build_smart_letter_text(cur, client_id: str, bureau: str, round_number: int, include_personal_info: bool, include_inquiries: bool, letter_instructions: str = '', round_run_id: Optional[str] = None) -> str:
-    profile = fetch_client_profile(cur, client_id, include_sensitive=False)
+
+
+
+def _render_custom_letter_template(template_content: str, replacements: dict, fallback_body: str) -> str:
+    content = (template_content or "").replace("\\r\\n", "\n").replace("\\n", "\n").strip()
+    if not content:
+        return fallback_body
+    rendered = content
+    for key, value in replacements.items():
+        clean_value = str(value or "").replace("\\r\\n", "\n").replace("\\n", "\n").strip()
+        rendered = rendered.replace("{" + key + "}", clean_value)
+        rendered = rendered.replace("{{" + key + "}}", clean_value)
+    rendered = rendered.replace("\\r\\n", "\n").replace("\\n", "\n")
+    rendered = re.sub(r"\n{3,}", "\n\n", rendered).strip()
+    if "{opening_paragraphs}" not in content and "{{opening_paragraphs}}" not in content and "{accounts_section}" not in content and "{{accounts_section}}" not in content and "{closing_paragraphs}" not in content and "{{closing_paragraphs}}" not in content:
+        rendered = (rendered + "\n\n" + fallback_body).strip()
+    return rendered.strip()
+
+
+def _clean_account_ref_for_letter(value: str) -> str:
+    raw = (value or '').strip()
+    return raw if raw else 'as shown on report'
+
+
+def _format_letter_item_lines(title: str, lines: list[str]) -> str:
+    clean_lines = [str(line or '').strip() for line in (lines or []) if str(line or '').strip()]
+    if not clean_lines:
+        return ''
+    return "\n\n".join([title] + [f"• {line}" for line in clean_lines]).strip()
+
+
+
+def build_smart_letter_text(cur, client_id: str, bureau: str, round_number: int, include_personal_info: bool, include_inquiries: bool, letter_instructions: str = '', round_run_id: Optional[str] = None, selected_template_id: str = '', manual_confirmation_number: str = '') -> str:
+    profile = fetch_client_profile(cur, client_id, include_sensitive=False) or {}
     primary_doc = _fetch_selected_primary_document(cur, round_run_id, client_id, bureau)
+    prior_letters = fetch_bureau_letter_history(cur, client_id, bureau, before_round=round_number, limit=8)
     bureau_label = (bureau or '').title()
     doc_kind = _document_kind_label(primary_doc.get('doc_section', '')) if primary_doc else 'Report'
     doc_date = format_long_date(primary_doc.get('document_date') or primary_doc.get('statement_date') or date.today()) if primary_doc else format_long_date(date.today())
     reference_label = (primary_doc.get('reference_label') or _default_reference_label_for_bureau(bureau)).strip() if primary_doc else _default_reference_label_for_bureau(bureau)
     reference_value = (primary_doc.get('reference_value') or '').strip() if primary_doc else ''
+    manual_confirmation_number = normalize_reference_value(bureau, manual_confirmation_number or '')
+    effective_reference_value = reference_value or manual_confirmation_number
 
     account_items = [i for i in fetch_account_disputes(cur, client_id, 500) if i.get('is_active') and (not i.get('bureau') or i.get('bureau') == bureau)]
     personal_items = [i for i in fetch_personal_info_disputes(cur, client_id, 500) if i.get('is_active') and (not i.get('bureau') or i.get('bureau') == bureau)] if include_personal_info else []
     inquiry_items = [i for i in fetch_inquiry_disputes(cur, client_id, 500) if i.get('is_active') and (not i.get('bureau') or i.get('bureau') == bureau)] if include_inquiries else []
 
-    paragraphs = []
+    client_name = ' '.join([p for p in [profile.get('first_name'), profile.get('middle_name'), profile.get('last_name')] if p]).strip() or 'Client'
+    stage_label = f"Stage {round_number}"
+
+    prior_round_refs = []
+    for letter in sorted(prior_letters, key=lambda x: int(x.get('round_number') or 0)):
+        rnum = int(letter.get('round_number') or 0)
+        gdate = format_long_date(letter.get('generated_at') or date.today())
+        if rnum > 0:
+            prior_round_refs.append(f"Round {rnum} dated {gdate}")
+    prior_round_refs = prior_round_refs[-4:]
+
     if round_number <= 1:
-        paragraphs.append(f'I am writing after reviewing my {bureau_label} {doc_kind.lower()} dated {doc_date}. I dispute the accuracy and completeness of the items listed below and request a reasonable reinvestigation.')
+        opening_paragraphs = [
+            f"I recently received and reviewed my {bureau_label} {doc_kind.lower()} dated {doc_date}. I am disputing the accuracy and completeness of the items listed below and request an investigation."
+        ]
+        tone_line = "Initial investigation language only. Do not use reinvestigation or redispute wording."
     elif round_number == 2:
-        paragraphs.append(f'I am following up after reviewing my {bureau_label} {doc_kind.lower()} dated {doc_date}. I previously disputed the items below and they continue to report inaccurately or incompletely. Please conduct a new reasonable reinvestigation.')
+        prior_line = f" This follows my prior dispute letter ({prior_round_refs[-1]})." if prior_round_refs else ""
+        opening_paragraphs = [
+            f"I recently reviewed my updated {bureau_label} {doc_kind.lower()} dated {doc_date}. I am redisputing the unresolved items listed below and request a reinvestigation.{prior_line}",
+            "The items below remain inaccurate, incomplete, unverifiable, or otherwise unresolved and require a new review."
+        ]
+        tone_line = "Second-round redispute. Use firmer follow-up language and treat this as a reinvestigation."
     else:
-        paragraphs.append(f'I am again writing after reviewing my {bureau_label} {doc_kind.lower()} dated {doc_date}. The items listed below continue to be reported inaccurately, incompletely, or without adequate correction after prior disputes, and I request a fresh reinvestigation and correction or deletion as appropriate.')
-    if reference_value:
-        paragraphs.append(f'For reference, the {bureau_label} {doc_kind.lower()} I am disputing is identified as {reference_label} {reference_value}.')
+        prior_line = ""
+        if prior_round_refs:
+            prior_line = " Prior dispute history for this bureau includes " + "; ".join(prior_round_refs) + "."
+        opening_paragraphs = [
+            f"I recently reviewed my updated {bureau_label} {doc_kind.lower()} dated {doc_date}. I am redisputing the unresolved items listed below and request a reinvestigation.{prior_line}",
+            "These items remain inaccurate, incomplete, unverifiable, or unresolved after prior dispute rounds. Please conduct a fresh reinvestigation and correct or delete any item that cannot be verified as accurate and complete."
+        ]
+        tone_line = "Later-stage redispute. Tone should escalate and reference unresolved prior rounds."
 
-    if account_items:
-        details = []
-        for idx, item in enumerate(account_items, start=1):
-            acct_ref = item.get('account_number_last4') or 'reported as shown on my file'
-            reason = (item.get('dispute_reason') or 'other').strip().lower()
-            if reason == 'never late':
-                reason_sentence = 'the reported late-payment history is inaccurate and should be corrected or deleted if it cannot be verified as complete and accurate'
-            elif reason == 'not mine':
-                reason_sentence = 'I do not recognize this account as mine and request reinvestigation of ownership and reporting accuracy'
-            elif reason == 'not included in bankruptcy':
-                reason_sentence = 'the bankruptcy-related reporting on this account is inaccurate or incomplete and should be corrected'
-            else:
-                note = (item.get('notes') or '').strip()
-                reason_sentence = note if note else 'the reporting on this account is inaccurate, incomplete, or unverifiable and should be corrected or deleted as appropriate'
-            details.append(f'{idx}. {item.get("creditor_name") or "Account"} ({acct_ref}): {reason_sentence}.')
-        paragraphs.append('Please review the following account items: ' + ' '.join(details))
+    supplemental_paragraphs = []
+    if effective_reference_value:
+        supplemental_paragraphs.append(f"{reference_label}: {effective_reference_value}")
+    supplemental_paragraphs.append("I am including the required documentation for processing of this dispute.")
 
-    if personal_items:
-        details = []
-        for idx, item in enumerate(personal_items, start=1):
-            details.append(f'{idx}. {item.get("info_type")}: {item.get("reported_value")}. Please {item.get("requested_action") or "correct"} this personal-information entry if it is inaccurate, outdated, or should not be reporting.')
-        paragraphs.append('Please also review the following personal-information items: ' + ' '.join(details))
+    def _reason_label(reason: str, default: str) -> str:
+        clean = (reason or '').strip()
+        return clean if clean else default
 
-    if inquiry_items:
-        details = []
-        for idx, item in enumerate(inquiry_items, start=1):
-            date_part = f' dated {format_short_date(item.get("inquiry_date"))}' if item.get('inquiry_date') else ''
-            reason = (item.get('dispute_reason') or 'not my inquiry').strip()
-            details.append(f'{idx}. {item.get("furnisher_name")}{date_part}: please investigate and delete this inquiry if it was not authorized, is inaccurate, or cannot be verified.')
-        paragraphs.append('Please review the following inquiries: ' + ' '.join(details))
+    account_lines = []
+    for item in account_items:
+        creditor = (item.get('creditor_name') or 'Account').strip()
+        acct_ref = _clean_account_ref_for_letter(item.get('account_number_last4') or item.get('account_number_fragment') or '')
+        reason = _reason_label(item.get('dispute_reason') or '', 'reporting inaccurate / incomplete')
+        note = (item.get('notes') or '').strip()
+        line = f"{creditor} | Account #: {acct_ref} | Reason: {reason}"
+        if note:
+            line += f" | Notes: {note}"
+        account_lines.append(line)
 
-    instructions = (letter_instructions or '').strip().lower()
-    if round_number >= 2 or 'redispute' in instructions:
-        paragraphs.append('If you previously verified any of these items without making the requested corrections, please provide the method of verification and the source of the information you relied on during your reinvestigation.')
-    paragraphs.append('Please correct or delete any item that is inaccurate, incomplete, or cannot be verified after a reasonable reinvestigation, and send me an updated copy of my credit file once your review is complete.')
-    return '\n\n'.join(paragraphs)
+    inquiry_lines = []
+    for item in inquiry_items:
+        furnisher = (item.get('furnisher_name') or 'Inquiry').strip()
+        inquiry_date = format_short_date(item.get('inquiry_date')) if item.get('inquiry_date') else 'date not shown'
+        reason = _reason_label(item.get('dispute_reason') or '', 'not my inquiry')
+        note = (item.get('notes') or '').strip()
+        line = f"{furnisher} | Inquiry date: {inquiry_date} | Reason: {reason}"
+        if note:
+            line += f" | Notes: {note}"
+        inquiry_lines.append(line)
+
+    personal_lines = []
+    for item in personal_items:
+        info_type = (item.get('info_type') or 'other').strip().lower()
+        reported_value = item.get('reported_value') or 'reported as shown on my file'
+        correct_value = item.get('correct_value') or ''
+        requested_action = (item.get('requested_action') or 'correct').strip()
+        note = (item.get('notes') or '').strip()
+        if info_type == 'address':
+            line = f"Address reported: {reported_value} | Requested action: {requested_action}"
+            if correct_value:
+                line += f" | Correct current address: {correct_value}"
+        elif info_type == 'name':
+            line = f"Name variation reported: {reported_value} | Requested action: {requested_action}"
+            if correct_value:
+                line += f" | Correct name: {correct_value}"
+        elif info_type == 'remark':
+            line = f"Remark reported: {reported_value} | Requested action: {requested_action}"
+        else:
+            label = info_type.title()
+            line = f"{label} reported: {reported_value} | Requested action: {requested_action}"
+            if correct_value:
+                line += f" | Correct value: {correct_value}"
+        if note:
+            line += f" | Notes: {note}"
+        personal_lines.append(line)
+
+    closing_paragraphs = []
+    instructions = (letter_instructions or '').strip()
+    if instructions:
+        closing_paragraphs.append(f"Additional instructions for this round: {instructions}")
+    if round_number >= 2:
+        closing_paragraphs.append("If you continue to report any of these items as verified, please provide the method of verification and identify the records, documents, or source information relied upon during your reinvestigation.")
+        closing_paragraphs.append("Please send me an updated copy of my credit file reflecting the results of your reinvestigation.")
+    else:
+        closing_paragraphs.append("Please correct or delete any item that is inaccurate, incomplete, or cannot be verified after your investigation.")
+        closing_paragraphs.append("Please send me an updated copy of my credit file once your investigation is complete.")
+
+    accounts_section = _format_letter_item_lines('Accounts', account_lines)
+    inquiries_section = _format_letter_item_lines('Inquiries', inquiry_lines)
+    personal_info_section = _format_letter_item_lines('Personal Information', personal_lines)
+
+    body_parts = []
+    body_parts.extend(opening_paragraphs)
+    body_parts.extend(supplemental_paragraphs)
+    if accounts_section:
+        body_parts.append(accounts_section)
+    if inquiries_section:
+        body_parts.append(inquiries_section)
+    if personal_info_section:
+        body_parts.append(personal_info_section)
+    body_parts.extend(closing_paragraphs)
+    fallback_body = "\n\n".join([part for part in body_parts if str(part or '').strip()]).strip()
+
+    selected_template = load_custom_letter_template(selected_template_id) if selected_template_id else None
+    replacements = {
+        'client_name': client_name,
+        'bureau': bureau,
+        'bureau_label': bureau_label,
+        'round_number': round_number,
+        'stage_label': stage_label,
+        'doc_kind': doc_kind,
+        'doc_date': doc_date,
+        'reference_label': reference_label,
+        'reference_value': effective_reference_value,
+        'reference_line': f"{reference_label}: {effective_reference_value}".strip(': ').strip(),
+        'opening_paragraphs': "\n\n".join(opening_paragraphs).strip(),
+        'accounts_section': accounts_section,
+        'personal_info_section': personal_info_section,
+        'inquiries_section': inquiries_section,
+        'closing_paragraphs': "\n\n".join(closing_paragraphs).strip(),
+        'prior_letters_summary': "\n".join(prior_round_refs).strip(),
+        'letter_instructions': instructions,
+        'tone_guidance': tone_line,
+        'supplemental_paragraphs': "\n\n".join(supplemental_paragraphs).strip(),
+    }
+    if selected_template and (not selected_template.get('bureau') or selected_template.get('bureau') == bureau):
+        stage = int(selected_template.get('stage') or 0)
+        if stage in (0, round_number):
+            return _render_custom_letter_template(selected_template.get('content', ''), replacements, fallback_body)
+
+    return fallback_body
 
 # ---------------------------
 # PDF generation
@@ -1108,7 +5409,7 @@ def build_smart_letter_text(cur, client_id: str, bureau: str, round_number: int,
 
 
 def _normalize_letter_paragraphs(letter_text: str) -> list[str]:
-    raw = (letter_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    raw = (letter_text or "").replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r", "\n")
     raw = re.sub(r"\n{3,}", "\n\n", raw).strip()
     if not raw:
         return []
@@ -1120,8 +5421,12 @@ def _normalize_letter_paragraphs(letter_text: str) -> list[str]:
         lines = [ln.strip() for ln in block.split("\n") if ln.strip()]
         if not lines:
             continue
-        para = " ".join(lines)
-        para = re.sub(r"\s+", " ", para).strip()
+        if len(lines) == 1:
+            para = lines[0]
+        else:
+            keep_multiline = lines[0] in {"Accounts", "Inquiries", "Personal Information"} or all(ln.startswith("• ") for ln in lines[1:])
+            para = "\n".join(lines) if keep_multiline else " ".join(lines)
+        para = re.sub(r"[ \t]+", " ", para).strip()
         if para:
             chunks.append(para)
     return chunks
@@ -1179,7 +5484,7 @@ def _normalize_document_section(section: str, category: str) -> str:
 
 
 def _extract_letter_body_paragraphs(letter_text: str) -> list[str]:
-    raw = (letter_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    raw = (letter_text or "").replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r", "\n")
     raw = re.sub(r"\(\s*Round\s*\d+\s*\)", "", raw, flags=re.IGNORECASE)
     lines = [ln.strip() for ln in raw.split("\n")]
 
@@ -1197,6 +5502,7 @@ def _extract_letter_body_paragraphs(letter_text: str) -> list[str]:
             end_idx = i
             break
 
+    heading_set = {"Accounts", "Inquiries", "Personal Information"}
     body_lines = []
     for line in lines[start_idx:end_idx]:
         if not line:
@@ -1211,23 +5517,26 @@ def _extract_letter_body_paragraphs(letter_text: str) -> list[str]:
             continue
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", line):
             continue
-        body_lines.append(line)
+        if line in heading_set or line.startswith("• "):
+            body_lines.append(line)
+        else:
+            line = re.sub(r"\s{2,}", " ", line).strip()
+            body_lines.append(line)
 
     body = "\n".join(body_lines)
     body = re.sub(
         r"This is my\s+[^.]{0,120}?\bnotice\b[^.]*\.",
-        "I am writing to dispute inaccurate information appearing on my credit file and to request a reasonable reinvestigation of the items listed below.",
+        "I am writing to dispute inaccurate information appearing on my credit file and to request a reinvestigation of the items listed below.",
         body,
         flags=re.IGNORECASE,
     )
     body = re.sub(
         r"This is my\s+[^.]{0,120}?\brequest\b[^.]*\.",
-        "I am writing to dispute inaccurate information appearing on my credit file and to request a reasonable reinvestigation of the items listed below.",
+        "I am writing to dispute inaccurate information appearing on my credit file and to request a reinvestigation of the items listed below.",
         body,
         flags=re.IGNORECASE,
     )
     body = re.sub(r"\b[Rr]ound\s*\d+\b", "", body)
-    body = re.sub(r"\s{2,}", " ", body)
     body = re.sub(r"\n{3,}", "\n\n", body).strip()
     return _normalize_letter_paragraphs(body)
 
@@ -1270,8 +5579,6 @@ def _validate_document_dates(doc_category: str, statement_date: str = "", expire
             raise ValueError("Proof of address must be no more than 60 days old.")
 
 
-def _doc_category_counts_as_proof(doc_category: str) -> bool:
-    return (doc_category or "") in PROOF_OF_ADDRESS_CATEGORIES or (doc_category or "") in {"driver_license_front", "driver_license_back", "state_id_front", "state_id_back"}
 
 
 def _document_kind_label(doc_section: str) -> str:
@@ -1332,7 +5639,10 @@ def _coerce_iso_date(value: str):
     value = (value or '').strip()
     if not value:
         return None
-    return datetime.strptime(value, '%Y-%m-%d').date()
+    parsed = _parse_flexible_date(value)
+    if parsed:
+        return datetime.strptime(parsed, '%Y-%m-%d').date()
+    return None
 
 
 def _build_reference_line(primary_doc: Optional[dict], bureau: str) -> str:
@@ -1426,7 +5736,7 @@ def _fetch_selected_primary_document(cur, round_run_id: Optional[str], client_id
 
 def make_pdf(letter_text: str, out_path: str, client_profile: Optional[dict] = None, formal_date: Optional[str] = None,
              signature_path: Optional[str] = None, include_signature: bool = False, bureau: str = "",
-             primary_doc: Optional[dict] = None):
+             primary_doc: Optional[dict] = None, reference_line: str = ""):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
     styles = getSampleStyleSheet()
@@ -1435,25 +5745,31 @@ def make_pdf(letter_text: str, out_path: str, client_profile: Optional[dict] = N
         parent=styles["BodyText"],
         fontName="Helvetica",
         fontSize=11,
-        leading=13,
+        leading=12,
         spaceAfter=0,
+        leftIndent=0,
+        firstLineIndent=0,
         textColor=colors.black,
     )
-    right_date_style = ParagraphStyle("RightDate", parent=address_style, alignment=2)
+    date_style = ParagraphStyle("LetterDate", parent=address_style, alignment=0, spaceAfter=8)
     body_style = ParagraphStyle(
         "LetterBody",
         parent=styles["BodyText"],
         fontName="Helvetica",
         fontSize=11,
-        leading=15,
-        spaceAfter=10,
+        leading=14,
+        spaceAfter=8,
+        leftIndent=0,
+        firstLineIndent=0,
         textColor=colors.black,
     )
-    salutation_style = ParagraphStyle("Salutation", parent=body_style, spaceAfter=10)
-    subject_style = ParagraphStyle("LetterSubject", parent=body_style, fontName="Helvetica-Bold", spaceBefore=6, spaceAfter=12)
-    closing_style = ParagraphStyle("LetterClosing", parent=body_style, spaceBefore=12, spaceAfter=4)
-    signature_name_style = ParagraphStyle("SignatureName", parent=body_style, fontName="Helvetica-Bold", spaceAfter=0)
-    signature_meta_style = ParagraphStyle("SignatureMeta", parent=body_style, spaceBefore=0, spaceAfter=0)
+    section_heading_style = ParagraphStyle("LetterSectionHeading", parent=body_style, fontName="Helvetica-Bold", spaceBefore=8, spaceAfter=4, leftIndent=0, firstLineIndent=0)
+    item_style = ParagraphStyle("LetterItem", parent=body_style, leftIndent=16, firstLineIndent=-8, spaceAfter=5)
+    salutation_style = ParagraphStyle("Salutation", parent=body_style, spaceAfter=8, leftIndent=0, firstLineIndent=0)
+    subject_style = ParagraphStyle("LetterSubject", parent=body_style, fontName="Helvetica-Bold", spaceBefore=4, spaceAfter=10, leftIndent=0, firstLineIndent=0)
+    closing_style = ParagraphStyle("LetterClosing", parent=body_style, spaceBefore=10, spaceAfter=4, leftIndent=0, firstLineIndent=0)
+    signature_name_style = ParagraphStyle("SignatureName", parent=body_style, fontName="Helvetica-Bold", spaceAfter=0, leftIndent=0, firstLineIndent=0)
+    signature_meta_style = ParagraphStyle("SignatureMeta", parent=body_style, spaceBefore=0, spaceAfter=0, leftIndent=0, firstLineIndent=0)
 
     doc = SimpleDocTemplate(
         out_path,
@@ -1483,35 +5799,39 @@ def make_pdf(letter_text: str, out_path: str, client_profile: Optional[dict] = N
     if city_line:
         address_lines.append(city_line)
 
-    left_lines = [full_name] if full_name else []
-    left_lines.extend(address_lines)
-    left_html = "<br/>".join([escape(ln) for ln in left_lines if ln]) or "&nbsp;"
     date_html = escape(formal_date or format_long_date(date.today()))
-    header_table = Table([[Paragraph(left_html, address_style), Paragraph(date_html, right_date_style)]], colWidths=[3.95 * inch, 2.05 * inch])
-    header_table.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-    ]))
-    story.append(header_table)
-    story.append(Spacer(1, 14))
+    story.append(Paragraph(date_html, date_style))
 
     bureau_lines = BUREAU_DISPUTE_ADDRESSES.get((bureau or "").lower(), [])
     for line in bureau_lines:
         story.append(Paragraph(escape(line), address_style))
     if bureau_lines:
-        story.append(Spacer(1, 12))
+        story.append(Spacer(1, 10))
 
-    story.append(Paragraph(f"Re: {escape(_build_reference_line(primary_doc, bureau))}", subject_style))
+    subject_line = (reference_line or "").strip() or _build_reference_line(primary_doc, bureau)
+    story.append(Paragraph(f"Re: {escape(subject_line)}", subject_style))
     story.append(Paragraph("To Whom It May Concern,", salutation_style))
 
     paragraphs = _extract_letter_body_paragraphs(letter_text)
     if not paragraphs:
-        paragraphs = ["I am writing to dispute inaccurate information appearing on my credit file and to request a reasonable reinvestigation of the items listed below."]
+        paragraphs = ["I am writing to dispute inaccurate information appearing on my credit file and to request an investigation of the items listed below."]
+    section_titles = {"Accounts", "Inquiries", "Personal Information"}
     for para in paragraphs:
-        story.append(Paragraph(escape(para), body_style))
+        if para in section_titles:
+            story.append(Paragraph(escape(para), section_heading_style))
+            continue
+        if "\n" in para:
+            lines = [ln.strip() for ln in para.split("\n") if ln.strip()]
+            if lines and lines[0] in section_titles:
+                story.append(Paragraph(escape(lines[0]), section_heading_style))
+                for item_line in lines[1:]:
+                    item_line = item_line[2:].strip() if item_line.startswith("• ") else item_line
+                    story.append(Paragraph(escape(item_line), item_style))
+                continue
+        if para.startswith("• "):
+            story.append(Paragraph(escape(para[2:].strip()), item_style))
+        else:
+            story.append(Paragraph(escape(para), body_style))
 
     story.append(Spacer(1, 8))
     story.append(Paragraph("Sincerely,", closing_style))
@@ -1524,6 +5844,11 @@ def make_pdf(letter_text: str, out_path: str, client_profile: Optional[dict] = N
 
     if full_name:
         story.append(Paragraph(escape(full_name), signature_name_style))
+    for line in address_lines:
+        story.append(Paragraph(escape(line), signature_meta_style))
+    phone_display = (profile.get("phone") or "").strip()
+    if phone_display:
+        story.append(Paragraph(f"Phone: {escape(phone_display)}", signature_meta_style))
     dob_display = format_short_date(profile.get("date_of_birth"))
     if dob_display:
         story.append(Paragraph(f"DOB: {escape(dob_display)}", signature_meta_style))
@@ -1546,6 +5871,7 @@ def generate_and_attach_pdf(cur, letter_id: str):
                c.middle_name,
                c.last_name,
                COALESCE(c.suffix, '') AS suffix,
+               COALESCE(c.phone, '') AS phone,
                c.date_of_birth,
                c.ssn_full_enc,
                COALESCE(addr.line1, '') AS address_line1,
@@ -1572,7 +5898,7 @@ def generate_and_attach_pdf(cur, letter_id: str):
         raise HTTPException(status_code=404, detail=f"Letter not found: {letter_id}")
 
     (letter_text, subject, bureau, generated_at, client_id, round_run_id, first_name, middle_name, last_name, suffix,
-     date_of_birth, ssn_full_enc, address_line1, apt_unit, address_line2, city, state, zip_code,
+     phone, date_of_birth, ssn_full_enc, address_line1, apt_unit, address_line2, city, state, zip_code,
      signature_file_path, use_client_signature) = row
 
     safe_name = f"{last_name}_{first_name}_{bureau}_{generated_at:%Y%m%d_%H%M%S}".replace(" ", "_")
@@ -1584,6 +5910,7 @@ def generate_and_attach_pdf(cur, letter_id: str):
         "middle_name": middle_name or "",
         "last_name": last_name,
         "suffix": suffix or "",
+        "phone": phone or "",
         "date_of_birth": date_of_birth,
         "ssn_full": dec_text(ssn_full_enc),
         "address_line1": address_line1 or "",
@@ -1604,6 +5931,7 @@ def generate_and_attach_pdf(cur, letter_id: str):
         include_signature=bool(use_client_signature),
         bureau=bureau or "",
         primary_doc=primary_doc,
+        reference_line=_build_reference_line(primary_doc, bureau or ""),
     )
 
     try:
@@ -1705,32 +6033,552 @@ def fetch_credentials(cur, client_id: str, reveal_id: Optional[str] = None):
     return results
 
 
-def fetch_notes(cur, client_id: str, limit: int = 30):
-    cur.execute("""
+
+
+def ensure_client_address_history_columns(cur):
+    try:
+        cur.execute("ALTER TABLE client_addresses ADD COLUMN IF NOT EXISTS proofs_updated boolean NOT NULL DEFAULT FALSE")
+    except Exception:
+        pass
+
+
+def ensure_client_note_columns(cur):
+    """Keep manual/system notes capable of preserving event date/time separately from entry timestamp."""
+    for ddl in [
+        "ALTER TABLE client_notes ADD COLUMN IF NOT EXISTS note_date date",
+        "ALTER TABLE client_notes ADD COLUMN IF NOT EXISTS note_time time without time zone",
+    ]:
+        try:
+            cur.execute(ddl)
+        except Exception:
+            pass
+
+
+def ensure_client_mailing_address_columns(cur):
+    for ddl in [
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS mailing_address_line1 text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS mailing_apt_unit text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS mailing_city text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS mailing_state text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS mailing_zip text"
+    ]:
+        try:
+            cur.execute(ddl)
+        except Exception:
+            pass
+
+
+
+
+def ensure_client_contact_columns(cur):
+    for ddl in [
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS phone text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS secondary_phone text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS primary_email text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS secondary_email text"
+    ]:
+        try:
+            cur.execute(ddl)
+        except Exception:
+            pass
+
+
+def ensure_client_referred_by_source_column(cur):
+    for ddl in [
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS referred_by_source_id uuid NULL",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS referral_reason text"
+    ]:
+        try:
+            cur.execute(ddl)
+        except Exception:
+            pass
+
+
+def ensure_referral_sources_table(cur):
+    ensure_client_referred_by_source_column(cur)
+    statements = [
+        """
+        CREATE TABLE IF NOT EXISTS referral_sources (
+            id uuid PRIMARY KEY,
+            name text NOT NULL,
+            company_name text,
+            source_type text NOT NULL DEFAULT 'other',
+            phone text,
+            email text,
+            notes text,
+            website text,
+            linked_client_id uuid NULL,
+            linked_partner_id uuid NULL,
+            linked_lender_id uuid NULL,
+            is_active boolean NOT NULL DEFAULT TRUE,
+            created_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        "ALTER TABLE referral_sources ADD COLUMN IF NOT EXISTS company_name text",
+        "ALTER TABLE referral_sources ADD COLUMN IF NOT EXISTS source_type text NOT NULL DEFAULT 'other'",
+        "ALTER TABLE referral_sources ADD COLUMN IF NOT EXISTS phone text",
+        "ALTER TABLE referral_sources ADD COLUMN IF NOT EXISTS email text",
+        "ALTER TABLE referral_sources ADD COLUMN IF NOT EXISTS notes text",
+        "ALTER TABLE referral_sources ADD COLUMN IF NOT EXISTS website text",
+        "ALTER TABLE referral_sources ADD COLUMN IF NOT EXISTS linked_client_id uuid NULL",
+        "ALTER TABLE referral_sources ADD COLUMN IF NOT EXISTS linked_partner_id uuid NULL",
+        "ALTER TABLE referral_sources ADD COLUMN IF NOT EXISTS linked_lender_id uuid NULL",
+        "ALTER TABLE referral_sources ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT TRUE",
+        "ALTER TABLE referral_sources ADD COLUMN IF NOT EXISTS created_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        "ALTER TABLE referral_sources ADD COLUMN IF NOT EXISTS updated_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        "CREATE INDEX IF NOT EXISTS idx_referral_sources_name ON referral_sources (lower(name))",
+        "CREATE INDEX IF NOT EXISTS idx_referral_sources_company ON referral_sources (lower(coalesce(company_name,'')))",
+        "CREATE INDEX IF NOT EXISTS idx_referral_sources_phone ON referral_sources (phone)",
+        "CREATE INDEX IF NOT EXISTS idx_referral_sources_email ON referral_sources (lower(coalesce(email,'')))"
+    ]
+    for ddl in statements:
+        try:
+            cur.execute(ddl)
+        except Exception:
+            pass
+
+
+def fetch_referral_sources(cur, include_inactive: bool = False, limit: int = 500):
+    ensure_referral_sources_table(cur)
+    where_sql = "" if include_inactive else "WHERE COALESCE(is_active, TRUE) = TRUE"
+    cur.execute(f"""
         SELECT id::text,
-               note_type,
-               note_text,
-               created_by,
-               created_at
-        FROM client_notes
-        WHERE client_id = %s
-        ORDER BY created_at DESC
+               COALESCE(name,''),
+               COALESCE(company_name,''),
+               COALESCE(source_type,'other'),
+               COALESCE(phone,''),
+               COALESCE(email,''),
+               COALESCE(notes,''),
+               COALESCE(website,''),
+               COALESCE(is_active, TRUE)
+        FROM referral_sources
+        {where_sql}
+        ORDER BY lower(COALESCE(name,'')), lower(COALESCE(company_name,''))
         LIMIT %s
-    """, (client_id, limit))
+    """, (limit,))
     rows = cur.fetchall()
     return [
         {
             "id": r[0],
-            "note_type": r[1],
-            "note_text": r[2],
-            "created_by": r[3],
-            "created_at": str(r[4]) if r[4] else "",
+            "name": r[1],
+            "company_name": r[2],
+            "source_type": r[3],
+            "phone": r[4],
+            "email": r[5],
+            "notes": r[6],
+            "website": r[7],
+            "is_active": bool(r[8]),
         }
         for r in rows
     ]
 
 
+def ensure_referral_source_from_partner(cur, partner_id: str) -> str:
+    ensure_referral_sources_table(cur)
+    ensure_referral_partners_table(cur)
+    cur.execute("""
+        SELECT rs.id::text
+        FROM referral_sources rs
+        WHERE rs.linked_partner_id = %s::uuid
+        ORDER BY rs.updated_at DESC NULLS LAST, rs.created_at DESC NULLS LAST
+        LIMIT 1
+    """, (partner_id,))
+    row = cur.fetchone()
+    if row and row[0]:
+        return row[0]
+    cur.execute("""
+        SELECT COALESCE(name,''), COALESCE(company_name,''), COALESCE(partner_type,'other'),
+               COALESCE(phone,''), COALESCE(email,''), COALESCE(notes,''), COALESCE(website,'')
+        FROM referral_partners
+        WHERE id = %s::uuid
+    """, (partner_id,))
+    partner = cur.fetchone()
+    if not partner:
+        raise ValueError('Referral partner not found.')
+    source_id = str(uuid4())
+    cur.execute("""
+        INSERT INTO referral_sources
+            (id, name, company_name, source_type, phone, email, notes, website, linked_partner_id, is_active)
+        VALUES
+            (%s::uuid, %s, NULLIF(%s,''), %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), %s::uuid, TRUE)
+    """, (source_id, partner[0] or 'Referral Partner', partner[1] or '', partner[2] or 'partner', partner[3] or '', partner[4] or '', partner[5] or '', partner[6] or '', partner_id))
+    return source_id
+
+
+def ensure_referral_source_from_lender(cur, lender_id: str) -> str:
+    ensure_referral_sources_table(cur)
+    ensure_lender_directory_table(cur)
+    cur.execute("""
+        SELECT rs.id::text
+        FROM referral_sources rs
+        WHERE rs.linked_lender_id = %s::uuid
+        ORDER BY rs.updated_at DESC NULLS LAST, rs.created_at DESC NULLS LAST
+        LIMIT 1
+    """, (lender_id,))
+    row = cur.fetchone()
+    if row and row[0]:
+        return row[0]
+    cur.execute("""
+        SELECT COALESCE(name,''), COALESCE(category,'lender'), COALESCE(phone,''), COALESCE(website,'')
+        FROM lender_directory
+        WHERE id = %s::uuid
+    """, (lender_id,))
+    lender = cur.fetchone()
+    if not lender:
+        raise ValueError('Lender not found.')
+    source_id = str(uuid4())
+    cur.execute("""
+        INSERT INTO referral_sources
+            (id, name, company_name, source_type, phone, email, notes, website, linked_lender_id, is_active)
+        VALUES
+            (%s::uuid, %s, %s, 'lender', NULLIF(%s,''), NULL, 'Auto-created from lender directory for Referred By.', NULLIF(%s,''), %s::uuid, TRUE)
+    """, (source_id, lender[0] or 'Lender', lender[0] or '', lender[2] or '', lender[3] or '', lender_id))
+    return source_id
+
+
+def _format_address_display(line1: str = '', apt_unit: str = '', line2: str = '', city: str = '', state: str = '', zip_code: str = '') -> str:
+    line1 = (line1 or '').strip()
+    apt_unit = (apt_unit or '').strip()
+    line2 = (line2 or '').strip()
+    city = (city or '').strip()
+    state = (state or '').strip()
+    zip_code = (zip_code or '').strip()
+    first = line1
+    if apt_unit:
+        first = f"{first}, Unit {apt_unit}" if first else f"Unit {apt_unit}"
+    if line2:
+        first = f"{first}, {line2}" if first else line2
+    second = ', '.join([p for p in [city, state] if p])
+    if zip_code:
+        second = f"{second} {zip_code}".strip() if second else zip_code
+    return ' | '.join([p for p in [first, second] if p]) or '—'
+
+
+def fetch_client_address_history(cur, client_id: str):
+    ensure_client_address_history_columns(cur)
+    cur.execute("""
+        SELECT id::text,
+               COALESCE(line1,''),
+               COALESCE(apt_unit,''),
+               COALESCE(line2,''),
+               COALESCE(city,''),
+               COALESCE(state,''),
+               COALESCE(zip,''),
+               COALESCE(proofs_updated, FALSE),
+               COALESCE(is_current, FALSE),
+               created_at
+        FROM client_addresses
+        WHERE client_id = %s::uuid
+        ORDER BY created_at ASC, id ASC
+    """, (client_id,))
+    rows = cur.fetchall() or []
+    addresses = []
+    for r in rows:
+        addresses.append({
+            'id': r[0],
+            'line1': r[1],
+            'apt_unit': r[2],
+            'line2': r[3],
+            'city': r[4],
+            'state': r[5],
+            'zip': r[6],
+            'proofs_updated': bool(r[7]),
+            'is_current': bool(r[8]),
+            'created_at': r[9],
+            'address_display': _format_address_display(r[1], r[2], r[3], r[4], r[5], r[6]),
+            'created_at_display': format_short_date(r[9]) if r[9] else '—',
+        })
+    history = []
+    prev = None
+    for addr in addresses:
+        if prev:
+            history.append({
+                'address_id': addr['id'],
+                'line1': addr['line1'],
+                'apt_unit': addr['apt_unit'],
+                'line2': addr['line2'],
+                'city': addr['city'],
+                'state': addr['state'],
+                'zip': addr['zip'],
+                'moved_from': prev['address_display'],
+                'moved_to': addr['address_display'],
+                'moved_on': addr['created_at_display'],
+                'proofs_updated': addr['proofs_updated'],
+                'is_current': addr['is_current'],
+            })
+        prev = addr
+    history.reverse()
+    return history
+
+
+def _ensure_client_followup(cur, client_id: str, followup_type: str, due_date, note_text: str):
+    cur.execute("""
+        SELECT id FROM client_followups
+        WHERE client_id = %s::uuid
+          AND followup_type = %s
+          AND due_date = %s::date
+          AND COALESCE(note_text,'') = %s
+          AND COALESCE(status,'open') <> 'done'
+        LIMIT 1
+    """, (client_id, followup_type, due_date, note_text))
+    if not cur.fetchone():
+        cur.execute("""
+            INSERT INTO client_followups (client_id, followup_type, due_date, status, note_text)
+            VALUES (%s::uuid, %s, %s::date, 'open', %s)
+        """, (client_id, followup_type, due_date, note_text))
+
+
+def _queue_address_proof_reminder_email(cur, client_id: str, profile: dict, new_address_display: str) -> bool:
+    """Queue/log the client-facing proof-of-address reminder after an address move.
+
+    The current local CRM stores outbound email records in client_emails. Actual SMTP/API sending
+    can be wired later; this creates the reminder record and keeps it visible in the Emails tab.
+    """
+    profile = profile or {}
+    to_email = (profile.get('primary_email') or profile.get('email') or '').strip()
+    if not to_email:
+        return False
+    first_name = (profile.get('first_name') or '').strip() or 'there'
+    subject = 'Updated proof of address needed'
+    body = (
+        f"Hello {first_name},\n\n"
+        "We updated your mailing/residential address in our system. The credit bureaus usually require "
+        "current proof of address before we can continue sending accurate dispute documents.\n\n"
+        f"New address on file: {new_address_display or 'updated address'}\n\n"
+        "Please send an updated proof of address, such as a current utility bill, bank statement, "
+        "insurance statement, lease, or other acceptable document showing your name and current address.\n\n"
+        "Thank you."
+    )
+    cur.execute(
+        """
+        INSERT INTO client_emails
+          (client_id, provider, direction, subject, body_text, from_email, to_email, email_date, email_type, status, source, created_by)
+        VALUES
+          (%s::uuid, 'system', 'outbound', %s, %s, %s, %s, CURRENT_TIMESTAMP, 'document_reminder', 'queued', 'address_proof_reminder', 'system')
+        """,
+        (client_id, subject, body, COMPANY_EMAIL, to_email)
+    )
+    return True
+
+
+def _create_address_proof_processor_alerts(cur, client_id: str, new_address_display: str):
+    """Create processor-facing alerts/ticklers when the client moved but proof is missing."""
+    display = new_address_display or 'the new address'
+    today_due = date.today().isoformat()
+    _ensure_client_followup(
+        cur,
+        client_id,
+        'processor alert',
+        today_due,
+        f"Updated proof of address is missing after the client moved to {display}. Check Documents and follow up before sending new dispute letters."
+    )
+    for days in (3, 7):
+        due = (date.today() + timedelta(days=days)).isoformat()
+        _ensure_client_followup(
+            cur,
+            client_id,
+            'document reminder',
+            due,
+            f"Request updated proofs of address from client after move to {display}."
+        )
+
+def fetch_notes(cur, client_id: str, limit: int = 30):
+    ensure_client_note_columns(cur)
+    cur.execute("""
+        SELECT id::text,
+               note_type,
+               note_text,
+               created_by,
+               created_at,
+               COALESCE(note_date, created_at::date) AS effective_note_date,
+               COALESCE(note_time, created_at::time) AS effective_note_time
+        FROM client_notes
+        WHERE client_id = %s
+        ORDER BY COALESCE(note_date, created_at::date) DESC,
+                 COALESCE(note_time, created_at::time) DESC,
+                 created_at DESC
+        LIMIT %s
+    """, (client_id, limit))
+    rows = cur.fetchall()
+    items = []
+    for r in rows:
+        note_date = r[5]
+        note_time = r[6]
+        if note_time:
+            try:
+                note_time_display = note_time.strftime('%I:%M %p').lstrip('0')
+                note_time_value = note_time.strftime('%H:%M')
+            except Exception:
+                note_time_display = str(note_time)[:5]
+                note_time_value = str(note_time)[:5]
+        else:
+            note_time_display = ''
+            note_time_value = ''
+        if note_date:
+            try:
+                note_date_display = note_date.strftime('%m/%d/%Y')
+                note_date_value = note_date.isoformat()
+            except Exception:
+                note_date_display = str(note_date)
+                note_date_value = str(note_date)
+        else:
+            note_date_display = ''
+            note_date_value = ''
+        items.append({
+            "id": r[0],
+            "note_type": r[1],
+            "note_text": r[2],
+            "created_by": r[3],
+            "created_at": str(r[4]) if r[4] else "",
+            "note_date": note_date_value,
+            "note_time": note_time_value,
+            "note_date_display": note_date_display,
+            "note_time_display": note_time_display,
+            "note_when_display": ' '.join([p for p in [note_date_display, note_time_display] if p]) or (str(r[4]) if r[4] else ''),
+        })
+    return items
+
+
+
+def _format_time_12(value) -> str:
+    """Return a user-facing 12-hour time such as 7:00 PM."""
+    if not value:
+        return ""
+    try:
+        if hasattr(value, "strftime"):
+            return value.strftime("%I:%M %p").lstrip("0")
+    except Exception:
+        pass
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    upper = raw.upper().replace(".", "")
+    if "AM" in upper or "PM" in upper:
+        parts = upper.replace("AM", " AM").replace("PM", " PM").split()
+        time_part = parts[0]
+        suffix = parts[1] if len(parts) > 1 else ""
+        try:
+            hh, mm = time_part.split(":")[:2]
+            return f"{int(hh)}:{int(mm):02d} {suffix}".strip()
+        except Exception:
+            return raw
+    try:
+        bits = raw.split(":")
+        hour = int(bits[0])
+        minute = int(bits[1]) if len(bits) > 1 else 0
+        suffix = "AM" if hour < 12 else "PM"
+        hour12 = hour % 12 or 12
+        return f"{hour12}:{minute:02d} {suffix}"
+    except Exception:
+        return raw
+
+
+def _normalize_appointment_time(value) -> str:
+    """Normalize appointment time to HH:MM for PostgreSQL time fields."""
+    if not value:
+        return "09:00"
+    try:
+        if hasattr(value, "strftime"):
+            return value.strftime("%H:%M")
+    except Exception:
+        pass
+    raw = str(value or "").strip()
+    if not raw:
+        return "09:00"
+    clean = raw.upper().replace(".", "").replace(" ", "")
+    ampm = ""
+    if clean.endswith("AM") or clean.endswith("PM"):
+        ampm = clean[-2:]
+        clean = clean[:-2]
+    try:
+        if ":" in clean:
+            h_text, m_text = clean.split(":", 1)
+        else:
+            h_text, m_text = clean, "00"
+        hour = int(h_text)
+        minute = int(m_text[:2] or "0")
+        if ampm == "PM" and hour != 12:
+            hour += 12
+        if ampm == "AM" and hour == 12:
+            hour = 0
+        hour = max(0, min(23, hour))
+        minute = max(0, min(59, minute))
+        return f"{hour:02d}:{minute:02d}"
+    except Exception:
+        return raw[:5]
+
+
+def ensure_client_appointment_enhancement_columns(cur):
+    """Small defensive migration for richer appointment popup fields."""
+    for ddl in [
+        "ALTER TABLE client_appointments ADD COLUMN IF NOT EXISTS consultant_name TEXT",
+        "ALTER TABLE client_appointments ADD COLUMN IF NOT EXISTS attendee_name TEXT",
+        "ALTER TABLE client_appointments ADD COLUMN IF NOT EXISTS video_platform TEXT",
+        "ALTER TABLE client_appointments ADD COLUMN IF NOT EXISTS consultant_phone TEXT",
+        "ALTER TABLE client_appointments ADD COLUMN IF NOT EXISTS appointment_location_choice TEXT",
+        "ALTER TABLE client_appointments ADD COLUMN IF NOT EXISTS appointment_purpose TEXT",
+        "ALTER TABLE client_appointments ADD COLUMN IF NOT EXISTS appointment_fee_status TEXT",
+    ]:
+        try:
+            cur.execute(ddl)
+        except Exception:
+            pass
+
+
+def fetch_appointment_consultants(cur):
+    """Active app users available as consultation presenters."""
+    rows = []
+    try:
+        ensure_app_users_table(cur)
+        cur.execute("""
+            SELECT COALESCE(NULLIF(display_name,''), username) AS name, COALESCE(email,'')
+            FROM app_users
+            WHERE COALESCE(is_active, TRUE) = TRUE
+            ORDER BY lower(COALESCE(NULLIF(display_name,''), username))
+            LIMIT 100
+        """)
+        for r in cur.fetchall():
+            name = (r[0] or '').strip()
+            if name and name not in [x.get('name') for x in rows]:
+                rows.append({'name': name, 'email': r[1] or ''})
+    except Exception:
+        pass
+    if not any((r.get('name') or '').lower() == 'carlos g suarez' for r in rows):
+        rows.insert(0, {'name': 'Carlos G Suarez', 'email': ''})
+    return rows
+
+
+def build_consultation_fee_items(invoice_items):
+    """Use the invoice service item table as the source for consultation fee choices."""
+    out = []
+    seen = set()
+    for item in invoice_items or []:
+        name = str(item.get('item_name') or '')
+        invoice_type = str(item.get('invoice_type') or '').lower()
+        amount = str(item.get('default_amount') or '').strip()
+        if not amount:
+            continue
+        if invoice_type == 'consultation' or 'consult' in name.lower() or 'credit review' in name.lower() or 'education' in name.lower():
+            key = (name.lower(), amount)
+            if key not in seen:
+                seen.add(key)
+                out.append({
+                    'item_name': name or 'Consultation / Credit Review and Education Fee',
+                    'default_amount': amount,
+                    'default_amount_display': item.get('default_amount_display') or item.get('price_display') or f"${amount}",
+                    'invoice_type': invoice_type or 'consultation',
+                })
+    for amount, label in [('100.00','Not-candidate consultation fee'), ('175.00','Credit Review, Consultation and Education Fee'), ('199.00','Standard Consultation and Credit & Finance Review Fee')]:
+        key = (label.lower(), amount)
+        if key not in seen:
+            seen.add(key)
+            out.append({'item_name': label, 'default_amount': amount, 'default_amount_display': f'${amount}', 'invoice_type': 'consultation'})
+    return out
+
+
 def fetch_appointments(cur, client_id: str, limit: int = 20):
+    ensure_client_appointment_enhancement_columns(cur)
     cur.execute("""
         SELECT id::text,
                appointment_mode,
@@ -1752,7 +6600,14 @@ def fetch_appointments(cur, client_id: str, limit: int = 20):
                sms_opt_in,
                status,
                notes,
-               created_at
+               created_at,
+               COALESCE(consultant_name, appointment_with, '') AS consultant_name,
+               COALESCE(attendee_name, '') AS attendee_name,
+               COALESCE(video_platform, '') AS video_platform,
+               COALESCE(consultant_phone, '') AS consultant_phone,
+               COALESCE(appointment_location_choice, '') AS appointment_location_choice,
+               COALESCE(appointment_purpose, '') AS appointment_purpose,
+               COALESCE(appointment_fee_status, '') AS appointment_fee_status
         FROM client_appointments
         WHERE client_id = %s
         ORDER BY appointment_date DESC, appointment_time DESC
@@ -1761,12 +6616,15 @@ def fetch_appointments(cur, client_id: str, limit: int = 20):
     rows = cur.fetchall()
     out = []
     for r in rows:
+        raw_time = _normalize_appointment_time(r[4]) if r[4] else ""
         out.append({
             "id": r[0],
             "appointment_mode": r[1],
             "appointment_with": r[2],
             "appointment_date": str(r[3]) if r[3] else "",
-            "appointment_time": str(r[4]) if r[4] else "",
+            "appointment_time": raw_time,
+            "appointment_time_raw": raw_time,
+            "appointment_time_display": _format_time_12(r[4]) if r[4] else "",
             "consultation_fee": r[5],
             "location_name": r[6] or "",
             "address_line1": r[7] or "",
@@ -1783,6 +6641,13 @@ def fetch_appointments(cur, client_id: str, limit: int = 20):
             "status": r[18] or "",
             "notes": r[19] or "",
             "created_at": str(r[20]) if r[20] else "",
+            "consultant_name": r[21] or r[2] or "Carlos G Suarez",
+            "attendee_name": r[22] or "",
+            "video_platform": r[23] or "",
+            "consultant_phone": r[24] or "",
+            "appointment_location_choice": r[25] or "",
+            "appointment_purpose": r[26] or "",
+            "appointment_fee_status": r[27] or "",
         })
     return out
 
@@ -1817,6 +6682,610 @@ def fetch_redispute_events(cur, client_id: str, limit: int = 100):
     } for r in rows]
 
 
+def _calendar_selected_date(calendar_date: str = '', month_value: str = ''):
+    today = date.today()
+    try:
+        if calendar_date and re.match(r'^\d{4}-\d{2}-\d{2}$', str(calendar_date)):
+            y, m, d = [int(x) for x in str(calendar_date).split('-')]
+            return date(y, m, d)
+        if month_value and re.match(r'^\d{4}-\d{2}$', str(month_value)):
+            y, m = [int(x) for x in str(month_value).split('-', 1)]
+            return date(y, m, 1)
+    except Exception:
+        return today
+    return today
+
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    """Return the nth weekday in a month. Monday=0 ... Sunday=6."""
+    d = date(year, month, 1)
+    offset = (weekday - d.weekday()) % 7
+    return d + timedelta(days=offset + (n - 1) * 7)
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    """Return the last weekday in a month. Monday=0 ... Sunday=6."""
+    last = date(year, month, pycalendar.monthrange(year, month)[1])
+    offset = (last.weekday() - weekday) % 7
+    return last - timedelta(days=offset)
+
+
+def _calendar_holidays_for_year(year: int, country: str = 'US') -> dict:
+    """Small built-in holiday seed. Later this should become Settings-driven."""
+    country = (country or 'US').upper()
+    holidays = {}
+    if country == 'US':
+        seeds = [
+            (date(year, 1, 1), "New Year's Day", True),
+            (_nth_weekday(year, 1, 0, 3), "Martin Luther King Jr. Day", True),
+            (_nth_weekday(year, 2, 0, 3), "Presidents' Day", True),
+            (_last_weekday(year, 5, 0), "Memorial Day", True),
+            (date(year, 6, 19), "Juneteenth", True),
+            (date(year, 7, 4), "Independence Day", True),
+            (_nth_weekday(year, 9, 0, 1), "Labor Day", True),
+            (_nth_weekday(year, 10, 0, 2), "Columbus Day / Indigenous Peoples' Day", False),
+            (date(year, 11, 11), "Veterans Day", False),
+            (_nth_weekday(year, 11, 3, 4), "Thanksgiving Day", True),
+            (date(year, 12, 25), "Christmas Day", True),
+        ]
+        for d, name, closed in seeds:
+            holidays[d.isoformat()] = {"name": name, "closed": closed, "country": "US"}
+    return holidays
+
+
+def build_client_calendar_month(appointments=None, followups=None, redispute_events=None, month_value: str = '', calendar_view: str = 'month', calendar_date: str = ''):
+    """Build the Calendar / Follow-Ups view.
+
+    v6.2.10: Sunday-first calendar, larger month view, weekly/daily hour grids,
+    all-client event buckets, double-click source data, color-key defaults, and
+    holiday seed data. Provider sync remains a later OAuth phase.
+    """
+    today = date.today()
+    view_mode = (calendar_view or 'month').strip().lower()
+    if view_mode not in {'month', 'week', 'day'}:
+        view_mode = 'month'
+    selected = _calendar_selected_date(calendar_date, month_value)
+    first_day = date(selected.year, selected.month, 1)
+    year, month = first_day.year, first_day.month
+    last_day_num = pycalendar.monthrange(year, month)[1]
+    last_day = date(year, month, last_day_num)
+    prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
+    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+    prev_date = selected - timedelta(days=7 if view_mode == 'week' else 1)
+    next_date = selected + timedelta(days=7 if view_mode == 'week' else 1)
+
+    # Temporary settings defaults. Later move to Credit Repair Dashboard > Settings.
+    calendar_settings = {
+        'first_day_of_week': 'sunday',
+        'operating_start_hour': 8,
+        'operating_end_hour': 20,
+        'holiday_country': 'US',
+        'holiday_source': 'Built-in US seed; configurable settings phase later.',
+        'legend': [
+            {'key': 'appointment', 'label': 'Appointment', 'color': '#1d4ed8'},
+            {'key': 'redispute', 'label': 'Redispute Reminder', 'color': '#b45309'},
+            {'key': 'followup', 'label': 'Follow-Up / Tickler', 'color': '#047857'},
+            {'key': 'other', 'label': 'Other', 'color': '#334155'},
+        ]
+    }
+    start_hour = int(calendar_settings['operating_start_hour'])
+    end_hour = int(calendar_settings['operating_end_hour'])
+    holidays = {}
+    holidays.update(_calendar_holidays_for_year(year, calendar_settings['holiday_country']))
+    holidays.update(_calendar_holidays_for_year(prev_year, calendar_settings['holiday_country']))
+    holidays.update(_calendar_holidays_for_year(next_year, calendar_settings['holiday_country']))
+
+    buckets = {}
+
+    def is_active_calendar_status(status):
+        return str(status or '').strip().lower() not in {'completed', 'complete', 'done', 'cancelled', 'canceled', 'deleted', 'closed', 'cleared'}
+
+    def _sort_time_from(value):
+        raw = _normalize_appointment_time(value or '')
+        return raw[:5] if raw else '99:99'
+
+    def add_event(day_value, kind, title, meta='', status='', event_id='', css='', event_time='', client_name='', target_client_id='', source=None):
+        d = _to_date(day_value)
+        if not d:
+            return
+        # Month buckets include the selected month. Week/day still use the same buckets
+        # and are allowed to display dates in adjacent months.
+        if view_mode == 'month' and (d < first_day or d > last_day):
+            return
+        key = d.isoformat()
+        source = dict(source or {})
+        display_time = _format_time_12(event_time or source.get('appointment_time') or source.get('appointment_time_raw') or '')
+        sort_time = _sort_time_from(event_time or source.get('appointment_time') or source.get('appointment_time_raw') or '')
+        clean_client = (client_name or source.get('client_name') or 'Client').strip() or 'Client'
+        clean_kind = (kind or 'Other').strip()
+        short_bits = []
+        if display_time:
+            short_bits.append(display_time)
+        short_bits.append(clean_client)
+        short_bits.append(clean_kind)
+        short = ' · '.join(short_bits)
+        detail_parts = []
+        if title:
+            detail_parts.append(str(title))
+        if meta:
+            detail_parts.append(str(meta))
+        if status:
+            detail_parts.append(f"Status: {status}")
+        item = {
+            'kind': clean_kind,
+            'title': title or clean_kind,
+            'short': short,
+            'detail': ' | '.join(detail_parts) or short,
+            'meta': meta or '',
+            'status': status or '',
+            'id': event_id or '',
+            'client_id': target_client_id or source.get('client_id') or '',
+            'client_name': clean_client,
+            'time': display_time,
+            'sort_time': sort_time,
+            'hour': int(sort_time[:2]) if sort_time and sort_time[:2].isdigit() and sort_time != '99:99' else None,
+            'css': css or clean_kind.lower().replace(' ', '-'),
+            'appointment_mode': source.get('appointment_mode') or '',
+            'appointment_purpose': source.get('appointment_purpose') or '',
+            'appointment_fee_status': source.get('appointment_fee_status') or '',
+            'appointment_date': str(source.get('appointment_date') or day_value or ''),
+            'appointment_time': display_time,
+            'consultation_fee': source.get('consultation_fee') or '',
+            'location_name': source.get('location_name') or '',
+            'appointment_with': source.get('appointment_with') or '',
+            'consultant_name': source.get('consultant_name') or '',
+            'attendee_name': source.get('attendee_name') or '',
+            'video_platform': source.get('video_platform') or '',
+            'consultant_phone': source.get('consultant_phone') or '',
+            'appointment_location_choice': source.get('appointment_location_choice') or '',
+            'address_line1': source.get('address_line1') or '',
+            'apt_unit': source.get('apt_unit') or '',
+            'address_line2': source.get('address_line2') or '',
+            'city': source.get('city') or '',
+            'state': source.get('state') or '',
+            'zip': source.get('zip') or '',
+            'phone_to_call': source.get('phone_to_call') or '',
+            'meeting_link': source.get('meeting_link') or '',
+            'email_enabled': '1' if source.get('email_enabled') else '0',
+            'sms_enabled': '1' if source.get('sms_enabled') else '0',
+            'sms_opt_in': '1' if source.get('sms_opt_in') else '0',
+            'notes': source.get('notes') or meta or '',
+            'redispute_bureau': source.get('bureau') or '',
+            'redispute_round': source.get('round_number') or '',
+            'redispute_date': source.get('event_date') or '',
+            'followup_type': source.get('followup_type') or '',
+            'followup_due_date': source.get('due_date') or '',
+            'followup_note': source.get('note_text') or '',
+        }
+        buckets.setdefault(key, []).append(item)
+
+    for appt in appointments or []:
+        if not is_active_calendar_status(appt.get('status')):
+            continue
+        mode = (appt.get('appointment_mode') or 'appointment').replace('_', ' ').title()
+        purpose = (appt.get('appointment_purpose') or 'Appointment').replace('_', ' ').title()
+        event_time = appt.get('appointment_time') or appt.get('appointment_time_raw') or ''
+        client_name = appt.get('client_name') or appt.get('client') or 'Client'
+        status = appt.get('status') or 'scheduled'
+        css = 'appointment'
+        title = f"{purpose} ({mode})"
+        add_event(appt.get('appointment_date'), 'Appointment', title, appt.get('notes') or appt.get('location_name') or '', status, appt.get('id'), css, event_time, client_name, appt.get('client_id') or '', appt)
+
+    for ev in redispute_events or []:
+        if not is_active_calendar_status(ev.get('status')):
+            continue
+        bureau = (ev.get('bureau') or 'All').title()
+        title = f"Redispute {bureau} R{ev.get('round_number') or 1}"
+        add_event(ev.get('event_date'), 'Redispute', title, ev.get('notes') or '', ev.get('status') or '', ev.get('id'), 'redispute', '', ev.get('client_name') or 'Client', ev.get('client_id') or '', ev)
+
+    for f in followups or []:
+        if not is_active_calendar_status(f.get('status')):
+            continue
+        raw_type = f.get('followup_type') or 'Follow-Up'
+        ftype = str(raw_type).replace('_', ' ').title()
+        css = 'presentation' if 'presentation' in str(raw_type).lower() else 'followup'
+        add_event(f.get('due_date'), 'Follow-Up', ftype, f.get('note_text') or '', f.get('status') or '', f.get('id'), css, '', f.get('client_name') or 'Client', f.get('client_id') or '', f)
+
+    for evs in buckets.values():
+        evs.sort(key=lambda item: (item.get('sort_time') or '99:99', item.get('client_name') or '', item.get('kind') or ''))
+
+    # Sunday-first month grid.
+    first_weekday = (first_day.weekday() + 1) % 7
+    day_cells = []
+    for _ in range(first_weekday):
+        day_cells.append({'blank': True})
+    for day_num in range(1, last_day_num + 1):
+        d = date(year, month, day_num)
+        key = d.isoformat()
+        day_cells.append({
+            'blank': False,
+            'day': day_num,
+            'date': key,
+            'is_today': d == today,
+            'holiday': holidays.get(key),
+            'events': buckets.get(key, [])
+        })
+    while len(day_cells) % 7:
+        day_cells.append({'blank': True})
+
+    weeks = [day_cells[i:i+7] for i in range(0, len(day_cells), 7)]
+    selected_offset = (selected.weekday() + 1) % 7
+    week_start = selected - timedelta(days=selected_offset)
+    hour_rows = []
+    for hour in range(0, 24):
+        hour_rows.append({
+            'hour': hour,
+            'label': _format_time_12(f'{hour:02d}:00'),
+            'operating': start_hour <= hour < end_hour,
+        })
+    week_days = []
+    for i in range(7):
+        d = week_start + timedelta(days=i)
+        key = d.isoformat()
+        events = buckets.get(key, [])
+        by_hour = {h['hour']: [] for h in hour_rows}
+        floating = []
+        for ev in events:
+            hour = ev.get('hour')
+            if isinstance(hour, int) and hour in by_hour:
+                by_hour[hour].append(ev)
+            else:
+                floating.append(ev)
+        week_days.append({
+            'date': key,
+            'label': (f"{d.strftime('%a %b')} {d.day}" if hasattr(d, 'strftime') else key),
+            'is_today': d == today,
+            'holiday': holidays.get(key),
+            'events': events,
+            'by_hour': by_hour,
+            'floating_events': floating,
+        })
+    day_events = buckets.get(selected.isoformat(), [])
+    day_by_hour = {h['hour']: [] for h in hour_rows}
+    day_floating = []
+    for ev in day_events:
+        hour = ev.get('hour')
+        if isinstance(hour, int) and hour in day_by_hour:
+            day_by_hour[hour].append(ev)
+        else:
+            day_floating.append(ev)
+    return {
+        'month_value': f'{year:04d}-{month:02d}',
+        'title': first_day.strftime('%B %Y'),
+        'view_mode': view_mode,
+        'selected_date': selected.isoformat(),
+        'selected_date_label': f"{selected.strftime('%A, %B')} {selected.day}, {selected.year}",
+        'selected_holiday': holidays.get(selected.isoformat()),
+        'prev_date': prev_date.isoformat(),
+        'next_date': next_date.isoformat(),
+        'prev_month': f'{prev_year:04d}-{prev_month:02d}',
+        'next_month': f'{next_year:04d}-{next_month:02d}',
+        'weeks': weeks,
+        'week_days': week_days,
+        'hour_rows': hour_rows,
+        'day_events': day_events,
+        'day_by_hour': day_by_hour,
+        'day_floating_events': day_floating,
+        'calendar_settings': calendar_settings,
+        'has_events': any(buckets.values()),
+    }
+
+
+def fetch_all_calendar_appointments(cur, limit: int = 500):
+    ensure_client_appointment_enhancement_columns(cur)
+    cur.execute("""
+        SELECT a.id::text,
+               a.client_id::text,
+               trim(concat_ws(' ', nullif(c.first_name,''), nullif(c.last_name,''))) as client_name,
+               a.appointment_mode,
+               a.appointment_with,
+               a.appointment_date,
+               a.appointment_time,
+               a.consultation_fee,
+               a.location_name,
+               a.address_line1,
+               a.apt_unit,
+               a.address_line2,
+               a.city,
+               a.state,
+               a.zip,
+               a.phone_to_call,
+               a.meeting_link,
+               a.email_enabled,
+               a.sms_enabled,
+               a.sms_opt_in,
+               a.status,
+               a.notes,
+               a.created_at,
+               COALESCE(a.consultant_name, a.appointment_with, '') AS consultant_name,
+               COALESCE(a.attendee_name, '') AS attendee_name,
+               COALESCE(a.video_platform, '') AS video_platform,
+               COALESCE(a.consultant_phone, '') AS consultant_phone,
+               COALESCE(a.appointment_location_choice, '') AS appointment_location_choice,
+               COALESCE(a.appointment_purpose, '') AS appointment_purpose,
+               COALESCE(a.appointment_fee_status, '') AS appointment_fee_status
+        FROM client_appointments a
+        LEFT JOIN clients c ON c.id = a.client_id
+        ORDER BY a.appointment_date ASC NULLS LAST, a.appointment_time ASC NULLS LAST, a.created_at DESC
+        LIMIT %s
+    """, (limit,))
+    rows = cur.fetchall()
+    out = []
+    for r in rows:
+        raw_time = _normalize_appointment_time(r[6]) if r[6] else ""
+        out.append({
+            "id": r[0], "client_id": r[1] or "", "client_name": r[2] or "Client",
+            "appointment_mode": r[3], "appointment_with": r[4], "appointment_date": str(r[5]) if r[5] else "",
+            "appointment_time": raw_time, "appointment_time_raw": raw_time, "appointment_time_display": _format_time_12(r[6]) if r[6] else "",
+            "consultation_fee": r[7], "location_name": r[8] or "",
+            "address_line1": r[9] or "", "apt_unit": r[10] or "", "address_line2": r[11] or "", "city": r[12] or "",
+            "state": r[13] or "", "zip": r[14] or "", "phone_to_call": r[15] or "", "meeting_link": r[16] or "",
+            "email_enabled": r[17], "sms_enabled": r[18], "sms_opt_in": r[19], "status": r[20] or "", "notes": r[21] or "",
+            "created_at": str(r[22]) if r[22] else "",
+            "consultant_name": r[23] or r[4] or "Carlos G Suarez", "attendee_name": r[24] or "",
+            "video_platform": r[25] or "", "consultant_phone": r[26] or "", "appointment_location_choice": r[27] or "",
+            "appointment_purpose": r[28] or "", "appointment_fee_status": r[29] or "",
+        })
+    return out
+
+
+def fetch_all_calendar_followups(cur, limit: int = 500):
+    cur.execute("""
+        SELECT f.id::text, f.client_id::text,
+               trim(concat_ws(' ', nullif(c.first_name,''), nullif(c.last_name,''))) as client_name,
+               f.followup_type, f.due_date, COALESCE(f.status, 'open'), COALESCE(f.note_text, ''), f.created_at
+        FROM client_followups f
+        LEFT JOIN clients c ON c.id = f.client_id
+        ORDER BY f.due_date ASC NULLS LAST, f.created_at DESC
+        LIMIT %s
+    """, (limit,))
+    return [{
+        "id": r[0], "client_id": r[1] or "", "client_name": r[2] or "Client", "followup_type": r[3],
+        "due_date": str(r[4]) if r[4] else '', "status": r[5], "note_text": r[6], "created_at": str(r[7]) if r[7] else ''
+    } for r in cur.fetchall()]
+
+
+def fetch_all_calendar_redispute_events(cur, limit: int = 500):
+    cur.execute("""
+        SELECT e.id::text, e.client_id::text,
+               trim(concat_ws(' ', nullif(c.first_name,''), nullif(c.last_name,''))) as client_name,
+               COALESCE(e.bureau, ''), e.event_date, COALESCE(e.round_number, 1), COALESCE(e.status, 'scheduled'), COALESCE(e.notes, ''), e.created_at
+        FROM client_redispute_events e
+        LEFT JOIN clients c ON c.id = e.client_id
+        ORDER BY e.event_date ASC NULLS LAST, e.created_at DESC
+        LIMIT %s
+    """, (limit,))
+    return [{
+        "id": r[0], "client_id": r[1] or "", "client_name": r[2] or "Client", "bureau": r[3], "event_date": str(r[4]) if r[4] else '',
+        "round_number": r[5], "status": r[6], "notes": r[7], "created_at": str(r[8]) if r[8] else ''
+    } for r in cur.fetchall()]
+
+
+
+# v6.2.13 Credit Repair Dashboard calendar/work-queue helpers
+# Reuses the Client Dashboard calendar builder while scoping rows to the selected corporate profile.
+def _dashboard_active_calendar_status(status):
+    return str(status or '').strip().lower() not in {'completed', 'complete', 'done', 'cancelled', 'canceled', 'deleted', 'closed', 'cleared'}
+
+
+def _dashboard_short_date(value):
+    d = _to_date(value)
+    return d.strftime('%m/%d/%Y') if d else '—'
+
+
+def _dashboard_date_sort_value(value):
+    d = _to_date(value)
+    return d.isoformat() if d else '9999-12-31'
+
+
+def _dashboard_date_bucket(value):
+    d = _to_date(value)
+    today = date.today()
+    if not d or d > today:
+        return 'upcoming'
+    if d == today:
+        return 'today'
+    return 'previous'
+
+
+def fetch_credit_repair_dashboard_calendar_data(cur, profile_id: str = '', limit: int = 700):
+    """Fetch all dashboard calendar events for the current Credit Repair Dashboard."""
+    pid = (profile_id or '').strip()
+    profile_filter = " AND COALESCE(c.business_profile_id,'') = %s" if pid else ""
+    params = (pid, limit) if pid else (limit,)
+    appointments, followups, redisputes = [], [], []
+
+    try:
+        ensure_client_appointment_enhancement_columns(cur)
+        cur.execute(f"""
+            SELECT a.id::text, a.client_id::text,
+                   trim(concat_ws(' ', nullif(c.first_name,''), nullif(c.last_name,''))) AS client_name,
+                   a.appointment_mode, a.appointment_with, a.appointment_date, a.appointment_time,
+                   a.consultation_fee, a.location_name, a.address_line1, a.apt_unit, a.address_line2,
+                   a.city, a.state, a.zip, a.phone_to_call, a.meeting_link,
+                   a.email_enabled, a.sms_enabled, a.sms_opt_in, a.status, a.notes, a.created_at,
+                   COALESCE(a.consultant_name, a.appointment_with, '') AS consultant_name,
+                   COALESCE(a.attendee_name, '') AS attendee_name,
+                   COALESCE(a.video_platform, '') AS video_platform,
+                   COALESCE(a.consultant_phone, '') AS consultant_phone,
+                   COALESCE(a.appointment_location_choice, '') AS appointment_location_choice,
+                   COALESCE(a.appointment_purpose, '') AS appointment_purpose,
+                   COALESCE(a.appointment_fee_status, '') AS appointment_fee_status
+            FROM client_appointments a
+            LEFT JOIN clients c ON c.id = a.client_id
+            WHERE 1=1 {profile_filter}
+            ORDER BY a.appointment_date ASC NULLS LAST, a.appointment_time ASC NULLS LAST, a.created_at DESC
+            LIMIT %s
+        """, params)
+        for r in cur.fetchall():
+            raw_time = _normalize_appointment_time(r[6]) if r[6] else ""
+            appointments.append({
+                "id": r[0], "client_id": r[1] or "", "client_name": r[2] or "Client",
+                "appointment_mode": r[3], "appointment_with": r[4],
+                "appointment_date": str(r[5]) if r[5] else "",
+                "appointment_time": raw_time, "appointment_time_raw": raw_time,
+                "appointment_time_display": _format_time_12(r[6]) if r[6] else "",
+                "consultation_fee": r[7], "location_name": r[8] or "",
+                "address_line1": r[9] or "", "apt_unit": r[10] or "", "address_line2": r[11] or "",
+                "city": r[12] or "", "state": r[13] or "", "zip": r[14] or "",
+                "phone_to_call": r[15] or "", "meeting_link": r[16] or "",
+                "email_enabled": r[17], "sms_enabled": r[18], "sms_opt_in": r[19],
+                "status": r[20] or "", "notes": r[21] or "", "created_at": str(r[22]) if r[22] else "",
+                "consultant_name": r[23] or r[4] or "Carlos G Suarez", "attendee_name": r[24] or "",
+                "video_platform": r[25] or "", "consultant_phone": r[26] or "",
+                "appointment_location_choice": r[27] or "", "appointment_purpose": r[28] or "",
+                "appointment_fee_status": r[29] or "",
+            })
+    except Exception:
+        appointments = []
+
+    try:
+        cur.execute(f"""
+            SELECT f.id::text, f.client_id::text,
+                   trim(concat_ws(' ', nullif(c.first_name,''), nullif(c.last_name,''))) AS client_name,
+                   f.followup_type, f.due_date, COALESCE(f.status, 'open'),
+                   COALESCE(f.note_text, ''), f.created_at
+            FROM client_followups f
+            LEFT JOIN clients c ON c.id = f.client_id
+            WHERE 1=1 {profile_filter}
+            ORDER BY f.due_date ASC NULLS LAST, f.created_at DESC
+            LIMIT %s
+        """, params)
+        followups = [{
+            "id": r[0], "client_id": r[1] or "", "client_name": r[2] or "Client",
+            "followup_type": r[3], "due_date": str(r[4]) if r[4] else "",
+            "status": r[5], "note_text": r[6], "created_at": str(r[7]) if r[7] else ""
+        } for r in cur.fetchall()]
+    except Exception:
+        followups = []
+
+    try:
+        cur.execute(f"""
+            SELECT e.id::text, e.client_id::text,
+                   trim(concat_ws(' ', nullif(c.first_name,''), nullif(c.last_name,''))) AS client_name,
+                   COALESCE(e.bureau, ''), e.event_date, COALESCE(e.round_number, 1),
+                   COALESCE(e.status, 'scheduled'), COALESCE(e.notes, ''), e.created_at
+            FROM client_redispute_events e
+            LEFT JOIN clients c ON c.id = e.client_id
+            WHERE 1=1 {profile_filter}
+            ORDER BY e.event_date ASC NULLS LAST,
+                     lower(trim(concat_ws(' ', nullif(c.last_name,''), nullif(c.first_name,'')))) ASC,
+                     e.created_at DESC
+            LIMIT %s
+        """, params)
+        redisputes = [{
+            "id": r[0], "client_id": r[1] or "", "client_name": r[2] or "Client",
+            "bureau": r[3], "event_date": str(r[4]) if r[4] else "",
+            "round_number": r[5], "status": r[6], "notes": r[7],
+            "created_at": str(r[8]) if r[8] else ""
+        } for r in cur.fetchall()]
+    except Exception:
+        redisputes = []
+
+    return appointments, followups, redisputes
+
+
+def build_credit_repair_dashboard_work_queue(appointments=None, followups=None, redisputes=None, selected_queue: str = 'redisputes'):
+    selected = (selected_queue or 'redisputes').strip().lower()
+    if selected in {'appointment', 'appointments'}:
+        selected = 'appointments'
+    elif selected in {'redispute', 'redisputes', 'redispute_reminders'}:
+        selected = 'redisputes'
+    elif selected in {'followup', 'followups', 'follow_ups', 'ticklers', 'followups_ticklers'}:
+        selected = 'followups'
+    elif selected != 'all':
+        selected = 'redisputes'
+
+    rows = []
+    counts = {'appointments': 0, 'redisputes': 0, 'followups': 0, 'all': 0}
+
+    for appt in appointments or []:
+        if not _dashboard_active_calendar_status(appt.get('status')):
+            continue
+        counts['appointments'] += 1
+        due = appt.get('appointment_date') or ''
+        purpose = (appt.get('appointment_purpose') or 'Appointment').replace('_', ' ').title()
+        mode = (appt.get('appointment_mode') or '').replace('_', ' ').title()
+        rows.append({
+            'category': 'appointments', 'category_label': 'Appointment',
+            'id': appt.get('id') or '', 'client_id': appt.get('client_id') or '',
+            'client_name': appt.get('client_name') or 'Client',
+            'due_date': due, 'due_label': _dashboard_short_date(due),
+            'sort_date': _dashboard_date_sort_value(due),
+            'sort_time': appt.get('appointment_time') or '99:99',
+            'title': f"{purpose}{(' — ' + mode) if mode else ''}",
+            'status': appt.get('status') or 'scheduled',
+            'detail': appt.get('notes') or appt.get('location_name') or '',
+            'time': appt.get('appointment_time_display') or _format_time_12(appt.get('appointment_time') or ''),
+            'bureau': '', 'round_number': '',
+            'action_primary_label': 'Open Client',
+            'action_primary_href': f"/ui/client/{appt.get('client_id') or ''}?tab=calendar",
+        })
+
+    for ev in redisputes or []:
+        if not _dashboard_active_calendar_status(ev.get('status')):
+            continue
+        counts['redisputes'] += 1
+        due = ev.get('event_date') or ''
+        bureau = (ev.get('bureau') or 'All').title()
+        rnd = ev.get('round_number') or 1
+        rows.append({
+            'category': 'redisputes', 'category_label': 'Redispute',
+            'id': ev.get('id') or '', 'client_id': ev.get('client_id') or '',
+            'client_name': ev.get('client_name') or 'Client',
+            'due_date': due, 'due_label': _dashboard_short_date(due),
+            'sort_date': _dashboard_date_sort_value(due), 'sort_time': '99:99',
+            'title': f"Redispute {bureau} — Round {rnd}",
+            'status': ev.get('status') or 'scheduled',
+            'detail': ev.get('notes') or '', 'time': '',
+            'bureau': bureau, 'round_number': rnd,
+            'action_primary_label': 'Generate Letter',
+            'action_primary_href': f"/ui/client/{ev.get('client_id') or ''}?tab=disputes",
+        })
+
+    for f in followups or []:
+        if not _dashboard_active_calendar_status(f.get('status')):
+            continue
+        counts['followups'] += 1
+        due = f.get('due_date') or ''
+        ftype = str(f.get('followup_type') or 'Follow-Up').replace('_', ' ').title()
+        rows.append({
+            'category': 'followups', 'category_label': 'Follow-Up / Tickler',
+            'id': f.get('id') or '', 'client_id': f.get('client_id') or '',
+            'client_name': f.get('client_name') or 'Client',
+            'due_date': due, 'due_label': _dashboard_short_date(due),
+            'sort_date': _dashboard_date_sort_value(due), 'sort_time': '99:99',
+            'title': ftype, 'status': f.get('status') or 'open',
+            'detail': f.get('note_text') or '', 'time': '',
+            'bureau': '', 'round_number': '',
+            'action_primary_label': 'Open Client',
+            'action_primary_href': f"/ui/client/{f.get('client_id') or ''}?tab=notes",
+        })
+
+    counts['all'] = counts['appointments'] + counts['redisputes'] + counts['followups']
+    selected_rows = rows if selected == 'all' else [r for r in rows if r.get('category') == selected]
+    groups = {'previous': [], 'today': [], 'upcoming': []}
+    for r in selected_rows:
+        groups[_dashboard_date_bucket(r.get('due_date'))].append(r)
+    for key in groups:
+        groups[key].sort(key=lambda r: (r.get('sort_date') or '9999-12-31', r.get('sort_time') or '99:99', (r.get('client_name') or '').lower()))
+
+    labels = {
+        'appointments': 'Appointments',
+        'redisputes': 'Redispute Reminders',
+        'followups': 'Follow-Ups / Ticklers',
+        'all': 'All Calendar Work',
+    }
+    return {
+        'selected': selected,
+        'selected_label': labels.get(selected, 'Redispute Reminders'),
+        'counts': counts,
+        'groups': groups,
+        'group_counts': {k: len(v) for k, v in groups.items()},
+        'total_selected': len(selected_rows),
+        'today_iso': date.today().isoformat(),
+        'today_label': date.today().strftime('%B %d, %Y').replace(' 0', ' '),
+    }
 
 
 def fetch_documents(cur, client_id: str, limit: int = 200):
@@ -1972,7 +7441,35 @@ def fetch_last_document_selection(cur, client_id: str):
     }
 
 
+def ensure_client_upload_requests_table(cur):
+    try:
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+    except Exception:
+        # Extension creation may fail under restricted database users; this code inserts explicit UUIDs.
+        pass
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS client_upload_requests (
+            id uuid PRIMARY KEY,
+            client_id uuid REFERENCES clients(id) ON DELETE CASCADE,
+            token uuid NOT NULL UNIQUE,
+            request_type text DEFAULT 'general_upload',
+            allowed_doc_types text,
+            expires_at timestamp without time zone,
+            status text DEFAULT 'open',
+            created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+            used_at timestamp without time zone
+        )
+    """)
+    cur.execute("ALTER TABLE client_upload_requests ADD COLUMN IF NOT EXISTS request_type text DEFAULT 'general_upload'")
+    cur.execute("ALTER TABLE client_upload_requests ADD COLUMN IF NOT EXISTS allowed_doc_types text")
+    cur.execute("ALTER TABLE client_upload_requests ADD COLUMN IF NOT EXISTS expires_at timestamp without time zone")
+    cur.execute("ALTER TABLE client_upload_requests ADD COLUMN IF NOT EXISTS status text DEFAULT 'open'")
+    cur.execute("ALTER TABLE client_upload_requests ADD COLUMN IF NOT EXISTS created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP")
+    cur.execute("ALTER TABLE client_upload_requests ADD COLUMN IF NOT EXISTS used_at timestamp without time zone")
+
+
 def fetch_upload_requests(cur, client_id: str, limit: int = 50):
+    ensure_client_upload_requests_table(cur)
     cur.execute("""
         SELECT id::text, token::text, COALESCE(request_type, 'general_upload'), COALESCE(allowed_doc_types, ''),
                expires_at, COALESCE(status, 'open'), created_at, used_at
@@ -2002,22 +7499,164 @@ def fetch_document_source_options(cur):
     return _merge_document_source_options(rows)
 
 
+def _client_associations_table_ready(cur) -> bool:
+    try:
+        cur.execute("SELECT to_regclass('public.client_associations')")
+        row = cur.fetchone()
+        return bool(row and row[0])
+    except Exception:
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def normalize_relationship_label(value: str) -> str:
+    raw = (value or '').strip()
+    if not raw:
+        return 'associated'
+    lowered = re.sub(r"\s+", " ", raw.lower())
+    for option in RELATIONSHIP_LABELS:
+        if lowered == option.lower():
+            return option
+    return raw
+
+
+RECIPROCAL_RELATIONSHIP_LABELS = {
+    "father": "child",
+    "mother": "child",
+    "parent": "child",
+    "stepfather": "stepchild",
+    "stepmother": "stepchild",
+    "son": "parent",
+    "daughter": "parent",
+    "child": "parent",
+    "stepson": "stepparent",
+    "stepdaughter": "stepparent",
+    "brother": "sibling",
+    "sister": "sibling",
+    "sibling": "sibling",
+    "grandfather": "grandchild",
+    "grandmother": "grandchild",
+    "grandparent": "grandchild",
+    "grandson": "grandparent",
+    "granddaughter": "grandparent",
+    "grandchild": "grandparent",
+    "uncle": "niece/nephew",
+    "aunt": "niece/nephew",
+    "cousin": "cousin",
+    "nephew": "aunt/uncle",
+    "niece": "aunt/uncle",
+    "father in law": "son/daughter in law",
+    "mother in law": "son/daughter in law",
+    "brother in law": "sibling in law",
+    "sister in law": "sibling in law",
+    "son in law": "parent in law",
+    "daughter in law": "parent in law",
+    "husband": "wife",
+    "wife": "husband",
+    "spouse": "spouse",
+    "partner": "partner",
+    "ex-spouse": "ex-spouse",
+    "fiance": "fiance",
+    "roommate": "roommate",
+    "friend": "friend",
+    "caregiver": "care recipient",
+    "guardian": "dependent",
+    "manager": "employee",
+    "supervisor": "employee",
+    "employee": "manager",
+    "employer": "employee",
+    "coworker": "coworker",
+    "client": "consultant",
+    "consultant": "client",
+    "co-borrower": "co-borrower",
+    "business partner": "business partner",
+    "associated": "associated",
+    "other": "other",
+}
+
+
+def infer_reciprocal_relationship_label(value: str) -> str:
+    normalized = normalize_relationship_label(value)
+    key = (normalized or '').strip().lower()
+    if not key:
+        return 'associated'
+    return RECIPROCAL_RELATIONSHIP_LABELS.get(key, normalized)
+
+
+def fetch_relationship_label_options(cur) -> List[str]:
+    base = [lbl for lbl in RELATIONSHIP_LABELS if (lbl or '').strip().lower() not in {'other', '(add)', '__add__'}]
+    seen = {lbl.casefold(): lbl for lbl in base}
+    custom_rows = []
+    try:
+        if _client_associations_table_ready(cur):
+            cur.execute("""
+                SELECT DISTINCT trim(COALESCE(relationship_label, ''))
+                FROM client_associations
+                WHERE COALESCE(trim(relationship_label), '') <> ''
+                ORDER BY 1
+            """)
+            custom_rows = [r[0] for r in cur.fetchall() if r and r[0]]
+    except Exception:
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+        custom_rows = []
+    for raw in custom_rows:
+        normalized = normalize_relationship_label(raw)
+        key = normalized.casefold()
+        if key not in seen and key not in {'other', '(add)', '__add__', 'add', 'add new', 'add new...'}:
+            seen[key] = normalized
+    ordered = sorted(seen.values(), key=lambda v: (v or '').casefold())
+    ordered.append('__add__')
+    return ordered
+
+
 def fetch_associated_clients(cur, client_id: str):
     try:
+        if not _client_associations_table_ready(cur):
+            return []
         cur.execute("""
-            SELECT ca.id::text, ca.associated_client_id::text, COALESCE(ca.relationship_label,''),
-                   COALESCE(c.first_name,''), COALESCE(c.last_name,''), COALESCE(c.phone,''), COALESCE(c.primary_email,''), COALESCE(c.is_active, TRUE)
+            SELECT ca.id::text,
+                   ca.associated_client_id::text,
+                   COALESCE(ca.relationship_label,''),
+                   COALESCE(inv.relationship_label,''),
+                   COALESCE(c.first_name,''),
+                   COALESCE(c.middle_name,''),
+                   COALESCE(c.last_name,''),
+                   COALESCE(c.suffix,''),
+                   COALESCE(c.phone,''),
+                   COALESCE(c.primary_email,''),
+                   COALESCE(c.is_active, TRUE)
             FROM client_associations ca
             JOIN clients c ON c.id = ca.associated_client_id
+            LEFT JOIN client_associations inv
+                   ON inv.client_id = ca.associated_client_id
+                  AND inv.associated_client_id = ca.client_id
             WHERE ca.client_id = %s::uuid
             ORDER BY lower(COALESCE(c.last_name,'')), lower(COALESCE(c.first_name,''))
         """, (client_id,))
         rows = cur.fetchall()
-        return [{
-            "id": r[0], "associated_client_id": r[1], "relationship_label": r[2],
-            "name": " ".join([p for p in [r[3], r[4]] if p]).strip() or r[1],
-            "phone": r[5] or '', "email": r[6] or '', "is_active": bool(r[7]),
-        } for r in rows]
+        out = []
+        for r in rows:
+            name_parts = [part for part in [r[4], r[5], r[6]] if part]
+            display_name = " ".join(name_parts).strip()
+            if r[7]:
+                display_name = (display_name + f" {r[7]}").strip()
+            out.append({
+                "id": r[0],
+                "associated_client_id": r[1],
+                "relationship_label": r[2],
+                "reciprocal_relationship_label": r[3],
+                "name": display_name or r[1],
+                "phone": r[8] or '',
+                "email": r[9] or '',
+                "is_active": bool(r[10]),
+            })
+        return out
     except Exception:
         try:
             cur.connection.rollback()
@@ -2050,12 +7689,75 @@ def fetch_client_switch_choices(cur, client_id: str, limit: int = 300):
         return []
 
 
-def fetch_referral_partners(cur):
+def ensure_referral_partners_table(cur):
+    statements = [
+        """
+        CREATE TABLE IF NOT EXISTS referral_partners (
+            id uuid PRIMARY KEY,
+            name text NOT NULL,
+            company_name text,
+            partner_type text NOT NULL DEFAULT 'other',
+            phone text,
+            email text,
+            notes text,
+            address_line1 text,
+            address_line2 text,
+            city text,
+            state text,
+            zip text,
+            website text,
+            is_active boolean NOT NULL DEFAULT TRUE,
+            created_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        "ALTER TABLE referral_partners ADD COLUMN IF NOT EXISTS company_name text",
+        "ALTER TABLE referral_partners ADD COLUMN IF NOT EXISTS partner_type text NOT NULL DEFAULT 'other'",
+        "ALTER TABLE referral_partners ADD COLUMN IF NOT EXISTS phone text",
+        "ALTER TABLE referral_partners ADD COLUMN IF NOT EXISTS email text",
+        "ALTER TABLE referral_partners ADD COLUMN IF NOT EXISTS notes text",
+        "ALTER TABLE referral_partners ADD COLUMN IF NOT EXISTS address_line1 text",
+        "ALTER TABLE referral_partners ADD COLUMN IF NOT EXISTS address_line2 text",
+        "ALTER TABLE referral_partners ADD COLUMN IF NOT EXISTS city text",
+        "ALTER TABLE referral_partners ADD COLUMN IF NOT EXISTS state text",
+        "ALTER TABLE referral_partners ADD COLUMN IF NOT EXISTS zip text",
+        "ALTER TABLE referral_partners ADD COLUMN IF NOT EXISTS website text",
+        "ALTER TABLE referral_partners ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT TRUE",
+        "ALTER TABLE referral_partners ADD COLUMN IF NOT EXISTS created_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        "ALTER TABLE referral_partners ADD COLUMN IF NOT EXISTS updated_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        "CREATE INDEX IF NOT EXISTS idx_referral_partners_name ON referral_partners (lower(name))",
+        "CREATE INDEX IF NOT EXISTS idx_referral_partners_company ON referral_partners (lower(coalesce(company_name,'')))",
+        "CREATE INDEX IF NOT EXISTS idx_referral_partners_phone ON referral_partners (phone)",
+        "CREATE INDEX IF NOT EXISTS idx_referral_partners_email ON referral_partners (lower(coalesce(email,'')))"
+    ]
+    for ddl in statements:
+        try:
+            cur.execute(ddl)
+        except Exception:
+            pass
+
+
+def fetch_referral_partners(cur, include_inactive: bool = False):
     try:
-        cur.execute("""
-            SELECT id::text, name, COALESCE(company_name, ''), COALESCE(partner_type, '')
+        ensure_referral_partners_table(cur)
+        where_sql = "" if include_inactive else "WHERE COALESCE(is_active, TRUE) = TRUE"
+        cur.execute(f"""
+            SELECT id::text,
+                   COALESCE(name, ''),
+                   COALESCE(company_name, ''),
+                   COALESCE(partner_type, ''),
+                   COALESCE(phone, ''),
+                   COALESCE(email, ''),
+                   COALESCE(notes, ''),
+                   COALESCE(address_line1, ''),
+                   COALESCE(address_line2, ''),
+                   COALESCE(city, ''),
+                   COALESCE(state, ''),
+                   COALESCE(zip, ''),
+                   COALESCE(website, ''),
+                   COALESCE(is_active, TRUE)
             FROM referral_partners
-            WHERE COALESCE(is_active, TRUE) = TRUE
+            {where_sql}
             ORDER BY lower(COALESCE(name, '')), lower(COALESCE(company_name, ''))
         """)
         rows = cur.fetchall()
@@ -2065,9 +7767,54 @@ def fetch_referral_partners(cur):
                 "name": r[1],
                 "company_name": r[2],
                 "partner_type": r[3],
+                "phone": r[4],
+                "email": r[5],
+                "notes": r[6],
+                "address_line1": r[7],
+                "address_line2": r[8],
+                "city": r[9],
+                "state": r[10],
+                "zip": r[11],
+                "website": r[12],
+                "is_active": bool(r[13]),
             }
             for r in rows
         ]
+    except Exception:
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+        return []
+
+
+def fetch_referral_monthly_summary(cur, months_back: int = 12):
+    try:
+        cur.execute("""
+            SELECT rp.id::text,
+                   COALESCE(rp.name, ''),
+                   COALESCE(rp.company_name, ''),
+                   COALESCE(rp.partner_type, ''),
+                   date_trunc('month', cor.referral_date)::date AS month_bucket,
+                   COUNT(*)::int
+            FROM client_outbound_referrals cor
+            JOIN referral_partners rp ON rp.id = cor.referral_partner_id
+            WHERE cor.referral_date >= date_trunc('month', CURRENT_DATE) - ((%s - 1) * INTERVAL '1 month')
+            GROUP BY rp.id, rp.name, rp.company_name, rp.partner_type, month_bucket
+            ORDER BY month_bucket DESC, lower(COALESCE(rp.name, '')), lower(COALESCE(rp.company_name, ''))
+        """, (months_back,))
+        rows = cur.fetchall()
+        out = []
+        for r in rows:
+            out.append({
+                'partner_id': r[0],
+                'name': r[1],
+                'company_name': r[2],
+                'partner_type': r[3],
+                'month_bucket': str(r[4]) if r[4] else '',
+                'referral_count': int(r[5] or 0),
+            })
+        return out
     except Exception:
         try:
             cur.connection.rollback()
@@ -2250,6 +7997,273 @@ def fetch_saved_letters(cur, client_id: str, limit: int = 100):
         })
     return out
 
+def fetch_saved_letter_detail(cur, client_id: str, letter_id: str):
+    cur.execute("""
+        SELECT l.id::text,
+               COALESCE(meta.round_number, NULL),
+               COALESCE(l.bureau::text, ''),
+               COALESCE(l.subject, ''),
+               COALESCE(l.letter_text, ''),
+               l.generated_at,
+               COALESCE(l.use_client_signature, FALSE),
+               COALESCE(l.round_run_id::text, '')
+        FROM letters l
+        LEFT JOIN round_run_dispute_meta meta ON meta.round_run_id = l.round_run_id
+        WHERE l.client_id = %s
+          AND l.id = %s
+        LIMIT 1
+    """, (client_id, letter_id))
+    row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        'id': row[0],
+        'round_number': int(row[1] or 0) if row[1] is not None else None,
+        'bureau': row[2],
+        'subject': row[3],
+        'letter_text': row[4],
+        'generated_at': str(row[5]) if row[5] else '',
+        'use_client_signature': bool(row[6]),
+        'round_run_id': row[7],
+    }
+
+
+def fetch_bureau_letter_history(cur, client_id: str, bureau: str, before_round: Optional[int] = None, limit: int = 12):
+    params = [client_id, (bureau or '').strip().lower()]
+    round_filter = ""
+    if before_round and int(before_round) > 0:
+        round_filter = " AND COALESCE(meta.round_number, 0) < %s"
+        params.append(int(before_round))
+    params.append(int(limit))
+    cur.execute(f"""
+        SELECT l.id::text,
+               COALESCE(meta.round_number, NULL),
+               COALESCE(l.bureau::text, ''),
+               COALESCE(l.subject, ''),
+               COALESCE(l.letter_text, ''),
+               l.generated_at,
+               COALESCE(l.round_run_id::text, '')
+        FROM letters l
+        LEFT JOIN round_run_dispute_meta meta ON meta.round_run_id = l.round_run_id
+        WHERE l.client_id = %s
+          AND lower(COALESCE(l.bureau::text, '')) = %s
+          {round_filter}
+        ORDER BY COALESCE(meta.round_number, 0) DESC, l.generated_at DESC
+        LIMIT %s
+    """, tuple(params))
+    rows = cur.fetchall()
+    return [{
+        'id': r[0],
+        'round_number': int(r[1] or 0) if r[1] is not None else None,
+        'bureau': r[2],
+        'subject': r[3],
+        'letter_text': r[4],
+        'generated_at': str(r[5]) if r[5] else '',
+        'round_run_id': r[6],
+    } for r in rows]
+
+
+def fetch_latest_bureau_letter(cur, client_id: str, bureau: str, before_round: Optional[int] = None):
+    rows = fetch_bureau_letter_history(cur, client_id, bureau, before_round=before_round, limit=1)
+    return rows[0] if rows else None
+
+
+
+def _safe_template_filename(value: str) -> str:
+    stem = re.sub(r'[^A-Za-z0-9._ -]+', '', (value or '').strip())
+    stem = stem.strip().strip('.')
+    return stem
+
+
+def _template_stage_from_name(name: str) -> int:
+    m = re.search(r'(?:stage|round)\s*[_ -]?(\d+)', (name or ''), flags=re.IGNORECASE)
+    return int(m.group(1)) if m else 0
+
+
+def _template_bureau_dir(bureau: str) -> Path:
+    clean = (bureau or '').strip().lower()
+    if clean not in CUSTOM_LETTER_TEMPLATE_BUREAUS:
+        clean = 'equifax'
+    path = Path(CUSTOM_LETTER_TEMPLATE_DIR) / clean
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _template_id_from_path(path: Path, bureau: str) -> str:
+    return f"{bureau}:{path.name}"
+
+
+def _resolve_custom_template_path(template_id: str) -> tuple[str, Optional[Path]]:
+    raw = str(template_id or '').strip()
+    if not raw:
+        return '', None
+    if ':' in raw:
+        bureau, fname = raw.split(':', 1)
+    else:
+        bureau, fname = '', raw
+    bureau = (bureau or '').strip().lower()
+    fname = _safe_template_filename(fname)
+    if bureau not in CUSTOM_LETTER_TEMPLATE_BUREAUS or not fname:
+        return '', None
+    path = _template_bureau_dir(bureau) / fname
+    return bureau, path if path.exists() else None
+
+
+def _extract_docx_template_text(path: Path) -> str:
+    try:
+        with zipfile.ZipFile(path, 'r') as zf:
+            xml_bytes = zf.read('word/document.xml')
+        root = ET.fromstring(xml_bytes)
+        ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+        paragraphs = []
+        for para in root.findall('.//w:p', ns):
+            texts = []
+            for node in para.findall('.//w:t', ns):
+                texts.append(node.text or '')
+            joined = ''.join(texts).strip()
+            if joined:
+                paragraphs.append(joined)
+        return '\n\n'.join(paragraphs).strip()
+    except Exception:
+        return ''
+
+
+def list_custom_letter_templates():
+    templates_out = []
+    base = Path(CUSTOM_LETTER_TEMPLATE_DIR)
+    if not base.exists():
+        return templates_out
+    for bureau in CUSTOM_LETTER_TEMPLATE_BUREAUS:
+        bureau_dir = base / bureau
+        if not bureau_dir.exists():
+            continue
+        for path in sorted(bureau_dir.glob('*.docx')):
+            name = path.stem
+            templates_out.append({
+                'id': _template_id_from_path(path, bureau),
+                'name': name,
+                'bureau': bureau,
+                'stage': _template_stage_from_name(name),
+                'file_name': path.name,
+                'path': str(path),
+                'content': '',
+                'kind': 'docx',
+            })
+    templates_out.sort(key=lambda x: ((x.get('bureau') or ''), int(x.get('stage') or 0), (x.get('name') or '').lower()))
+    return templates_out
+
+
+def load_custom_letter_template(template_id: str):
+    bureau, path = _resolve_custom_template_path(template_id)
+    if not path:
+        return None
+    name = path.stem
+    return {
+        'id': _template_id_from_path(path, bureau),
+        'name': name,
+        'bureau': bureau,
+        'stage': _template_stage_from_name(name),
+        'file_name': path.name,
+        'path': str(path),
+        'content': _extract_docx_template_text(path),
+        'kind': 'docx',
+    }
+
+
+def save_custom_letter_template_upload(upload: UploadFile, bureau: str):
+    if upload is None or not getattr(upload, 'filename', ''):
+        raise ValueError('Choose a Word .docx template to upload.')
+    bureau = (bureau or '').strip().lower()
+    if bureau not in CUSTOM_LETTER_TEMPLATE_BUREAUS:
+        raise ValueError('Choose a valid bureau template folder.')
+    original = upload.filename
+    if not original.lower().endswith('.docx'):
+        raise ValueError('Only Word .docx template files are supported.')
+    safe_name = _safe_template_filename(original)
+    if not safe_name.lower().endswith('.docx'):
+        safe_name += '.docx'
+    path = _template_bureau_dir(bureau) / safe_name
+    content = upload.file.read()
+    if not content:
+        raise ValueError('The uploaded template file is empty.')
+    path.write_bytes(content)
+    return load_custom_letter_template(_template_id_from_path(path, bureau))
+
+
+def delete_custom_letter_template(template_id: str):
+    bureau, path = _resolve_custom_template_path(template_id)
+    if not path:
+        return False
+    try:
+        path.unlink(missing_ok=True)
+        return True
+    except Exception:
+        return False
+
+def _round_override_table_exists(cur) -> bool:
+    try:
+        cur.execute("SELECT to_regclass('public.client_bureau_round_overrides')::text")
+        row = cur.fetchone()
+        return bool(row and row[0])
+    except Exception:
+        return False
+
+
+def fetch_bureau_round_override(cur, client_id: str, bureau: str) -> Optional[int]:
+    if not _round_override_table_exists(cur):
+        return None
+    cur.execute("""
+        SELECT current_round_number
+        FROM client_bureau_round_overrides
+        WHERE client_id = %s
+          AND lower(bureau) = %s
+        LIMIT 1
+    """, (client_id, (bureau or '').strip().lower()))
+    row = cur.fetchone()
+    if not row or row[0] is None:
+        return None
+    try:
+        return max(int(row[0]), 1)
+    except Exception:
+        return None
+
+
+def fetch_all_bureau_round_overrides(cur, client_id: str) -> dict:
+    if not _round_override_table_exists(cur):
+        return {}
+    cur.execute("""
+        SELECT lower(bureau), current_round_number
+        FROM client_bureau_round_overrides
+        WHERE client_id = %s
+    """, (client_id,))
+    out = {}
+    for bureau, num in cur.fetchall():
+        try:
+            out[(bureau or '').strip().lower()] = max(int(num), 1)
+        except Exception:
+            continue
+    return out
+
+
+def upsert_bureau_round_override(cur, client_id: str, bureau: str, current_round_number: int):
+    if not _round_override_table_exists(cur):
+        raise RuntimeError("Round override table is missing. Run the supplied SQL script first.")
+    cur.execute("""
+        INSERT INTO client_bureau_round_overrides (client_id, bureau, current_round_number, updated_at)
+        VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (client_id, bureau) DO UPDATE
+        SET current_round_number = EXCLUDED.current_round_number,
+            updated_at = CURRENT_TIMESTAMP
+    """, (client_id, (bureau or '').strip().lower(), max(int(current_round_number or 1), 1)))
+
+
+def clear_bureau_round_override(cur, client_id: str, bureau: str):
+    if not _round_override_table_exists(cur):
+        return
+    cur.execute("DELETE FROM client_bureau_round_overrides WHERE client_id = %s AND lower(bureau) = %s", (client_id, (bureau or '').strip().lower()))
+
+
+
 
 def fetch_client_emails(cur, client_id: str, limit: int = 200):
     cur.execute("""
@@ -2283,26 +8297,37 @@ def fetch_client_emails(cur, client_id: str, limit: int = 200):
 
 
 
-def fetch_dispute_round_defaults(cur, client_id: str):
-    round_number = 1
-    try:
-        cur.execute("SELECT COALESCE(MAX(round_number), 0) FROM round_runs WHERE client_id = %s", (client_id,))
-        row = cur.fetchone()
-        if row and row[0]:
-            round_number = int(row[0]) + 1
-    except Exception:
-        conn = getattr(cur, 'connection', None)
-        if conn is not None:
-            conn.rollback()
-        cur.execute("SELECT COALESCE(MAX(round_number), 0) FROM round_run_dispute_meta WHERE client_id = %s", (client_id,))
-        row = cur.fetchone()
-        if row and row[0]:
-            round_number = int(row[0]) + 1
+def fetch_latest_sent_round_for_bureau(cur, client_id: str, bureau: str) -> int:
+    bureau = (bureau or '').strip().lower()
     cur.execute("""
-        SELECT COALESCE(letter_instructions, '')
-        FROM round_run_dispute_meta
-        WHERE client_id = %s
-        ORDER BY created_at DESC
+        SELECT COALESCE(MAX(COALESCE(meta.round_number, 0)), 0)
+        FROM letters l
+        LEFT JOIN round_run_dispute_meta meta ON meta.round_run_id = l.round_run_id
+        WHERE l.client_id = %s
+          AND lower(COALESCE(l.bureau::text, '')) = %s
+    """, (client_id, bureau))
+    row = cur.fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def fetch_dispute_round_defaults(cur, client_id: str):
+    cur.execute("""
+        SELECT COALESCE(MAX(COALESCE(meta.round_number, 0)), 0)
+        FROM letters l
+        LEFT JOIN round_run_dispute_meta meta ON meta.round_run_id = l.round_run_id
+        WHERE l.client_id = %s
+    """, (client_id,))
+    row = cur.fetchone()
+    round_number = (int(row[0] or 0) + 1) if row else 1
+    if round_number < 1:
+        round_number = 1
+
+    cur.execute("""
+        SELECT COALESCE(m.letter_instructions, '')
+        FROM round_run_dispute_meta m
+        JOIN letters l ON l.round_run_id = m.round_run_id
+        WHERE l.client_id = %s
+        ORDER BY COALESCE(l.generated_at, m.created_at) DESC, m.created_at DESC
         LIMIT 1
     """, (client_id,))
     row = cur.fetchone()
@@ -2381,36 +8406,23 @@ def _safe_parse_date(value):
 
 
 def get_current_round_number_for_bureau(cur, client_id: str, bureau: str) -> int:
-    bureau = (bureau or '').strip().lower()
-    max_round = 0
-    cur.execute("""
-        SELECT COALESCE(MAX(COALESCE(meta.round_number, 0)), 0)
-        FROM letters l
-        LEFT JOIN round_run_dispute_meta meta ON meta.round_run_id = l.round_run_id
-        WHERE l.client_id = %s AND lower(COALESCE(l.bureau::text, '')) = %s
-    """, (client_id, bureau))
-    row = cur.fetchone()
-    if row and row[0]:
-        max_round = max(max_round, int(row[0] or 0))
-
-    for table in ('client_account_disputes', 'client_personal_info_disputes', 'client_inquiry_disputes'):
-        cur.execute(f"""
-            SELECT COALESCE(MAX(COALESCE(round_added, 0)), 0)
-            FROM {table}
-            WHERE client_id = %s
-              AND lower(COALESCE(bureau, '')) = %s
-        """, (client_id, bureau))
-        row = cur.fetchone()
-        if row and row[0]:
-            max_round = max(max_round, int(row[0] or 0))
-
-    return max_round + 1 if max_round >= 1 else 1
+    override_round = fetch_bureau_round_override(cur, client_id, bureau)
+    if override_round and override_round >= 1:
+        return override_round
+    latest_sent_round = fetch_latest_sent_round_for_bureau(cur, client_id, bureau)
+    return latest_sent_round + 1 if latest_sent_round >= 1 else 1
 
 
 def build_bureau_dispute_summaries(profile: dict, account_disputes: list, personal_info_disputes: list,
                                    inquiry_disputes: list, saved_letters: list, redispute_events: list,
-                                   current_round_default: int) -> dict:
+                                   current_round_default: int, round_overrides: Optional[dict] = None) -> dict:
     summaries = {}
+    account_disputes = account_disputes or []
+    personal_info_disputes = personal_info_disputes or []
+    inquiry_disputes = inquiry_disputes or []
+    saved_letters = saved_letters or []
+    redispute_events = redispute_events or []
+    round_overrides = round_overrides or {}
     today = date.today()
     full_name = ' '.join([p for p in [profile.get('first_name'), profile.get('middle_name'), profile.get('last_name')] if p]).strip()
     for bureau in BUREAUS:
@@ -2432,7 +8444,8 @@ def build_bureau_dispute_summaries(profile: dict, account_disputes: list, person
         latest_letter = letters[0] if letters else None
         latest_round_sent = int(latest_letter.get('round_number') or 0) if latest_letter else 0
         latest_date = _safe_parse_date(latest_letter.get('generated_at')) if latest_letter else None
-        current_round = latest_round_sent + 1 if latest_round_sent else max(int(current_round_default or 1), 1)
+        override_round = round_overrides.get(bureau)
+        current_round = override_round if override_round and int(override_round) >= 1 else (latest_round_sent + 1 if latest_round_sent else 1)
 
         next_tickler_event = None
         future_events = []
@@ -2540,7 +8553,7 @@ def build_dispute_round_summary(cur, client_id: str, round_number: int, include_
         parts.append(
             f"Inquiries tracked: started {metrics['inquiries']['started']}, current {metrics['inquiries']['current']}, removed {metrics['inquiries']['removed']}, new since round 1 {metrics['inquiries']['new']}."
         )
-        parts.append("Note: inquiry disputes are tracked in the CRM in this build, but the legacy generator does not yet merge them into the generated letters.")
+        parts.append("Note: inquiry disputes are tracked in the Credit Repair system in this build, but the legacy generator does not yet merge them into the generated letters.")
     return ' '.join(parts)
 
 
@@ -2555,9 +8568,11 @@ def fetch_personal_info_errors(cur, client_id: str, limit: int = 200):
 
 
 def fetch_credit_products(cur, client_id: str, limit: int = 200):
+    ensure_credit_reestablishment_tables(cur)
     cur.execute("""
-        SELECT id::text, lender_name, credit_type, credit_limit, due_date, cutoff_date,
-               secured_deposit_amount, origination_date, COALESCE(notes, ''), created_at
+        SELECT id::text, COALESCE(lender_name,''), COALESCE(credit_type,''), credit_limit, due_date, cutoff_date,
+               secured_deposit_amount, origination_date, COALESCE(notes, ''), created_at, COALESCE(is_secured, FALSE),
+               COALESCE(vehicle_year,''), COALESCE(vehicle_make,''), COALESCE(vehicle_model,''), COALESCE(collateral_description,'')
         FROM client_credit_products
         WHERE client_id = %s
         ORDER BY origination_date DESC NULLS LAST, created_at DESC
@@ -2567,14 +8582,182 @@ def fetch_credit_products(cur, client_id: str, limit: int = 200):
     return [{
         "id": r[0], "lender_name": r[1], "credit_type": r[2], "credit_limit": r[3], "due_date": r[4],
         "cutoff_date": r[5], "statement_date": r[5], "secured_deposit_amount": r[6], "origination_date": str(r[7]) if r[7] else '',
-        "notes": r[8], "created_at": str(r[9]) if r[9] else ''
+        "open_date": str(r[7]) if r[7] else '', "notes": r[8], "created_at": str(r[9]) if r[9] else '',
+        "is_secured": bool(r[10]), "vehicle_year": r[11], "vehicle_make": r[12], "vehicle_model": r[13], "collateral_description": r[14],
     } for r in rows]
+
+
+def ensure_credit_reestablishment_tables(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS client_credit_products (
+            id uuid PRIMARY KEY,
+            client_id uuid NOT NULL,
+            lender_name text NOT NULL,
+            credit_type text NOT NULL,
+            credit_limit numeric NULL,
+            due_date smallint NULL,
+            cutoff_date smallint NULL,
+            secured_deposit_amount numeric NULL,
+            origination_date date NULL,
+            notes text NULL,
+            created_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    for stmt in [
+        "ALTER TABLE client_credit_products ADD COLUMN IF NOT EXISTS is_secured boolean NOT NULL DEFAULT FALSE",
+        "ALTER TABLE client_credit_products ADD COLUMN IF NOT EXISTS vehicle_year text NULL",
+        "ALTER TABLE client_credit_products ADD COLUMN IF NOT EXISTS vehicle_make text NULL",
+        "ALTER TABLE client_credit_products ADD COLUMN IF NOT EXISTS vehicle_model text NULL",
+        "ALTER TABLE client_credit_products ADD COLUMN IF NOT EXISTS collateral_description text NULL",
+    ]:
+        try:
+            cur.execute(stmt)
+        except Exception:
+            pass
+
+
+def ensure_lender_directory_table(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS lender_directory (
+            id uuid PRIMARY KEY,
+            name text NOT NULL,
+            category text NOT NULL DEFAULT 'personal loan',
+            address_line1 text NULL,
+            address_line2 text NULL,
+            city text NULL,
+            state text NULL,
+            zip_code text NULL,
+            phone text NULL,
+            website text NULL,
+            is_active boolean NOT NULL DEFAULT TRUE,
+            created_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    for stmt in [
+        "ALTER TABLE lender_directory ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT 'personal loan'",
+        "ALTER TABLE lender_directory ADD COLUMN IF NOT EXISTS website text NULL",
+    ]:
+        try:
+            cur.execute(stmt)
+        except Exception:
+            pass
+
+
+def ensure_prequal_links_table(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS prequal_links (
+            id uuid PRIMARY KEY,
+            name text NOT NULL,
+            url text NOT NULL,
+            credit_type text NOT NULL DEFAULT 'credit card',
+            is_active boolean NOT NULL DEFAULT TRUE,
+            created_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    for stmt in [
+        "ALTER TABLE prequal_links ADD COLUMN IF NOT EXISTS credit_type text NOT NULL DEFAULT 'credit card'",
+        "ALTER TABLE prequal_links ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT TRUE",
+    ]:
+        try:
+            cur.execute(stmt)
+        except Exception:
+            pass
+
+
+def seed_default_lender_directory(cur):
+    ensure_lender_directory_table(cur)
+    defaults = []
+    for lender in DEFAULT_LENDER_DIRECTORY:
+        item = dict(lender)
+        item['category'] = 'personal loan'
+        defaults.append(item)
+    defaults.extend(DEFAULT_CREDIT_CARD_LENDERS)
+    for lender in defaults:
+        cur.execute("""
+            INSERT INTO lender_directory
+                (id, name, category, address_line1, address_line2, city, state, zip_code, phone, website, is_active)
+            SELECT %s::uuid, %s, %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), TRUE
+            WHERE NOT EXISTS (SELECT 1 FROM lender_directory WHERE lower(name)=lower(%s) AND category=%s)
+        """, (str(uuid4()), lender.get('name') or '', lender.get('category') or 'personal loan', lender.get('address_line1') or '', lender.get('address_line2') or '', lender.get('city') or '', lender.get('state') or '', lender.get('zip_code') or '', lender.get('phone') or '', lender.get('website') or '', lender.get('name') or '', lender.get('category') or 'personal loan'))
+
+
+def seed_default_prequal_links(cur):
+    ensure_prequal_links_table(cur)
+    personal_loan_links = [
+        {"name": "SoFi Personal Loans", "url": "https://www.sofi.com/personal-loans/", "credit_type": "personal loan"},
+        {"name": "LendingClub Personal Loans", "url": "https://www.lendingclub.com/personal-loans", "credit_type": "personal loan"},
+        {"name": "Discover Personal Loans", "url": "https://www.discover.com/personal-loans/", "credit_type": "personal loan"},
+        {"name": "Rocket Loans", "url": "https://www.rocketloans.com/personal-loans", "credit_type": "personal loan"},
+        {"name": "Upgrade Personal Loans", "url": "https://www.upgrade.com/personal-loans", "credit_type": "personal loan"},
+        {"name": "Upstart Personal Loans", "url": "https://www.upstart.com/personal-loans", "credit_type": "personal loan"},
+        {"name": "LightStream Personal Loans", "url": "https://www.lightstream.com/personal-loans", "credit_type": "personal loan"},
+        {"name": "Prosper Personal Loans", "url": "https://www.prosper.com/personal-loans", "credit_type": "personal loan"},
+        {"name": "U.S. Bank Personal Loans", "url": "https://www.usbank.com/loans-credit-lines/personal-loans.html", "credit_type": "personal loan"},
+        {"name": "Wells Fargo Personal Loans", "url": "https://www.wellsfargo.com/personal-loans/", "credit_type": "personal loan"},
+        {"name": "OneMain Financial", "url": "https://www.onemainfinancial.com/personal-loans", "credit_type": "personal loan"},
+        {"name": "Axos Personal Loans", "url": "https://www.axosbank.com/personal/borrow/personal-loans", "credit_type": "personal loan"},
+    ]
+    for item in DEFAULT_PREQUAL_LINKS + personal_loan_links:
+        cur.execute("""
+            INSERT INTO prequal_links (id, name, url, credit_type, is_active)
+            SELECT %s::uuid, %s, %s, %s, TRUE
+            WHERE NOT EXISTS (SELECT 1 FROM prequal_links WHERE lower(name)=lower(%s) AND credit_type=%s)
+        """, (str(uuid4()), item.get('name') or '', item.get('url') or '', item.get('credit_type') or 'credit card', item.get('name') or '', item.get('credit_type') or 'credit card'))
+
+
+def fetch_lender_directory(cur, limit: int = 500):
+    ensure_lender_directory_table(cur)
+    seed_default_lender_directory(cur)
+    cur.execute("""
+        SELECT id::text, COALESCE(name,''), COALESCE(category,'personal loan'), COALESCE(address_line1,''), COALESCE(address_line2,''),
+               COALESCE(city,''), COALESCE(state,''), COALESCE(zip_code,''), COALESCE(phone,''), COALESCE(website,''), is_active
+        FROM lender_directory
+        WHERE is_active = TRUE
+        ORDER BY lower(category) ASC, lower(name) ASC
+        LIMIT %s
+    """, (limit,))
+    rows = cur.fetchall() or []
+    return [{
+        'id': r[0], 'name': r[1], 'category': r[2], 'address_line1': r[3], 'address_line2': r[4], 'city': r[5], 'state': r[6], 'zip_code': r[7], 'phone': r[8], 'website': r[9], 'is_active': bool(r[10])
+    } for r in rows]
+
+
+def fetch_prequal_links(cur, limit: int = 500):
+    ensure_prequal_links_table(cur)
+    seed_default_prequal_links(cur)
+    cur.execute("""
+        SELECT id::text, COALESCE(name,''), COALESCE(url,''), COALESCE(credit_type,'credit card'), is_active
+        FROM prequal_links
+        WHERE is_active = TRUE
+        ORDER BY lower(credit_type) ASC, lower(name) ASC
+        LIMIT %s
+    """, (limit,))
+    rows = cur.fetchall() or []
+    return [{'id': r[0], 'name': r[1], 'url': r[2], 'credit_type': r[3], 'is_active': bool(r[4])} for r in rows]
 
 
 def fetch_outbound_referrals(cur, client_id: str, limit: int = 200):
     cur.execute("""
-        SELECT cor.id::text, cor.referral_date, COALESCE(cor.referral_reason, ''), COALESCE(cor.status, 'referred'),
-               COALESCE(cor.notes, ''), rp.id::text, rp.name, COALESCE(rp.company_name, ''), COALESCE(rp.partner_type, '')
+        SELECT cor.id::text,
+               cor.referral_date,
+               COALESCE(cor.referral_reason, ''),
+               COALESCE(cor.status, 'referred'),
+               COALESCE(cor.notes, ''),
+               rp.id::text,
+               COALESCE(rp.name, ''),
+               COALESCE(rp.company_name, ''),
+               COALESCE(rp.partner_type, ''),
+               COALESCE(rp.phone, ''),
+               COALESCE(rp.email, ''),
+               COALESCE(rp.address_line1, ''),
+               COALESCE(rp.address_line2, ''),
+               COALESCE(rp.city, ''),
+               COALESCE(rp.state, ''),
+               COALESCE(rp.zip, ''),
+               COALESCE(rp.website, '')
         FROM client_outbound_referrals cor
         JOIN referral_partners rp ON rp.id = cor.referral_partner_id
         WHERE cor.client_id = %s
@@ -2584,11 +8767,16 @@ def fetch_outbound_referrals(cur, client_id: str, limit: int = 200):
     rows = cur.fetchall()
     return [{
         "id": r[0], "referral_date": str(r[1]) if r[1] else '', "referral_reason": r[2], "status": r[3],
-        "notes": r[4], "partner_id": r[5], "partner_name": r[6], "company_name": r[7], "partner_type": r[8]
+        "notes": r[4], "partner_id": r[5], "partner_name": r[6], "company_name": r[7], "partner_type": r[8],
+        "phone": r[9], "email": r[10], "address_line1": r[11], "address_line2": r[12], "city": r[13],
+        "state": r[14], "zip": r[15], "website": r[16]
     } for r in rows]
 
 
 def fetch_client_profile(cur, client_id: str, include_sensitive: bool = False):
+    ensure_client_mailing_address_columns(cur)
+    ensure_referral_sources_table(cur)
+    ensure_referral_partners_table(cur)
     cur.execute("""
         SELECT c.id::text,
                c.first_name,
@@ -2607,18 +8795,24 @@ def fetch_client_profile(cur, client_id: str, include_sensitive: bool = False):
                c.start_date,
                c.cancelled_date,
                COALESCE(c.is_active, TRUE) AS is_active,
-               COALESCE(c.lifecycle_status, 'candidate') AS lifecycle_status,
+               COALESCE(c.lifecycle_status, 'prospect') AS lifecycle_status,
                COALESCE(c.pending_payment, FALSE) AS pending_payment,
                COALESCE(c.consultation_fee, 100.00) AS consultation_fee,
                COALESCE(c.initial_fee, 175.00) AS initial_fee,
                COALESCE(c.monthly_fee, 125.00) AS monthly_fee,
-               COALESCE(c.pricing_plan, 'standard program') AS pricing_plan,
+               COALESCE(c.pricing_plan, 'standard_12') AS pricing_plan,
                c.signup_date,
                c.first_payment_date,
                COALESCE(c.billing_group, '15th') AS billing_group,
                c.custom_billing_day,
                COALESCE(c.preferred_payment_method, 'zelle') AS preferred_payment_method,
+               c.referred_by_source_id::text,
+               c.referred_by_client_id::text,
                c.referred_by_partner_id::text,
+               COALESCE(rs.name, '') AS referred_by_source_name,
+               COALESCE(rs.company_name, '') AS referred_by_source_company_name,
+               COALESCE(rs.source_type, '') AS referred_by_source_kind,
+               COALESCE(NULLIF(TRIM(CONCAT_WS(' ', src.first_name, NULLIF(src.middle_name,''), src.last_name, NULLIF(src.suffix,''))), ''), '') AS referred_by_client_name,
                COALESCE(rp.name, '') AS referred_by_partner_name,
                COALESCE(c.referral_reason, '') AS referral_reason,
                COALESCE(c.ssn_last4, '') AS ssn_last4,
@@ -2632,9 +8826,16 @@ def fetch_client_profile(cur, client_id: str, include_sensitive: bool = False):
                COALESCE(addr.line2, '') AS address_line2,
                COALESCE(addr.city, '') AS city,
                COALESCE(addr.state, '') AS state,
-               COALESCE(addr.zip, '') AS zip
+               COALESCE(addr.zip, '') AS zip,
+               COALESCE(c.mailing_address_line1, '') AS mailing_address_line1,
+               COALESCE(c.mailing_apt_unit, '') AS mailing_apt_unit,
+               COALESCE(c.mailing_city, '') AS mailing_city,
+               COALESCE(c.mailing_state, '') AS mailing_state,
+               COALESCE(c.mailing_zip, '') AS mailing_zip
         FROM clients c
+        LEFT JOIN referral_sources rs ON rs.id = c.referred_by_source_id
         LEFT JOIN referral_partners rp ON rp.id = c.referred_by_partner_id
+        LEFT JOIN clients src ON src.id = c.referred_by_client_id
         LEFT JOIN LATERAL (
             SELECT a.line1, COALESCE(a.apt_unit, '') AS apt_unit, a.line2, a.city, a.state, a.zip
             FROM client_addresses a
@@ -2653,6 +8854,23 @@ def fetch_client_profile(cur, client_id: str, include_sensitive: bool = False):
         profile["ssn_full"] = dec_text(profile.get("ssn_full_enc"))
     else:
         profile["ssn_full"] = ""
+    profile["lifecycle_status"] = normalize_lifecycle_status_input(
+        profile.get("lifecycle_status"),
+        is_active=bool(profile.get("is_active", True)),
+        start_date_value=profile.get("start_date"),
+        cancelled_date_value=profile.get("cancelled_date"),
+    )
+    profile["client_status_label"] = CLIENT_STATUS_LABELS.get(profile.get("lifecycle_status"), str(profile.get("lifecycle_status") or "").title())
+    if profile.get('referred_by_source_id'):
+        profile["referred_by_source_type"] = 'source'
+    elif profile.get('referred_by_client_id'):
+        profile["referred_by_source_type"] = 'client'
+    elif profile.get('referred_by_partner_id'):
+        profile["referred_by_source_type"] = 'partner'
+    else:
+        profile["referred_by_source_type"] = ''
+    profile["referred_by_display"] = profile.get('referred_by_source_name') or profile.get('referred_by_client_name') or profile.get('referred_by_partner_name') or ''
+    profile["has_mailing_address"] = any(str(profile.get(k) or '').strip() for k in ('mailing_address_line1','mailing_apt_unit','mailing_city','mailing_state','mailing_zip'))
     dob_raw = profile.get("date_of_birth")
     profile["date_of_birth_display"] = format_short_date(dob_raw)
     profile["date_of_birth_input"] = format_short_date(dob_raw)
@@ -2665,6 +8883,38 @@ def fetch_client_profile(cur, client_id: str, include_sensitive: bool = False):
     return profile
 
 
+
+
+
+def _get_client_entity_scope(cur, client_id: str) -> tuple[str, str]:
+    cid = (client_id or '').strip()
+    if not cid:
+        return '', 'corporate'
+    try:
+        cur.execute("""
+            SELECT COALESCE(business_profile_id, ''),
+                   COALESCE(NULLIF(business_profile_type, ''), 'corporate')
+            FROM clients
+            WHERE id = %s::uuid
+            LIMIT 1
+        """, (cid,))
+        row = cur.fetchone()
+    except Exception:
+        return '', 'corporate'
+    if not row:
+        return '', 'corporate'
+    return (str(row[0] or '').strip(), str(row[1] or 'corporate').strip().lower() or 'corporate')
+
+
+def _client_ids_share_entity_scope(cur, left_client_id: str, right_client_id: str) -> bool:
+    left_scope = _get_client_entity_scope(cur, left_client_id)
+    right_scope = _get_client_entity_scope(cur, right_client_id)
+    return left_scope == right_scope
+
+def _truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or '').strip().lower() in {'1', 'true', 'yes', 'on', 'y'}
 
 
 def format_currency(value) -> str:
@@ -2749,10 +8999,6 @@ def _billing_due_dates(profile: dict, horizon: date):
     return dates
 
 
-def _service_period_for_due_date(due_date: date):
-    period_end = due_date - timedelta(days=1)
-    period_start = period_end.replace(day=1)
-    return period_start, period_end
 
 
 def _create_invoice_row(cur, client_id: str, invoice_type: str, amount: Decimal, issue_date: date, due_date: date,
@@ -2832,57 +9078,181 @@ def ensure_client_invoices(cur, client_id: str, profile: dict):
             _queue_invoice_email_log(cur, client_id, profile, inv_id, subj, body, f'invoice_past_due:{inv_id}')
             cur.execute("UPDATE client_invoices SET reminder_past_due_logged_at = CURRENT_TIMESTAMP WHERE id = %s::uuid", (inv_id,))
 
+
 def fetch_client_invoices(cur, client_id: str, limit: int = 200):
-    cur.execute(
-        """
+    ensure_recurring_invoice_table(cur)
+    ensure_invoice_payment_columns(cur)
+    ensure_invoice_payments_table(cur)
+    cur.execute("SELECT COALESCE(source_invoice_id::text,'') FROM recurring_invoice_schedules WHERE client_id = %s::uuid AND is_active = TRUE AND source_invoice_id IS NOT NULL", (client_id,))
+    recurring_source_ids = {row[0] for row in (cur.fetchall() or []) if row and row[0]}
+    cur.execute("""
         SELECT id::text, invoice_number, invoice_type, issue_date::text, due_date::text, item_description,
-               amount::text, status, created_at::text, paid_at::text, notes, pdf_file_path,
-               service_period_start::text, service_period_end::text, is_automated
+               amount::text, status, created_at::text, COALESCE(paid_at::text,''), COALESCE(notes,''), COALESCE(pdf_file_path,''),
+               COALESCE(payment_method,''), COALESCE(payment_detail,''), COALESCE(payment_card_snapshot,'')
         FROM client_invoices
         WHERE client_id = %s::uuid
-        ORDER BY due_date DESC NULLS LAST, created_at DESC
+        ORDER BY issue_date DESC, created_at DESC
         LIMIT %s
-        """,
-        (client_id, limit)
-    )
-    rows = []
+    """, (client_id, limit))
+    items = []
     for r in cur.fetchall():
-        rows.append({
+        meta = _parse_discount_meta(r[10] or '')
+        desc = r[5]
+        if meta.get('line_items'):
+            first_name = meta['line_items'][0].get('item_name') or r[5]
+            extra_count = max(len(meta['line_items']) - 1, 0)
+            desc = first_name + (f" + {extra_count} more" if extra_count else '')
+        json_line_items = []
+        for li in (meta.get('line_items') or []):
+            json_line_items.append({
+                'item_id': li.get('item_id') or '', 'item_name': li.get('item_name') or 'Invoice Item',
+                'description': li.get('description') or '', 'quantity': int(li.get('quantity') or 1),
+                'unit_amount': f"{_safe_decimal(li.get('unit_amount') or '0'):.2f}",
+                'regular_amount': f"{_safe_decimal(li.get('regular_amount') or '0'):.2f}",
+                'discount_amount': f"{_safe_decimal(li.get('discount_amount') or '0'):.2f}",
+                'total_amount': f"{_safe_decimal(li.get('total_amount') or '0'):.2f}",
+                'discount_item_id': li.get('discount_item_id') or '', 'discount_name': li.get('discount_name') or '',
+                'discount_mode': li.get('discount_mode') or '',
+            })
+        pm_raw = (r[12] or '').strip().lower()
+        payment_rows = fetch_invoice_payments_for_invoice(cur, r[0])
+        if not payment_rows and str(r[7] or '').lower() == 'paid' and (r[12] or r[13] or r[14]):
+            legacy_amount = _safe_decimal(r[6] or '0')
+            legacy_detail = r[13] or r[14] or ''
+            legacy_label = PAYMENT_METHOD_LABELS.get(pm_raw, (r[12] or '').title() or 'Payment')
+            payment_rows = [{
+                'id': '', 'paid_at': r[9] or '', 'amount': f'{legacy_amount:.2f}', 'amount_display': format_currency(legacy_amount),
+                'payment_method': pm_raw, 'payment_method_display': legacy_label, 'payment_detail': legacy_detail,
+                'payment_card_snapshot': r[14] or '',
+                'summary': f"{format_currency(legacy_amount)} via {legacy_label}" + (f" · {legacy_detail}" if legacy_detail else ''),
+            }]
+        paid_total = sum((_safe_decimal(p.get('amount') or '0') for p in payment_rows), Decimal('0.00'))
+        invoice_amount_dec = _safe_decimal(r[6] or '0')
+        balance_due = invoice_amount_dec - paid_total
+        if balance_due < Decimal('0.00'):
+            balance_due = Decimal('0.00')
+        computed_status = str(r[7] or 'unpaid').strip().lower()
+        if paid_total > Decimal('0.00') and balance_due > Decimal('0.00'):
+            computed_status = 'partial'
+        elif paid_total >= invoice_amount_dec and invoice_amount_dec > Decimal('0.00'):
+            computed_status = 'paid'
+        payment_summary_lines = [p.get('summary') or '' for p in payment_rows if p.get('summary')]
+        items.append({
             'id': r[0], 'invoice_number': r[1], 'invoice_type': r[2], 'issue_date': r[3], 'due_date': r[4],
-            'item_description': r[5], 'amount': r[6], 'amount_display': format_currency(r[6]), 'status': r[7],
-            'created_at': r[8], 'paid_at': r[9], 'notes': r[10], 'pdf_file_path': r[11],
-            'service_period_start': r[12], 'service_period_end': r[13], 'is_automated': bool(r[14]),
+            'item_description': desc, 'amount': r[6], 'amount_display': format_currency(r[6]), 'status': computed_status,
+            'status_display': computed_status.title(), 'created_at': r[8], 'paid_at': r[9],
+            'notes': meta.get('user_notes') or '', 'pdf_file_path': r[11], 'invoice_pdf_url': f"/ui/invoice/{r[0]}/pdf",
+            'regular_amount_display': format_currency(meta.get('regular_amount')) if meta.get('regular_amount') is not None else '',
+            'discount_display': format_currency(meta.get('discount_amount')) if meta.get('discount_amount') is not None else '',
+            'discounted_amount_display': format_currency(meta.get('final_amount')) if meta.get('final_amount') is not None else format_currency(r[6]),
+            'has_discount': bool(meta.get('has_discount')), 'line_items_count': len(json_line_items), 'line_items': json_line_items,
+            'is_recurring': r[0] in recurring_source_ids,
+            'payment_method': r[12] or '',
+            'payment_method_display': PAYMENT_METHOD_LABELS.get(pm_raw, (r[12] or '').title() or '—') if r[12] else '—',
+            'payment_detail': r[13] or '', 'payment_card_snapshot': r[14] or '',
+            'payments': payment_rows,
+            'payment_summary_lines': payment_summary_lines,
+            'paid_amount': f'{paid_total:.2f}',
+            'paid_amount_display': format_currency(paid_total),
+            'balance_due': f'{balance_due:.2f}',
+            'balance_due_display': format_currency(balance_due),
         })
-    return rows
+    return items
 
 
-def build_billing_snapshot(profile: dict, invoices: list[dict]):
-    today = date.today()
+def _payment_method_detail_for_snapshot(profile: dict, payment_profile: dict) -> str:
+    method = _normalize_payment_method(profile.get('preferred_payment_method') or 'zelle')
+    if method == 'credit card':
+        masked = payment_profile.get('card_number_masked') or ''
+        brand = CARD_BRAND_LABELS.get((payment_profile.get('card_brand') or '').lower(), '')
+        return f"{brand + ' ' if brand else ''}{masked}".strip() or '—'
+    if method == 'venmo':
+        return payment_profile.get('venmo_handle') or '—'
+    if method == 'cashapp':
+        return payment_profile.get('cashapp_handle') or '—'
+    if method == 'zelle':
+        return payment_profile.get('zelle_contact') or '—'
+    if method == 'paypal':
+        return payment_profile.get('paypal_handle') or '—'
+    if method == 'other':
+        return payment_profile.get('other_payment_detail') or '—'
+    if method in {'cash', 'ach', 'money order'}:
+        return PAYMENT_METHOD_LABELS.get(method, method.title())
+    return '—'
+
+
+def build_billing_snapshot(profile: dict, invoices: list[dict], payment_profile: Optional[dict] = None):
     unpaid = [i for i in invoices if (i.get('status') or 'unpaid') != 'paid']
-    next_due = None
-    oldest_past_due = None
-    for inv in unpaid:
+    today = date.today()
+    oldest_past_due_invoice = None
+    next_unpaid_invoice = None
+
+    def _invoice_sort_key(inv: dict):
+        due = _to_date(inv.get('due_date'))
+        issue = _to_date(inv.get('issue_date'))
+        return (due or date.max, issue or date.max, str(inv.get('invoice_number') or ''))
+
+    unpaid_sorted = sorted(unpaid, key=_invoice_sort_key)
+
+    for inv in unpaid_sorted:
         dd = _to_date(inv.get('due_date'))
-        if not dd:
-            continue
-        if dd < today:
-            if oldest_past_due is None or dd < oldest_past_due:
-                oldest_past_due = dd
-        else:
-            if next_due is None or dd < next_due:
-                next_due = dd
-    invoice_status = 'Past Due' if oldest_past_due else 'Current'
-    status_color = 'past-due' if oldest_past_due else 'current'
+        if dd and (next_unpaid_invoice is None or dd < _to_date(next_unpaid_invoice.get('due_date'))):
+            next_unpaid_invoice = inv
+        if dd and dd < today and (oldest_past_due_invoice is None or dd < _to_date(oldest_past_due_invoice.get('due_date'))):
+            oldest_past_due_invoice = inv
+
+    status_color = 'bad' if oldest_past_due_invoice else ('warn' if unpaid_sorted else 'ok')
+    if oldest_past_due_invoice:
+        invoice_status = 'Past Due'
+    elif unpaid_sorted:
+        invoice_status = f'Open Invoices ({len(unpaid_sorted)})'
+    else:
+        invoice_status = 'No Open Invoices'
+
+    payment_profile = payment_profile or {}
+
+    open_invoice_summaries = []
+    for inv in unpaid_sorted:
+        due_date = _to_date(inv.get('due_date'))
+        open_invoice_summaries.append({
+            'id': str(inv.get('id') or ''),
+            'invoice_number': inv.get('invoice_number') or '—',
+            'due_date': format_short_date(inv.get('due_date')) if inv.get('due_date') else '—',
+            'amount_display': inv.get('amount_display') or format_currency(inv.get('final_amount') or Decimal('0.00')),
+            'is_past_due': bool(due_date and due_date < today),
+            'label': 'Past due' if (due_date and due_date < today) else 'Open',
+        })
+
+    warning_invoice = oldest_past_due_invoice or next_unpaid_invoice or {}
+    raw_billing_group = str(profile.get('billing_group') or '').strip().lower()
+    if raw_billing_group == 'custom':
+        custom_day = profile.get('custom_billing_day') or ''
+        billing_group_display = f'Custom day {custom_day}' if custom_day else 'Custom'
+    elif raw_billing_group == '1st':
+        billing_group_display = '1st of the month'
+    elif raw_billing_group == '15th':
+        billing_group_display = '15th of the month'
+    else:
+        billing_group_display = profile.get('billing_group') or '—'
     return {
-        'pricing_plan': profile.get('pricing_plan') or '—',
-        'startup_fee': format_currency(profile.get('initial_fee') or 0),
-        'monthly_fee': format_currency(profile.get('monthly_fee') or 0),
+        'pricing_plan': profile.get('pricing_plan_label') or PRICING_PLAN_LABELS.get(profile.get('pricing_plan') or 'standard_12', profile.get('pricing_plan') or '—'),
+        'consultation_review_fee': format_currency(profile.get('initial_fee') or Decimal('0.00')),
+        'monthly_fee': format_currency(profile.get('monthly_fee') or Decimal('0.00')),
         'billing_group': profile.get('billing_group') or '—',
-        'first_payment_date': format_short_date(profile.get('first_payment_date')) or '—',
+        'billing_group_display': billing_group_display,
+        'first_payment_date': format_short_date(profile.get('first_payment_date')) if profile.get('first_payment_date') else '—',
+        'payment_method': PAYMENT_METHOD_LABELS.get((profile.get('preferred_payment_method') or '').lower(), profile.get('preferred_payment_method') or '—'),
+        'payment_method_detail': _payment_method_detail_for_snapshot(profile, payment_profile),
         'invoice_status': invoice_status,
         'invoice_status_color': status_color,
-        'next_due_date': format_short_date(next_due) if next_due else '—',
-        'oldest_past_due': format_short_date(oldest_past_due) if oldest_past_due else '—',
+        'next_due_date': format_short_date(next_unpaid_invoice.get('due_date')) if next_unpaid_invoice else '—',
+        'has_unpaid': bool(unpaid_sorted),
+        'open_invoice_count': len(unpaid_sorted),
+        'open_invoice_summaries': open_invoice_summaries,
+        'oldest_past_due_invoice_number': warning_invoice.get('invoice_number') or '',
+        'oldest_past_due_invoice_date': format_short_date(warning_invoice.get('issue_date')) if warning_invoice.get('issue_date') else '—',
+        'oldest_past_due_amount': warning_invoice.get('amount_display') or '',
+        'has_past_due': bool(oldest_past_due_invoice),
     }
 
 
@@ -2893,11 +9263,141 @@ def _invoice_pdf_path(client_id: str, invoice_number: str):
     return os.path.join(client_dir, f"{safe}.pdf")
 
 
+def _month_end_day(year: int, month: int) -> int:
+    if month == 12:
+        next_month = date(year + 1, 1, 1)
+    else:
+        next_month = date(year, month + 1, 1)
+    return (next_month - timedelta(days=1)).day
+
+
+def add_months_preserve_day(source_dt: date, months: int = 1) -> date:
+    total_month = (source_dt.year * 12 + (source_dt.month - 1) + months)
+    year = total_month // 12
+    month = total_month % 12 + 1
+    day = min(source_dt.day, _month_end_day(year, month))
+    return date(year, month, day)
+
+
+def ensure_recurring_invoice_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recurring_invoice_schedules (
+            id uuid PRIMARY KEY,
+            client_id uuid NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+            source_invoice_id uuid NULL REFERENCES client_invoices(id) ON DELETE SET NULL,
+            invoice_meta text NOT NULL,
+            notes text NULL,
+            issue_day integer NOT NULL,
+            frequency text NOT NULL DEFAULT 'monthly',
+            next_run_date date NOT NULL,
+            remaining_count integer NULL,
+            is_active boolean NOT NULL DEFAULT TRUE,
+            created_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    try:
+        cur.execute("ALTER TABLE recurring_invoice_schedules ADD COLUMN IF NOT EXISTS source_invoice_id uuid NULL REFERENCES client_invoices(id) ON DELETE SET NULL")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE recurring_invoice_schedules ADD COLUMN IF NOT EXISTS frequency text NOT NULL DEFAULT 'monthly'")
+    except Exception:
+        pass
+
+
+def process_recurring_invoices(cur, client_id: str):
+    ensure_recurring_invoice_table(cur)
+    today = date.today()
+    cur.execute(
+        """
+        SELECT id::text, invoice_meta, COALESCE(notes,''), issue_day, COALESCE(frequency,'monthly'), next_run_date, remaining_count
+        FROM recurring_invoice_schedules
+        WHERE client_id = %s::uuid AND is_active = TRUE
+        ORDER BY next_run_date ASC, created_at ASC
+        """,
+        (client_id,)
+    )
+    schedules = cur.fetchall() or []
+    for sched_id, invoice_meta, note_text, issue_day, frequency, next_run_date, remaining_count in schedules:
+        run_dt = _to_date(next_run_date)
+        loops = 0
+        while run_dt and run_dt <= today and loops < 24:
+            meta = _parse_discount_meta(invoice_meta or '')
+            line_items = meta.get('line_items') or []
+            if not line_items:
+                break
+            amount = _safe_decimal(meta.get('final_amount') or '0')
+            item_description = line_items[0].get('item_name') or 'Recurring Invoice'
+            if len(line_items) > 1:
+                item_description += f" + {len(line_items)-1} more"
+            invoice_type = line_items[0].get('invoice_type') or 'service'
+            row_id = _create_invoice_row(cur, client_id, invoice_type, amount, run_dt, run_dt, item_description, notes=invoice_meta, is_automated=True)
+            generate_invoice_pdf(cur, row_id)
+            if remaining_count is not None:
+                remaining_count = int(remaining_count) - 1
+                if remaining_count <= 0:
+                    cur.execute(
+                        "UPDATE recurring_invoice_schedules SET remaining_count = 0, is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s::uuid",
+                        (sched_id,)
+                    )
+                    break
+            run_dt = _next_run_by_frequency(run_dt, frequency)
+            loops += 1
+        if run_dt and loops:
+            cur.execute(
+                """
+                UPDATE recurring_invoice_schedules
+                SET next_run_date = %s,
+                    remaining_count = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s::uuid
+                """,
+                (run_dt, remaining_count, sched_id)
+            )
+
+
+def fetch_recurring_invoice_schedules(cur, client_id: str, limit: int = 50):
+    ensure_recurring_invoice_table(cur)
+    cur.execute(
+        """
+        SELECT id::text, COALESCE(source_invoice_id::text,''), invoice_meta, COALESCE(notes,''), issue_day, COALESCE(frequency,'monthly'), next_run_date::text, remaining_count, is_active, created_at::text
+        FROM recurring_invoice_schedules
+        WHERE client_id = %s::uuid
+        ORDER BY created_at DESC
+        LIMIT %s
+        """,
+        (client_id, limit)
+    )
+    rows = []
+    for rid, source_invoice_id, invoice_meta, notes, issue_day, frequency, next_run_date, remaining_count, is_active, created_at in cur.fetchall() or []:
+        meta = _parse_discount_meta(invoice_meta or '')
+        line_items = meta.get('line_items') or []
+        label = line_items[0].get('item_name') if line_items else 'Recurring invoice'
+        if len(line_items) > 1:
+            label += f" + {len(line_items)-1} more"
+        rows.append({
+            'id': rid,
+            'source_invoice_id': source_invoice_id or '',
+            'description': label,
+            'next_run_date': next_run_date or '',
+            'remaining_count': '' if remaining_count is None else str(remaining_count),
+            'status': 'Active' if is_active else 'Stopped',
+            'status_value': bool(is_active),
+            'created_at': created_at or '',
+        })
+    return rows
+
+
 def generate_invoice_pdf(cur, invoice_id: str):
     cur.execute(
         """
         SELECT ci.id::text, ci.client_id::text, ci.invoice_number, ci.invoice_type, ci.issue_date, ci.due_date,
-               ci.item_description, ci.amount::text, ci.notes, ci.pdf_file_path
+               ci.item_description, ci.amount::text, ci.notes, ci.pdf_file_path,
+               COALESCE(ci.status,'unpaid'), COALESCE(ci.paid_at::text,''), COALESCE(ci.payment_method,''),
+               COALESCE(ci.payment_detail,''), COALESCE(ci.payment_card_snapshot,'')
         FROM client_invoices ci
         WHERE ci.id = %s::uuid
         """,
@@ -2906,67 +9406,201 @@ def generate_invoice_pdf(cur, invoice_id: str):
     row = cur.fetchone()
     if not row:
         raise ValueError('Invoice not found.')
-    (iid, client_id, inv_no, inv_type, issue_date, due_date, item_desc, amount, notes, pdf_path) = row
+    (iid, client_id, inv_no, inv_type, issue_date, due_date, item_desc, amount, notes, pdf_path,
+     invoice_status, paid_at, legacy_payment_method, legacy_payment_detail, legacy_payment_card_snapshot) = row
+    invoice_status = (invoice_status or 'unpaid').strip().lower()
     profile = fetch_client_profile(cur, client_id, include_sensitive=True) or {}
+    invoice_meta = _parse_discount_meta(notes or '')
+    line_items = invoice_meta.get('line_items') or []
+    if not line_items:
+        line_items = [{
+            'item_name': item_desc or inv_type.title() or 'Invoice Item',
+            'description': '',
+            'quantity': 1,
+            'regular_amount': _safe_decimal(invoice_meta.get('regular_amount') or amount or '0'),
+            'discount_amount': _safe_decimal(invoice_meta.get('discount_amount') or '0'),
+            'total_amount': _safe_decimal(invoice_meta.get('final_amount') or amount or '0'),
+        }]
+    subtotal_amount = _safe_decimal(invoice_meta.get('subtotal_amount') or invoice_meta.get('regular_amount') or amount or '0')
+    discount_amount = _safe_decimal(invoice_meta.get('discount_amount') or '0')
+    tax_amount = _safe_decimal(invoice_meta.get('tax_amount') or '0')
+    sales_tax_rate = _safe_decimal(invoice_meta.get('sales_tax_rate') or '0')
+    final_amount = _safe_decimal(invoice_meta.get('final_amount') or amount or '0')
+    payment_rows = fetch_invoice_payments_for_invoice(cur, iid)
+    if not payment_rows and invoice_status == 'paid' and (legacy_payment_method or legacy_payment_detail or legacy_payment_card_snapshot):
+        legacy_method = (legacy_payment_method or '').strip().lower()
+        legacy_label = PAYMENT_METHOD_LABELS.get(legacy_method, (legacy_payment_method or '').title() or 'Payment')
+        legacy_detail = legacy_payment_detail or legacy_payment_card_snapshot or ''
+        payment_rows = [{
+            'id': '',
+            'paid_at': paid_at or '',
+            'amount': f'{final_amount:.2f}',
+            'amount_display': format_currency(final_amount),
+            'payment_method': legacy_method,
+            'payment_method_display': legacy_label,
+            'payment_detail': legacy_detail,
+            'payment_card_snapshot': legacy_payment_card_snapshot or '',
+            'summary': f"{format_currency(final_amount)} via {legacy_label}" + (f" · {legacy_detail}" if legacy_detail else ''),
+        }]
+    paid_total = sum((_safe_decimal(p.get('amount') or '0') for p in payment_rows), Decimal('0.00'))
+    balance_due = final_amount - paid_total
+    if balance_due < Decimal('0.00'):
+        balance_due = Decimal('0.00')
+    if paid_total > Decimal('0.00') and balance_due > Decimal('0.00'):
+        invoice_status = 'partial'
+    elif paid_total >= final_amount and final_amount > Decimal('0.00'):
+        invoice_status = 'paid'
+    else:
+        invoice_status = 'unpaid'
+
     out_path = pdf_path or _invoice_pdf_path(client_id, inv_no)
-    story = []
-    doc = SimpleDocTemplate(out_path, pagesize=LETTER, leftMargin=0.75*inch, rightMargin=0.75*inch, topMargin=0.6*inch, bottomMargin=0.6*inch)
+    doc = SimpleDocTemplate(out_path, pagesize=LETTER, leftMargin=0.45*inch, rightMargin=0.45*inch, topMargin=0.45*inch, bottomMargin=0.45*inch)
     styles = getSampleStyleSheet()
-    normal = ParagraphStyle('invnormal', parent=styles['Normal'], fontName='Helvetica', fontSize=10, leading=13)
-    heading = ParagraphStyle('invhead', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=14, leading=17, spaceAfter=10)
+    normal = ParagraphStyle('invnormal', parent=styles['Normal'], fontName='Helvetica', fontSize=10.5, leading=13)
+    small = ParagraphStyle('invsmall', parent=normal, fontSize=9, leading=11, textColor=colors.HexColor('#666666'))
+    bold = ParagraphStyle('invbold', parent=normal, fontName='Helvetica-Bold')
+    company = ParagraphStyle('invcompany', parent=normal, fontName='Helvetica-Bold', fontSize=15, leading=18, alignment=2)
+    title_style = ParagraphStyle('invtitle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=26, leading=30, textColor=colors.HexColor('#cc1f1f'), alignment=1)
+    story = []
+
+    outer = []
     if COMPANY_LOGO_PATH and os.path.exists(COMPANY_LOGO_PATH):
         try:
-            story.append(RLImage(COMPANY_LOGO_PATH, width=1.4*inch, height=0.7*inch))
-            story.append(Spacer(1, 6))
+            logo = RLImage(COMPANY_LOGO_PATH, width=2.0*inch, height=1.2*inch)
         except Exception:
-            pass
-    story.append(Paragraph(f"<b>{escape(SENDER_NAME)}</b>", heading))
-    company_lines = [escape(COMPANY_ADDRESS1)]
-    if COMPANY_ADDRESS2:
-        company_lines.append(escape(COMPANY_ADDRESS2))
-    company_lines.append(f"Phone: {escape(COMPANY_PHONE)}")
-    company_lines.append(f"Email: {escape(COMPANY_EMAIL)}")
-    story.append(Paragraph('<br/>'.join(company_lines), normal))
+            logo = Spacer(1, 1.2*inch)
+    else:
+        logo = Spacer(1, 1.2*inch)
+    company_lines = [f'<b>{escape(SENDER_NAME)}</b>']
+    for line in [COMPANY_ADDRESS1, COMPANY_ADDRESS2, COMPANY_CITY_STATE_ZIP, f'Phone: {COMPANY_PHONE}', f'Email: {COMPANY_EMAIL}']:
+        if line:
+            company_lines.append(escape(line))
+    company_block = Paragraph('<br/>'.join(company_lines), company)
+    hdr = Table([[logo, company_block]], colWidths=[3.2*inch, 3.9*inch])
+    hdr.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'TOP')]))
+    story.append(hdr)
+    story.append(Spacer(1, 6))
+
+    accent = colors.HexColor('#d61f1f')
+    story.append(Table([[Paragraph('Invoice', title_style)]], colWidths=[7.0*inch], style=TableStyle([('LINEABOVE',(0,0),(-1,-1),1.5,accent),('LINEBELOW',(0,0),(-1,-1),1.5,accent),('TOPPADDING',(0,0),(-1,-1),8),('BOTTOMPADDING',(0,0),(-1,-1),8)])))
     story.append(Spacer(1, 12))
+
     client_name = profile.get('client_name') or ' '.join([x for x in [profile.get('first_name'), profile.get('middle_name'), profile.get('last_name')] if x]).strip()
-    client_lines = [escape(client_name)]
+    bill_lines = ["<font color='#8a8a8a'>BILL TO</font>", f'<b>{escape(client_name or "Client")}</b>']
+    if client_name:
+        bill_lines.append(escape(client_name))
     if profile.get('address_line1'):
-        client_lines.append(escape(profile.get('address_line1')))
+        bill_lines.append(escape(profile.get('address_line1')))
     if profile.get('address_line2'):
-        client_lines.append(escape(profile.get('address_line2')))
+        bill_lines.append(escape(profile.get('address_line2')))
     loc = ', '.join([x for x in [profile.get('city'), profile.get('state')] if x]).strip(', ')
     if profile.get('zip'):
         loc = f"{loc} {profile.get('zip')}".strip()
     if loc:
-        client_lines.append(escape(loc))
+        bill_lines.append(escape(loc))
     if profile.get('phone'):
-        client_lines.append(f"Phone: {escape(profile.get('phone'))}")
-    if profile.get('email'):
-        client_lines.append(f"Email: {escape(profile.get('email'))}")
-    story.append(Paragraph('<br/>'.join(client_lines), normal))
-    story.append(Spacer(1, 12))
-    meta = [
-        ['Invoice #', inv_no],
-        ['Invoice Date', format_short_date(issue_date)],
-        ['Due Date', format_short_date(due_date)],
-        ['Terms', 'Due on receipt'],
+        bill_lines.append('')
+        bill_lines.append(escape(profile.get('phone')))
+    if profile.get('primary_email') or profile.get('email'):
+        bill_lines.append(escape(profile.get('primary_email') or profile.get('email')))
+    bill_to = Paragraph('<br/>'.join(bill_lines), normal)
+
+    status_label = 'PAID' if invoice_status == 'paid' else ('PARTIAL / BALANCE DUE' if invoice_status == 'partial' else 'UNPAID')
+    amount_due_rows = [
+        ['Invoice Number:', inv_no],
+        ['Invoice Date:', format_long_date(issue_date) if issue_date else '—'],
+        ['Payment Due:', format_long_date(due_date) if due_date else '—'],
+        ['Status:', status_label],
     ]
-    table = Table(meta, colWidths=[1.3*inch, 4.9*inch])
-    table.setStyle(TableStyle([('FONTNAME',(0,0),(-1,-1),'Helvetica'),('FONTSIZE',(0,0),(-1,-1),10),('GRID',(0,0),(-1,-1),0.3,colors.lightgrey),('BACKGROUND',(0,0),(0,-1),colors.whitesmoke)]))
-    story.append(table)
+    if invoice_status in {'paid', 'partial'} and paid_at:
+        amount_due_rows.append(['Last Payment Date:', format_long_date(paid_at[:10]) if paid_at else '—'])
+    amount_due_rows.append(['Amount Due (USD):', format_currency(balance_due)])
+    amount_due_table = Table(amount_due_rows, colWidths=[1.8*inch, 1.7*inch])
+    amount_due_table.setStyle(TableStyle([
+        ('FONTNAME',(0,0),(-1,-2),'Helvetica-Bold'),
+        ('FONTNAME',(1,0),(1,-2),'Helvetica'),
+        ('FONTNAME',(0,-1),(-1,-1),'Helvetica-Bold'),
+        ('BACKGROUND',(0,-1),(-1,-1),colors.HexColor('#efefef')),
+        ('ALIGN',(1,0),(1,-1),'LEFT'),
+        ('BOTTOMPADDING',(0,0),(-1,-1),6),
+        ('TOPPADDING',(0,0),(-1,-1),4),
+    ]))
+    meta_wrap = Table([[bill_to, amount_due_table]], colWidths=[3.9*inch, 3.1*inch])
+    meta_wrap.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'TOP')]))
+    story.append(meta_wrap)
     story.append(Spacer(1, 14))
-    items = [['Item', 'Amount'], [item_desc or inv_type.title(), format_currency(amount)]]
-    items_tbl = Table(items, colWidths=[5.5*inch, 1.0*inch])
-    items_tbl.setStyle(TableStyle([('FONTNAME',(0,0),(-1,-1),'Helvetica'),('FONTSIZE',(0,0),(-1,-1),10),('BACKGROUND',(0,0),(-1,0),colors.whitesmoke),('GRID',(0,0),(-1,-1),0.3,colors.lightgrey),('ALIGN',(1,1),(1,-1),'RIGHT')]))
-    story.append(items_tbl)
-    story.append(Spacer(1, 10))
-    story.append(Paragraph(f"<b>Total:</b> {escape(format_currency(amount))}", normal))
-    story.append(Spacer(1, 10))
-    note_line = 'Payment is for work completed the prior month.' if inv_type == 'monthly' else 'Due on receipt.'
-    story.append(Paragraph(note_line, normal))
-    if notes:
-        story.append(Spacer(1, 8))
-        story.append(Paragraph(escape(notes), normal))
+
+    item_rows = [[Paragraph('<b>Items</b>', bold), Paragraph('<b>Quantity</b>', bold), Paragraph('<b>Price</b>', bold), Paragraph('<b>Amount</b>', bold)]]
+    for item in line_items:
+        name = escape(item.get('item_name') or 'Invoice Item')
+        desc = escape(item.get('description') or '')
+        label = f'<b>{name}</b>' + (f'<br/>{desc}' if desc else '')
+        item_rows.append([Paragraph(label, normal), Paragraph(str(item.get('quantity') or 1), normal), Paragraph(format_currency(item.get('unit_amount') or item.get('regular_amount')), normal), Paragraph(format_currency(item.get('total_amount')), normal)])
+    item_tbl = Table(item_rows, colWidths=[3.4*inch, 1.0*inch, 1.2*inch, 1.2*inch])
+    item_tbl.setStyle(TableStyle([
+        ('LINEBELOW',(0,0),(-1,0),1,colors.black),
+        ('VALIGN',(0,0),(-1,-1),'TOP'),
+        ('ALIGN',(1,1),(-1,-1),'CENTER'),
+        ('ALIGN',(2,1),(-1,-1),'RIGHT'),
+        ('FONTSIZE',(0,0),(-1,-1),10.5),
+        ('LEADING',(0,0),(-1,-1),13),
+        ('TOPPADDING',(0,0),(-1,-1),4),
+        ('BOTTOMPADDING',(0,0),(-1,-1),8),
+    ]))
+    story.append(item_tbl)
+    story.append(Spacer(1, 12))
+
+    totals_rows = [['Subtotal:', format_currency(subtotal_amount)]]
+    if discount_amount > Decimal('0.00'):
+        totals_rows.append(['Discount:', f'({format_currency(discount_amount)})'])
+    if tax_amount > Decimal('0.00'):
+        label = f'Sales Tax ({sales_tax_rate.normalize()}%)' if sales_tax_rate > 0 else 'Sales Tax'
+        totals_rows.append([label + ':', format_currency(tax_amount)])
+    totals_rows.append(['Total:', format_currency(final_amount)])
+    if paid_total > Decimal('0.00'):
+        totals_rows.append(['Payment Applied:', f'({format_currency(paid_total)})'])
+    totals_rows.append(['Amount Due (USD):', format_currency(balance_due)])
+    totals_tbl = Table(totals_rows, colWidths=[2.0*inch, 1.6*inch])
+    totals_tbl.setStyle(TableStyle([
+        ('FONTNAME',(0,0),(-1,-1),'Helvetica-Bold'),
+        ('ALIGN',(1,0),(1,-1),'RIGHT'),
+        ('TEXTCOLOR',(0,1),(-1,1),colors.HexColor('#1d7b3b') if discount_amount > Decimal('0.00') else colors.black),
+        ('LINEABOVE',(0,-2),(-1,-2),0.8,colors.lightgrey),
+        ('LINEABOVE',(0,-1),(-1,-1),0.8,colors.lightgrey),
+        ('TOPPADDING',(0,0),(-1,-1),4),
+        ('BOTTOMPADDING',(0,0),(-1,-1),6),
+    ]))
+    totals_wrap = Table([[Spacer(1,1), totals_tbl]], colWidths=[3.4*inch, 3.6*inch])
+    totals_wrap.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'TOP')]))
+    story.append(totals_wrap)
+    story.append(Spacer(1, 14))
+
+    if payment_rows:
+        story.append(Paragraph('<b>Payments Applied</b>', bold))
+        pay_table_rows = [[Paragraph('<b>Date</b>', bold), Paragraph('<b>Amount</b>', bold), Paragraph('<b>Method</b>', bold), Paragraph('<b>Detail</b>', bold)]]
+        for pay in payment_rows:
+            pay_date = (pay.get('paid_at') or paid_at or '')[:10]
+            pay_table_rows.append([
+                Paragraph(escape(format_short_date(pay_date) or pay_date or '—'), normal),
+                Paragraph(escape(pay.get('amount_display') or format_currency(pay.get('amount') or '0')), normal),
+                Paragraph(escape(pay.get('payment_method_display') or 'Payment'), normal),
+                Paragraph(escape(pay.get('payment_detail') or pay.get('payment_card_snapshot') or '—'), normal),
+            ])
+        pay_tbl = Table(pay_table_rows, colWidths=[1.2*inch, 1.2*inch, 1.6*inch, 3.0*inch])
+        pay_tbl.setStyle(TableStyle([
+            ('LINEBELOW',(0,0),(-1,0),1,colors.black),
+            ('VALIGN',(0,0),(-1,-1),'TOP'),
+            ('ALIGN',(1,1),(1,-1),'RIGHT'),
+            ('FONTSIZE',(0,0),(-1,-1),9.5),
+            ('TOPPADDING',(0,0),(-1,-1),4),
+            ('BOTTOMPADDING',(0,0),(-1,-1),6),
+        ]))
+        story.append(pay_tbl)
+        story.append(Spacer(1, 14))
+
+    story.append(Paragraph('<b>Notes / Terms</b>', bold))
+    story.append(Paragraph(escape(invoice_meta.get('user_notes') or 'For your convenience, we accept payments through the methods listed in your billing preferences.'), small))
+
     doc.build(story)
     cur.execute("UPDATE client_invoices SET pdf_file_path = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s::uuid", (out_path, invoice_id))
     return out_path
@@ -2985,8 +9619,8 @@ def load_client_workspace_context(cur, client_id: str, reveal_cred_id: Optional[
     row = cur.fetchone()
     dashboard = row[0] if row and row[0] else {}
 
-    profile = fetch_client_profile(cur, client_id, include_sensitive=False)
-    if profile:
+    profile = fetch_client_profile(cur, client_id, include_sensitive=True)
+    if profile and bool(profile.get('is_active', True)) and str(profile.get('lifecycle_status') or '').strip().lower() != 'cancelled':
         ensure_client_invoices(cur, client_id, profile)
     score_groups = fetch_score_history_grouped(cur, client_id, 25)
     credentials = fetch_credentials(cur, client_id, reveal_cred_id)
@@ -3004,6 +9638,7 @@ def load_client_workspace_context(cur, client_id: str, reveal_cred_id: Optional[
     associated_clients = fetch_associated_clients(cur, client_id)
     client_switch_choices = fetch_client_switch_choices(cur, client_id)
     referral_partners = fetch_referral_partners(cur)
+    referral_partners_all = fetch_referral_partners(cur, include_inactive=True)
     account_disputes = fetch_account_disputes(cur, client_id, 200)
     personal_info_disputes = fetch_personal_info_disputes(cur, client_id, 200)
     inquiry_disputes = fetch_inquiry_disputes(cur, client_id, 200)
@@ -3013,39 +9648,607 @@ def load_client_workspace_context(cur, client_id: str, reveal_cred_id: Optional[
     client_emails = fetch_client_emails(cur, client_id, 200)
     account_name_options = fetch_account_name_options(cur, client_id, 300)
     credit_products = fetch_credit_products(cur, client_id, 200)
+    lender_directory = fetch_lender_directory(cur, 500)
     outbound_referrals = fetch_outbound_referrals(cur, client_id, 200)
+    referral_monthly_summary = fetch_referral_monthly_summary(cur, 12)
+    ensure_default_invoice_items(cur)
+    process_recurring_invoices(cur, client_id)
     invoices = fetch_client_invoices(cur, client_id, 200)
-    billing_snapshot = build_billing_snapshot(profile, invoices)
+    payment_profile = fetch_billing_payment_profile(cur, client_id)
+    saved_payment_methods = fetch_saved_payment_methods(cur, client_id)
+    billing_snapshot = build_billing_snapshot(profile, invoices, payment_profile)
     invoice_items = fetch_invoice_items(cur)
+    recurring_invoices = fetch_recurring_invoice_schedules(cur, client_id, 50)
 
     return (
         dashboard, profile, score_groups, credentials, notes, appointments, followups,
         redispute_events, documents, documents_by_section, dispute_source_groups,
         last_document_selection, latest_analysis_by_bureau, upload_requests, document_source_options,
-        associated_clients, client_switch_choices, referral_partners, account_disputes,
+        associated_clients, client_switch_choices, referral_partners, referral_partners_all, account_disputes,
         personal_info_disputes, inquiry_disputes, dispute_metrics, dispute_round_defaults,
-        saved_letters, client_emails, account_name_options, credit_products, outbound_referrals, invoices, billing_snapshot, invoice_items
+        saved_letters, client_emails, account_name_options, credit_products, lender_directory, outbound_referrals, referral_monthly_summary, invoices, billing_snapshot, invoice_items, payment_profile, recurring_invoices, saved_payment_methods
     )
 
 
-def render_client_workspace(request: Request, client_id: str, message: str = "", error: str = "", reveal_cred_id: Optional[str] = None, active_tab: Optional[str] = None, dispute_bureau: Optional[str] = None, open_letter_url: str = "", edit_credit_product_id: Optional[str] = None):
+
+
+
+
+
+def ensure_client_interview_table(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS client_interviews (
+            client_id uuid PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
+            us_citizen boolean,
+            has_other_citizenship boolean,
+            other_citizenship_country text,
+            permanent_resident boolean,
+            residency_status text,
+            citizenship_country text,
+            employment_status text,
+            employer_name text,
+            position_title text,
+            receives_unemployment boolean,
+            unemployment_benefit_amount numeric(12,2),
+            school_name text,
+            expected_graduation_date date,
+            area_of_study text,
+            occupation_other text,
+            annual_income numeric(12,2),
+            household_income numeric(12,2),
+            annual_income_frequency text,
+            has_additional_income boolean,
+            additional_income_source_type text,
+            additional_income_source_name text,
+            additional_income_amount numeric(12,2),
+            housing_status text,
+            monthly_housing_payment numeric(12,2),
+            banking_status text,
+            credit_goals text,
+            goal_timeframe text,
+            working_with_lender boolean,
+            lender_name text,
+            lender_company text,
+            lender_address text,
+            lender_phone text,
+            lender_email text,
+            working_with_realtor boolean,
+            realtor_name text,
+            realtor_company text,
+            realtor_address text,
+            realtor_phone text,
+            realtor_email text,
+            authorize_file_discussion boolean,
+            authorization_on_file boolean,
+            prior_bankruptcy boolean,
+            bankruptcy_date date,
+            prior_short_sale boolean,
+            short_sale_date date,
+            goal_details_json text,
+            lender_authorized boolean,
+            lender_authorization_on_file boolean,
+            realtor_authorized boolean,
+            realtor_authorization_on_file boolean,
+            prior_events_json text,
+            workflow_status text DEFAULT 'not_started',
+            completed_at timestamp without time zone,
+            created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+            updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+            last_source text,
+            notes text
+        )
+    """)
+    for ddl in [
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS us_citizen boolean",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS has_other_citizenship boolean",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS other_citizenship_country text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS permanent_resident boolean",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS residency_status text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS citizenship_country text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS employment_status text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS employer_name text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS position_title text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS receives_unemployment boolean",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS unemployment_benefit_amount numeric(12,2)",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS school_name text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS expected_graduation_date date",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS area_of_study text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS occupation_other text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS annual_income numeric(12,2)",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS household_income numeric(12,2)",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS annual_income_frequency text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS has_additional_income boolean",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS additional_income_source_type text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS additional_income_source_name text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS additional_income_amount numeric(12,2)",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS housing_status text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS monthly_housing_payment numeric(12,2)",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS banking_status text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS credit_goals text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS goal_timeframe text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS working_with_lender boolean",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS lender_name text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS lender_company text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS lender_address text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS lender_phone text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS lender_email text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS working_with_realtor boolean",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS realtor_name text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS realtor_company text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS realtor_address text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS realtor_phone text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS realtor_email text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS authorize_file_discussion boolean",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS authorization_on_file boolean",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS prior_bankruptcy boolean",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS bankruptcy_date date",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS prior_short_sale boolean",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS short_sale_date date",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS goal_details_json text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS lender_authorized boolean",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS lender_authorization_on_file boolean",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS realtor_authorized boolean",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS realtor_authorization_on_file boolean",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS prior_events_json text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS additional_sources_json text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS workflow_status text DEFAULT 'not_started'",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS completed_at timestamp without time zone",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS last_source text",
+        "ALTER TABLE client_interviews ADD COLUMN IF NOT EXISTS notes text"
+    ]:
+        cur.execute(ddl)
+
+
+def fetch_client_interview(cur, client_id: str):
+    ensure_client_interview_table(cur)
+    cur.execute("SELECT * FROM client_interviews WHERE client_id = %s", (client_id,))
+    row = cur.fetchone()
+    if not row:
+        return {
+            'client_id': client_id,
+            'workflow_status': 'not_started',
+            'summary_lines': [],
+            'employment_status_label': '—',
+            'housing_status_label': '—',
+            'banking_status_label': '—',
+            'immigration_summary': 'Not completed yet.',
+            'goal_labels': [],
+        }
+    cols = [d[0] for d in (cur.description or [])]
+    data = dict(zip(cols, row)) if cols else {}
+    data['workflow_status'] = str(data.get('workflow_status') or 'not_started').strip().lower() or 'not_started'
+    def _dedupe_rows(rows, keys):
+        cleaned = []
+        seen = set()
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            normalized = {}
+            for key in keys:
+                normalized[key] = str(row.get(key) or '').strip()
+            if not any(normalized.values()):
+                continue
+            sig = tuple(normalized[k].lower() for k in keys)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            merged = dict(row)
+            merged.update(normalized)
+            cleaned.append(merged)
+        return cleaned
+    emp_labels = {'employed': 'Employed', 'self_employed': 'Self-Employed', 'rental_income': 'Rental Income', 'retired': 'Retired', 'unemployed': 'Unemployed', 'student': 'Student', 'other': 'Other'}
+    housing_labels = {'mortgage': 'Mortgage', 'rent': 'Rent', 'neither': 'Neither'}
+    banking_labels = {k: v for k, v in BANKING_STATUS_OPTIONS}
+    goal_labels = {k: v for k, v in CREDIT_GOAL_OPTIONS}
+    timeframe_labels = {k: v for k, v in GOAL_TIMEFRAME_OPTIONS}
+    data['employment_status_label'] = emp_labels.get(str(data.get('employment_status') or '').strip().lower(), '—')
+    data['housing_status_label'] = housing_labels.get(str(data.get('housing_status') or '').strip().lower(), '—')
+    data['banking_status_label'] = banking_labels.get(str(data.get('banking_status') or '').strip().lower(), '—')
+    data['goal_timeframe_label'] = timeframe_labels.get(str(data.get('goal_timeframe') or '').strip(), data.get('goal_timeframe') or '')
+    if data.get('us_citizen') is True:
+        immigration_summary = 'U.S. citizen'
+        if data.get('has_other_citizenship') and data.get('other_citizenship_country'):
+            immigration_summary += f" · Also citizen of {data.get('other_citizenship_country')}"
+    elif data.get('us_citizen') is False:
+        residency = str(data.get('residency_status') or '').replace('_', ' ').title() or '—'
+        country = data.get('citizenship_country') or '—'
+        immigration_summary = f"Not a U.S. citizen · {residency} · Primary citizenship: {country}"
+    else:
+        immigration_summary = 'Not completed yet.'
+    data['immigration_summary'] = immigration_summary
+    data['goal_labels'] = [goal_labels.get(x.strip(), x.strip()) for x in str(data.get('credit_goals') or '').split(',') if x.strip()]
+    try:
+        data['goal_details'] = json.loads(data.get('goal_details_json') or '[]') if data.get('goal_details_json') else []
+    except Exception:
+        data['goal_details'] = []
+    data['goal_details'] = _dedupe_rows(data.get('goal_details'), ['key', 'timeframe', 'other_text'])
+    for g in data.get('goal_details', []):
+        key = str(g.get('key') or '').strip()
+        tf = str(g.get('timeframe') or '').strip()
+        g['label'] = (g.get('other_text') or '').strip() if key == 'other' and (g.get('other_text') or '').strip() else (g.get('label') or goal_labels.get(key, key))
+        g['timeframe_label'] = timeframe_labels.get(tf, tf.replace('_', ' ') if tf else '')
+    try:
+        data['prior_events'] = json.loads(data.get('prior_events_json') or '[]') if data.get('prior_events_json') else []
+    except Exception:
+        data['prior_events'] = []
+    data['prior_events'] = _dedupe_rows(data.get('prior_events'), ['type', 'date'])
+    try:
+        data['additional_sources'] = json.loads(data.get('additional_sources_json') or '[]') if data.get('additional_sources_json') else []
+    except Exception:
+        data['additional_sources'] = []
+    data['additional_sources'] = _dedupe_rows(data.get('additional_sources'), ['source_type', 'source_name', 'position_title', 'frequency', 'amount'])
+    if not data.get('additional_sources') and data.get('has_additional_income'):
+        legacy_type = data.get('additional_income_source_type')
+        legacy_name = data.get('additional_income_source_name')
+        legacy_amount = data.get('additional_income_amount')
+        if legacy_type or legacy_name or legacy_amount:
+            data['additional_sources'] = [{
+                'source_type': legacy_type or '',
+                'source_name': legacy_name or '',
+                'position_title': '',
+                'amount': str(legacy_amount or ''),
+            }]
+    summary = []
+    if immigration_summary and immigration_summary != 'Not completed yet.':
+        summary.append(immigration_summary)
+    if data['employment_status_label'] != '—':
+        detail = data['employment_status_label']
+        if data.get('employer_name'):
+            detail += f" · {data.get('employer_name')}"
+        summary.append(detail)
+    if data.get('annual_income'):
+        freq = str(data.get('annual_income_frequency') or '').replace('_', ' ').title()
+        summary.append(f"Income {format_currency(data.get('annual_income'))}{(' · ' + freq) if freq else ''}")
+    if data['housing_status_label'] != '—':
+        detail = data['housing_status_label']
+        if data.get('monthly_housing_payment'):
+            detail += f" · {format_currency(data.get('monthly_housing_payment'))}/mo"
+        summary.append(detail)
+    if data['banking_status_label'] != '—':
+        summary.append(data['banking_status_label'])
+    for src in data.get('additional_sources', []):
+        freq = str(src.get('frequency') or '').strip()
+        src['frequency_label'] = {'weekly':'Weekly','every_2_weeks':'Every 2 Weeks','biweekly':'Biweekly','monthly':'Monthly','annually':'Annually'}.get(freq, freq.replace('_',' ').title())
+    if data.get('goal_details'):
+        summary.append('; '.join([f"{g.get('label')}: {g.get('timeframe_label') or g.get('timeframe') or '—'}" for g in data.get('goal_details', [])[:2] if g.get('label')]))
+    data['summary_lines'] = summary[:6]
+    return data
+
+
+def save_client_interview(cur, client_id: str, form_data: dict):
+    ensure_client_interview_table(cur)
+    workflow_status = str(form_data.get('workflow_status') or 'not_started').strip().lower()
+    if workflow_status not in {'not_started', 'pending', 'complete', 'skip'}:
+        workflow_status = 'not_started'
+    completed_at = 'CURRENT_TIMESTAMP' if workflow_status == 'complete' else 'NULL'
+    expected_grad = _to_date(form_data.get('expected_graduation_date'))
+
+    def _normalize_json_list(raw):
+        if raw is None:
+            return []
+        if isinstance(raw, list):
+            return raw
+        s = str(raw or '').strip()
+        if not s:
+            return []
+        try:
+            val = json.loads(s)
+            return val if isinstance(val, list) else []
+        except Exception:
+            return []
+
+    def _dedupe_rows(rows, keys):
+        cleaned = []
+        seen = set()
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            normalized = {}
+            for key in keys:
+                normalized[key] = str(row.get(key) or '').strip()
+            if not any(normalized.values()):
+                continue
+            sig = tuple(normalized[k].lower() for k in keys)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            cleaned.append(normalized)
+        return cleaned
+
+    goal_rows = _dedupe_rows(_normalize_json_list(form_data.get('goal_details_json')), ['key', 'timeframe', 'other_text'])
+    for g in goal_rows:
+        key = str(g.get('key') or '').strip()
+        if key == 'other' and (g.get('other_text') or '').strip():
+            g['label'] = str(g.get('other_text') or '').strip()
+        elif not (g.get('label') or '').strip():
+            g['label'] = str(g.get('label') or '').strip()
+    additional_sources = _dedupe_rows(_normalize_json_list(form_data.get('additional_sources_json')), ['source_type', 'source_name', 'position_title', 'frequency', 'amount'])
+    prior_events = _dedupe_rows(_normalize_json_list(form_data.get('prior_events_json')), ['type', 'date'])
+
+    credit_goals = ','.join([g['key'] for g in goal_rows if g.get('key')]) or None
+    primary_goal_timeframe = next((g.get('timeframe') for g in goal_rows if g.get('timeframe')), None)
+
+    fields = {
+        'us_citizen': _truthy(form_data.get('us_citizen')) if form_data.get('us_citizen') not in (None, '') else None,
+        'has_other_citizenship': _truthy(form_data.get('has_other_citizenship')) if form_data.get('has_other_citizenship') not in (None, '') else None,
+        'other_citizenship_country': (form_data.get('other_citizenship_country') or '').strip() or None,
+        'permanent_resident': _truthy(form_data.get('permanent_resident')) if form_data.get('permanent_resident') not in (None, '') else None,
+        'residency_status': (form_data.get('residency_status') or '').strip() or None,
+        'citizenship_country': (form_data.get('citizenship_country') or '').strip() or None,
+        'employment_status': (form_data.get('employment_status') or '').strip() or None,
+        'employer_name': (form_data.get('employer_name') or '').strip() or None,
+        'position_title': (form_data.get('position_title') or '').strip() or None,
+        'receives_unemployment': _truthy(form_data.get('receives_unemployment')) if form_data.get('receives_unemployment') not in (None, '') else None,
+        'unemployment_benefit_amount': _safe_decimal(form_data.get('unemployment_benefit_amount') or '0.00') if (form_data.get('unemployment_benefit_amount') or '').strip() else None,
+        'school_name': (form_data.get('school_name') or '').strip() or None,
+        'expected_graduation_date': expected_grad,
+        'area_of_study': (form_data.get('area_of_study') or '').strip() or None,
+        'occupation_other': (form_data.get('occupation_other') or '').strip() or None,
+        'annual_income': _safe_decimal(form_data.get('annual_income') or '0.00') if (form_data.get('annual_income') or '').strip() else None,
+        'annual_income_frequency': (form_data.get('annual_income_frequency') or '').strip() or None,
+        'household_income': _safe_decimal(form_data.get('household_income') or '0.00') if (form_data.get('household_income') or '').strip() else None,
+        'has_additional_income': True if additional_sources else (_truthy(form_data.get('has_additional_income')) if form_data.get('has_additional_income') not in (None, '') else None),
+        'additional_income_source_type': (form_data.get('additional_income_source_type') or '').strip() or None,
+        'additional_income_source_name': (form_data.get('additional_income_source_name') or '').strip() or None,
+        'additional_income_amount': _safe_decimal(form_data.get('additional_income_amount') or '0.00') if (form_data.get('additional_income_amount') or '').strip() else None,
+        'additional_sources_json': json.dumps(additional_sources) if additional_sources else None,
+        'housing_status': (form_data.get('housing_status') or '').strip() or None,
+        'monthly_housing_payment': _safe_decimal(form_data.get('monthly_housing_payment') or '0.00') if (form_data.get('monthly_housing_payment') or '').strip() else None,
+        'contributes_housing': _truthy(form_data.get('contributes_housing')) if form_data.get('contributes_housing') not in (None, '') else None,
+        'housing_other_description': (form_data.get('housing_other_description') or '').strip() or None,
+        'banking_status': (form_data.get('banking_status') or '').strip() or None,
+        'credit_goals': credit_goals,
+        'goal_timeframe': primary_goal_timeframe,
+        'goal_details_json': json.dumps(goal_rows) if goal_rows else None,
+        'working_with_lender': _truthy(form_data.get('working_with_lender')) if form_data.get('working_with_lender') not in (None, '') else None,
+        'lender_name': (form_data.get('lender_name') or '').strip() or None,
+        'lender_company': (form_data.get('lender_company') or '').strip() or None,
+        'lender_address': (form_data.get('lender_address') or '').strip() or None,
+        'lender_phone': (form_data.get('lender_phone') or '').strip() or None,
+        'lender_email': (form_data.get('lender_email') or '').strip() or None,
+        'working_with_realtor': _truthy(form_data.get('working_with_realtor')) if form_data.get('working_with_realtor') not in (None, '') else None,
+        'realtor_name': (form_data.get('realtor_name') or '').strip() or None,
+        'realtor_company': (form_data.get('realtor_company') or '').strip() or None,
+        'realtor_address': (form_data.get('realtor_address') or '').strip() or None,
+        'realtor_phone': (form_data.get('realtor_phone') or '').strip() or None,
+        'realtor_email': (form_data.get('realtor_email') or '').strip() or None,
+        'lender_authorized': _truthy(form_data.get('lender_authorized')) if form_data.get('lender_authorized') not in (None, '') else None,
+        'lender_authorization_on_file': _truthy(form_data.get('lender_authorization_on_file')) if form_data.get('lender_authorization_on_file') not in (None, '') else None,
+        'realtor_authorized': _truthy(form_data.get('realtor_authorized')) if form_data.get('realtor_authorized') not in (None, '') else None,
+        'realtor_authorization_on_file': _truthy(form_data.get('realtor_authorization_on_file')) if form_data.get('realtor_authorization_on_file') not in (None, '') else None,
+        'prior_events_json': json.dumps(prior_events) if prior_events else None,
+        'workflow_status': workflow_status,
+        'last_source': (form_data.get('last_source') or 'staff').strip() or 'staff',
+        'notes': (form_data.get('notes') or '').strip() or None,
+    }
+    cols = list(fields.keys())
+    values = [fields[c] for c in cols]
+    set_clause = ', '.join([f"{c} = EXCLUDED.{c}" for c in cols if c not in {'workflow_status'}])
+    cur.execute(
+        f"""
+        INSERT INTO client_interviews (client_id, {', '.join(cols)}, created_at, updated_at, completed_at)
+        VALUES (%s, {', '.join(['%s']*len(cols))}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, {completed_at})
+        ON CONFLICT (client_id) DO UPDATE SET
+            {set_clause},
+            workflow_status = EXCLUDED.workflow_status,
+            updated_at = CURRENT_TIMESTAMP,
+            completed_at = {completed_at}
+        """,
+        [client_id] + values
+    )
+
+def build_client_workflow_steps(profile, documents, latest_analysis_by_bureau, saved_letters, followups, redispute_events, credit_products, client_emails, invoices, client_interview=None):
+    documents = documents or []
+    latest_analysis_by_bureau = latest_analysis_by_bureau or {}
+    saved_letters = saved_letters or []
+    followups = followups or []
+    redispute_events = redispute_events or []
+    credit_products = credit_products or []
+    client_emails = client_emails or []
+    invoices = invoices or []
+
+    def _doc_match(doc_type=None, category=None, name_terms=None):
+        for d in documents:
+            dt = str(d.get('doc_type') or '').strip().lower()
+            cat = str(d.get('doc_category') or '').strip().lower()
+            name = str(d.get('file_name') or '').strip().lower()
+            if doc_type and dt == doc_type:
+                return True
+            if category and cat == category:
+                return True
+            if name_terms and any(term in name for term in name_terms):
+                return True
+        return False
+
+    def _email_match(*terms):
+        for e in client_emails:
+            direction = str(e.get('direction') or '').strip().lower()
+            subject = str(e.get('subject') or '').strip().lower()
+            body = str(e.get('body_text') or '').strip().lower()
+            if direction == 'outbound' and any(term in subject or term in body for term in terms):
+                return True
+        return False
+
+    def _invoice_paid():
+        for inv in invoices:
+            if str(inv.get('status') or '').strip().lower() == 'paid':
+                return True
+        return False
+
+    portal_credentials_sent = _email_match('portal', 'login', 'credential')
+    agreement_sent = _email_match('agreement', 'disclosure', 'right to cancel') or _doc_match(name_terms=['agreement','contract'])
+    agreement_received = _doc_match(doc_type='contract', name_terms=['agreement','contract'])
+    ids_received = _doc_match(doc_type='id')
+    proofs_received = _doc_match(doc_type='proof_of_address')
+    reports_reviewed = _doc_match(doc_type='credit_report', category='credit_report')
+    analysis_completed = any(bool(v) for v in (latest_analysis_by_bureau or {}).values())
+    first_disputes_done = bool(saved_letters)
+    tickler_set = bool(followups or redispute_events)
+    new_credit_done = bool(credit_products)
+    update_sent = _email_match('credit repair update', 'client update')
+    billing_set_up = bool(invoices) or bool(profile.get('preferred_payment_method')) or bool(profile.get('first_payment_date'))
+
+    workflow = [
+        {'key':'record_created','label':'Client record created','status':'complete','detail': profile.get('created_at_display') or profile.get('created_at') or 'Client exists in system.'},
+        {'key':'client_interview','label':'Client Interview completed','status': (str((client_interview or {}).get('workflow_status') or 'not_started').lower()),'detail': (client_interview or {}).get('immigration_summary') or 'Client interview not completed yet.'},
+        {'key':'consultation','label':'Consultation / education completed','status':'pending','detail':'Track manually for now under Overview recommendations and Notes.'},
+        {'key':'agreement_sent','label':'Agreement and disclosures sent','status':'complete' if agreement_sent else 'pending','detail':'Detected from agreement/disclosure activity.' if agreement_sent else 'No clear agreement/disclosure delivery detected yet.'},
+        {'key':'portal_credentials','label':'Portal credentials sent','status':'complete' if portal_credentials_sent else 'pending','detail':'Detected from outbound portal/login email activity.' if portal_credentials_sent else 'Portal credential workflow still needs to be formalized.'},
+        {'key':'agreement_received','label':'Agreement received / signed','status':'complete' if agreement_received else 'pending','detail':'Contract/agreement file found.' if agreement_received else 'No signed agreement file detected yet.'},
+        {'key':'billing','label':'Billing set up','status':'complete' if billing_set_up else 'pending','detail':'Billing profile or invoice activity exists.' if billing_set_up else 'No billing setup detected yet.'},
+        {'key':'payment','label':'Initial charge / payment received','status':'complete' if _invoice_paid() else 'pending','detail':'At least one invoice is marked paid.' if _invoice_paid() else 'No paid invoice detected yet.'},
+        {'key':'ids','label':'ID received','status':'complete' if ids_received else 'pending','detail':'ID document on file.' if ids_received else 'No ID document found yet.'},
+        {'key':'proofs','label':'Proof of address received','status':'complete' if proofs_received else 'pending','detail':'Proof-of-address document on file.' if proofs_received else 'No proof-of-address document found yet.'},
+        {'key':'reports_reviewed','label':'Reports reviewed','status':'complete' if reports_reviewed else 'pending','detail':'Credit report document(s) found.' if reports_reviewed else 'No report files detected yet.'},
+        {'key':'analysis','label':'Analysis completed','status':'complete' if analysis_completed else 'pending','detail':'At least one bureau analysis result exists.' if analysis_completed else 'No completed document analysis detected yet.'},
+        {'key':'first_disputes','label':'First disputes completed','status':'complete' if first_disputes_done else 'pending','detail':'Dispute letters found.' if first_disputes_done else 'No generated dispute letters detected yet.'},
+        {'key':'tickler','label':'Tickler / follow-up set','status':'complete' if tickler_set else 'pending','detail':'Follow-up or redispute reminder found.' if tickler_set else 'No follow-up/tickler detected yet.'},
+        {'key':'new_credit','label':'Client obtained new credit','status':'complete' if new_credit_done else 'not_started','detail':'Credit re-establishment product(s) on file.' if new_credit_done else 'No new credit products recorded yet.'},
+        {'key':'client_update','label':'Client update sent','status':'complete' if update_sent else 'pending','detail':'Client update email detected.' if update_sent else 'No client update email detected yet.'},
+    ]
+    return workflow
+
+
+def build_client_workflow_timeline(profile, notes, client_emails, documents, saved_letters, credit_products, followups, redispute_events, client_interview=None):
+    events = []
+    def add_event(raw_date, title, detail=''):
+        if not raw_date:
+            return
+        dt = None
+        try:
+            dt = _safe_parse_datetime(raw_date)
+        except Exception:
+            dt = None
+        if not dt:
+            try:
+                d = _safe_parse_date(raw_date)
+                if d:
+                    dt = datetime.combine(d, datetime.min.time())
+            except Exception:
+                dt = None
+        if not dt:
+            return
+        events.append({'sort_dt': dt, 'when': format_short_date(dt), 'title': title, 'detail': detail or ''})
+
+    add_event(profile.get('created_at'), 'Client record created', 'Client entered into the system.')
+    if client_interview:
+        interview_status = str(client_interview.get('workflow_status') or '').strip().lower()
+        if interview_status == 'complete':
+            add_event(client_interview.get('completed_at') or client_interview.get('updated_at'), 'Client Interview completed', client_interview.get('immigration_summary') or 'Client Interview marked complete.')
+        elif interview_status in {'pending', 'skip'}:
+            add_event(client_interview.get('updated_at'), 'Client Interview updated', f"Status: {interview_status.replace('_',' ').title()}")
+    for n in (notes or [])[:12]:
+        add_event(n.get('created_at'), 'Note added', str(n.get('note_text') or n.get('note') or '')[:180])
+    for e in (client_emails or [])[:12]:
+        direction = str(e.get('direction') or '').strip().lower()
+        title = 'Email sent' if direction == 'outbound' else 'Email received'
+        add_event(e.get('email_date') or e.get('sent_at') or e.get('received_at') or e.get('created_at'), title, str(e.get('subject') or '(no subject)'))
+    for d in (documents or [])[:12]:
+        add_event(d.get('created_at'), 'Document added', str(d.get('file_name') or d.get('description') or 'Document uploaded'))
+    for l in (saved_letters or [])[:12]:
+        add_event(l.get('generated_at'), 'Dispute letter generated', str(l.get('subject') or l.get('description') or 'Letter generated'))
+    for p in (credit_products or [])[:12]:
+        add_event(p.get('origination_date') or p.get('created_at'), 'Credit product recorded', str(p.get('lender_name') or 'Credit product'))
+    for f in (followups or [])[:12]:
+        add_event(f.get('created_at') or f.get('due_date'), 'Follow-up created', str(f.get('note_text') or f.get('followup_type') or 'Follow-up'))
+    for r in (redispute_events or [])[:12]:
+        add_event(r.get('created_at') or r.get('event_date'), 'Redispute reminder scheduled', str(r.get('notes') or r.get('bureau') or 'Redispute reminder'))
+
+    events.sort(key=lambda x: x['sort_dt'], reverse=True)
+    return events[:18]
+
+
+def ensure_client_section_status_table(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS client_section_statuses (
+            client_id uuid REFERENCES clients(id) ON DELETE CASCADE,
+            section_key text NOT NULL,
+            status text NOT NULL DEFAULT 'incomplete',
+            updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+            updated_by text,
+            PRIMARY KEY (client_id, section_key)
+        )
+    """)
+    cur.execute("ALTER TABLE client_section_statuses ADD COLUMN IF NOT EXISTS updated_by text")
+
+
+def fetch_client_section_statuses(cur, client_id: str, tab_defs, client_interview=None):
+    ensure_client_section_status_table(cur)
+    cur.execute("SELECT section_key, status FROM client_section_statuses WHERE client_id = %s", (client_id,))
+    rows = cur.fetchall() or []
+    status_map = {key: 'incomplete' for key, _ in tab_defs}
+    for row in rows:
+        if isinstance(row, dict):
+            key = str(row.get('section_key') or '').strip()
+            status = str(row.get('status') or 'incomplete').strip().lower() or 'incomplete'
+        else:
+            key = str(row[0] or '').strip()
+            status = str(row[1] or 'incomplete').strip().lower() or 'incomplete'
+        if key in status_map and status in SECTION_STATUS_LABELS:
+            status_map[key] = status
+    ci_status = str((client_interview or {}).get('workflow_status') or '').strip().lower()
+    if ci_status in {'not_started', 'pending', 'complete', 'skip'}:
+        status_map['client_interview'] = 'incomplete' if ci_status == 'not_started' else ci_status
+    return status_map
+
+
+def set_client_section_status(cur, client_id: str, section_key: str, status: str, updated_by: str = 'Carlos G Suarez'):
+    ensure_client_section_status_table(cur)
+    status = str(status or 'incomplete').strip().lower()
+    if status not in SECTION_STATUS_LABELS:
+        status = 'incomplete'
+    cur.execute(
+        """
+        INSERT INTO client_section_statuses (client_id, section_key, status, updated_at, updated_by)
+        VALUES (%s, %s, %s, CURRENT_TIMESTAMP, %s)
+        ON CONFLICT (client_id, section_key)
+        DO UPDATE SET status = EXCLUDED.status, updated_at = CURRENT_TIMESTAMP, updated_by = EXCLUDED.updated_by
+        """,
+        (client_id, section_key, status, updated_by),
+    )
+
+def render_client_workspace(request: Request, client_id: str, message: str = "", error: str = "", reveal_cred_id: Optional[str] = None, active_tab: Optional[str] = None, dispute_bureau: Optional[str] = None, open_letter_url: str = "", edit_credit_product_id: Optional[str] = None, selected_letter_id: Optional[str] = None, selected_template_id: Optional[str] = None, extra_context: Optional[dict] = None):
+    current_profile_ref = get_current_profile_context(request) or {}
+    current_profile_ref_id = str(current_profile_ref.get("id") or "").strip()
+    current_profile_ref_type = str(current_profile_ref.get("type") or "corporate").strip().lower()
+    if current_profile_ref_id:
+        accounting_dashboard_href = f"/ui/accounting-dashboard?{'personal_profile_id' if current_profile_ref_type == 'personal' else 'profile_id'}={quote_plus(current_profile_ref_id)}"
+    else:
+        accounting_dashboard_href = "/ui/accounting-dashboard"
     tab_defs = [
+        ("overview", "Snapshot"),
+        ("onboarding", "Onboarding"),
+        # Keep the legacy Client Interview tab valid for the guided interview editor,
+        # but do not show it as a top-level workflow tab.
+        ("client_interview", "Client Interview"),
+        ("referrals", "Referrals"),
+        ("calendar", "Calendar / Follow-Ups"),
+        ("credentials_scores", "Credentials & Scores"),
+        ("documents", "Documents"),
         ("billing", "Billing"),
+        ("credit_products", "Credit Re-establishment"),
+        ("disputes", "Disputes"),
         ("notes", "Notes"),
         ("emails", "Emails"),
-        ("calendar", "Calendar"),
+    ]
+    onboarding_section_defs = [
+        ("appointment_consultation", "Appointment / Consultation / Presentation"),
+        ("client_interview", "Client Interview"),
+        ("program_snapshot", "Program Snapshot"),
+        ("agreement_disclosures", "Agreement & Disclosures"),
+        ("billing_readiness", "Billing Readiness"),
+        ("portal_documents", "Portal / Documents"),
         ("credentials_scores", "Credentials & Scores"),
-        ("disputes", "Disputes"),
-        ("documents", "Documents"),
-        ("credit_products", "Credit Products"),
-        ("referrals", "Referrals"),
+        ("optin_optout", "Opt-In / Opt-Out"),
+        ("fraud_alert_review", "Fraud Alert Review"),
+        ("related_people_addresses", "Related People / Address Changes"),
     ]
     valid_tabs = {k for k, _ in tab_defs}
-    chosen_tab = request.query_params.get("tab") or active_tab or "disputes"
-    if chosen_tab in {"personal_info", "overview", "profile"}:
-        chosen_tab = "disputes"
+    chosen_tab = request.query_params.get("tab") or active_tab or "overview"
+    if chosen_tab in {"personal_info", "profile"}:
+        chosen_tab = "overview"
     if chosen_tab not in valid_tabs:
-        chosen_tab = "disputes"
+        chosen_tab = "overview"
 
     conn = get_conn()
     try:
@@ -3054,23 +10257,114 @@ def render_client_workspace(request: Request, client_id: str, message: str = "",
                 dashboard, profile, score_groups, credentials, notes, appointments, followups,
                 redispute_events, documents, documents_by_section, dispute_source_groups,
                 last_document_selection, latest_analysis_by_bureau, upload_requests, document_source_options,
-                associated_clients, client_switch_choices, referral_partners, account_disputes,
+                associated_clients, client_switch_choices, referral_partners, referral_partners_all, account_disputes,
                 personal_info_disputes, inquiry_disputes, dispute_metrics, dispute_round_defaults,
-                saved_letters, client_emails, account_name_options, credit_products, outbound_referrals,
-                invoices, billing_snapshot, invoice_items
+                saved_letters, client_emails, account_name_options, credit_products, lender_directory, outbound_referrals,
+                referral_monthly_summary, invoices, billing_snapshot, invoice_items, payment_profile, recurring_invoices, saved_payment_methods
             ) = load_client_workspace_context(cur, client_id, reveal_cred_id)
-        if not profile:
-            return templates.TemplateResponse("index.html", {"request": request, "error": "Client not found."})
-        selected_dispute_bureau = (dispute_bureau or request.query_params.get("dispute_bureau") or "equifax").strip().lower()
-        selected_edit_credit_product_id = edit_credit_product_id or request.query_params.get("edit_credit_product_id") or ""
-        edit_credit_product = fetch_credit_product(cur, client_id, selected_edit_credit_product_id) if selected_edit_credit_product_id else None
-        if selected_dispute_bureau not in BUREAUS:
-            selected_dispute_bureau = "equifax"
-        bureau_dispute_summaries = build_bureau_dispute_summaries(
-            profile, account_disputes, personal_info_disputes, inquiry_disputes,
-            saved_letters, redispute_events, int(dispute_round_defaults.get('current_round_number', 1) or 1)
-        )
-        return templates.TemplateResponse(
+            billing_program_options = fetch_billing_program_options(cur)
+            if profile is not None:
+                profile['pricing_plan_label'] = billing_program_label_from_options(billing_program_options, profile.get('pricing_plan') or 'standard_12')
+                billing_snapshot = build_billing_snapshot(profile, invoices, payment_profile)
+            referral_sources_all = fetch_referral_sources(cur, include_inactive=True)
+            accounting_sales_tax_rate = get_accounting_sales_tax_rate(cur)
+            accounting_invoice_default_message = get_accounting_invoice_default_message(cur)
+            address_history = fetch_client_address_history(cur, client_id)
+            client_interview = fetch_client_interview(cur, client_id)
+            account_disputes = account_disputes or []
+            personal_info_disputes = personal_info_disputes or []
+            inquiry_disputes = inquiry_disputes or []
+            redispute_events = redispute_events or []
+            saved_letters = saved_letters or []
+            all_calendar_appointments = fetch_all_calendar_appointments(cur, 500)
+            all_calendar_followups = fetch_all_calendar_followups(cur, 500)
+            all_calendar_redispute_events = fetch_all_calendar_redispute_events(cur, 500)
+            if not profile:
+                return templates.TemplateResponse("index.html", {"request": request, "error": "Client not found."})
+
+            selected_dispute_bureau = (dispute_bureau or request.query_params.get("dispute_bureau") or "equifax").strip().lower()
+            if selected_dispute_bureau not in BUREAUS:
+                selected_dispute_bureau = "equifax"
+
+            selected_edit_credit_product_id = edit_credit_product_id or request.query_params.get("edit_credit_product_id") or ""
+            edit_credit_product = fetch_credit_product(cur, client_id, selected_edit_credit_product_id) if selected_edit_credit_product_id else None
+            preapproval_links = fetch_prequal_links(cur)
+
+            selected_letter_id = selected_letter_id or request.query_params.get("selected_letter_id") or ""
+            selected_template_id = selected_template_id or request.query_params.get("selected_template_id") or ""
+            selected_letter = fetch_saved_letter_detail(cur, client_id, selected_letter_id) if selected_letter_id else None
+            custom_letter_templates = list_custom_letter_templates()
+            custom_letter_templates_for_bureau = [
+                t for t in custom_letter_templates
+                if (t.get('bureau') or '').strip().lower() == (selected_dispute_bureau or '').strip().lower()
+            ]
+            selected_template = load_custom_letter_template(selected_template_id) if selected_template_id else None
+            if selected_template and (selected_template.get('bureau') or '').strip().lower() != (selected_dispute_bureau or '').strip().lower():
+                selected_template = None
+            round_overrides = fetch_all_bureau_round_overrides(cur, client_id)
+            bureau_round_override = round_overrides.get(selected_dispute_bureau)
+
+            bureau_dispute_summaries = build_bureau_dispute_summaries(
+                profile, account_disputes, personal_info_disputes, inquiry_disputes,
+                saved_letters, redispute_events, int(dispute_round_defaults.get('current_round_number', 1) or 1), round_overrides
+            )
+
+            latest_dispute_date = None
+            if saved_letters:
+                latest_letter_by_date = None
+                latest_letter_key = None
+                for letter in saved_letters:
+                    letter_date = _safe_parse_date(letter.get('generated_at'))
+                    round_num = int(letter.get('round_number') or 0)
+                    key = (letter_date or date.min, round_num)
+                    if latest_letter_key is None or key > latest_letter_key:
+                        latest_letter_key = key
+                        latest_letter_by_date = letter
+                if latest_letter_by_date:
+                    latest_dispute_date = format_short_date(_safe_parse_date(latest_letter_by_date.get('generated_at')))
+
+            next_tickler_date = ''
+            future_events = []
+            today_date = date.today()
+            for event in (redispute_events or []):
+                event_date = _safe_parse_date(event.get('event_date'))
+                if event_date and event_date >= today_date:
+                    future_events.append(event_date)
+            if future_events:
+                next_tickler_date = format_short_date(sorted(future_events)[0])
+
+            ssn_digits = only_digits(profile.get('ssn_full') or '')
+            masked_ssn_display = '—'
+            if len(ssn_digits) >= 4:
+                masked_ssn_display = f"XXX-XX-{ssn_digits[-4:]}"
+            elif profile.get('ssn_last4'):
+                masked_ssn_display = f"XXX-XX-{only_digits(profile.get('ssn_last4'))[-4:]}"
+
+            client_header_summary = {
+                'startup_date': format_short_date(profile.get('start_date')) if profile.get('start_date') else '—',
+                'next_tickler_date': next_tickler_date or '—',
+                'last_disputed_date': latest_dispute_date or '—',
+                'referred_by': profile.get('referred_by_display') or '—',
+                'masked_ssn': masked_ssn_display,
+            }
+
+            workflow_steps = build_client_workflow_steps(profile, documents, latest_analysis_by_bureau, saved_letters, followups, redispute_events, credit_products, client_emails, invoices, client_interview)
+            workflow_timeline = build_client_workflow_timeline(profile, notes, client_emails, documents, saved_letters, credit_products, followups, redispute_events, client_interview)
+            appointment_consultants = fetch_appointment_consultants(cur)
+            consultation_fee_items = build_consultation_fee_items(invoice_items)
+            section_statuses = fetch_client_section_statuses(cur, client_id, tab_defs + onboarding_section_defs, client_interview)
+            current_section_label = next((label for key, label in tab_defs if key == chosen_tab), chosen_tab.replace('_', ' ').title())
+            current_section_status = section_statuses.get(chosen_tab, 'incomplete')
+            client_calendar_month = build_client_calendar_month(
+                appointments=all_calendar_appointments,
+                followups=all_calendar_followups,
+                redispute_events=all_calendar_redispute_events,
+                month_value=request.query_params.get('calendar_month') or '',
+                calendar_view=request.query_params.get('calendar_view') or 'month',
+                calendar_date=request.query_params.get('calendar_date') or ''
+            )
+
+        response = templates.TemplateResponse(
             "client.html",
             {
                 "request": request,
@@ -3083,6 +10377,7 @@ def render_client_workspace(request: Request, client_id: str, message: str = "",
                 "appointments": appointments,
                 "followups": followups,
                 "redispute_events": redispute_events,
+                "client_calendar_month": client_calendar_month,
                 "documents": documents,
                 "documents_by_section": documents_by_section,
                 "dispute_source_groups": dispute_source_groups,
@@ -3091,8 +10386,11 @@ def render_client_workspace(request: Request, client_id: str, message: str = "",
                 "upload_requests": upload_requests,
                 "document_source_options": document_source_options,
                 "associated_clients": associated_clients,
+                "relationship_labels": fetch_relationship_label_options(cur),
                 "client_switch_choices": client_switch_choices,
                 "referral_partners": referral_partners,
+                "referral_partners_all": referral_partners_all,
+                "referral_sources_all": referral_sources_all,
                 "account_disputes": account_disputes,
                 "personal_info_disputes": personal_info_disputes,
                 "inquiry_disputes": inquiry_disputes,
@@ -3101,13 +10399,36 @@ def render_client_workspace(request: Request, client_id: str, message: str = "",
                 "selected_dispute_bureau": selected_dispute_bureau,
                 "bureau_dispute_summaries": bureau_dispute_summaries,
                 "saved_letters": saved_letters,
+                "selected_letter": selected_letter,
+                "custom_letter_templates": custom_letter_templates,
+                "custom_letter_templates_for_bureau": custom_letter_templates_for_bureau,
+                "selected_template": selected_template,
+                "bureau_round_override": bureau_round_override,
+                "client_header_summary": client_header_summary,
+                "client_interview": client_interview,
+                "workflow_steps": workflow_steps,
+                "workflow_timeline": workflow_timeline,
+                "timeline_events": workflow_timeline,
+                "section_statuses": section_statuses,
+                "current_section_label": current_section_label,
+                "current_section_status": current_section_status,
+                "section_status_options": SECTION_STATUS_OPTIONS,
                 "client_emails": client_emails,
                 "account_name_options": account_name_options,
                 "credit_products": credit_products,
+                "lender_directory": lender_directory,
+                "preapproval_links": preapproval_links,
+                "lender_categories": LENDER_CATEGORIES,
                 "outbound_referrals": outbound_referrals,
+                "referral_monthly_summary": referral_monthly_summary,
                 "invoices": invoices,
                 "billing_snapshot": billing_snapshot,
                 "invoice_items": invoice_items,
+                "consultation_fee_items": consultation_fee_items,
+                "appointment_consultants": appointment_consultants,
+                "accounting_sales_tax_rate": f"{accounting_sales_tax_rate:.4f}",
+                "invoice_default_message": accounting_invoice_default_message,
+                "recurring_invoices": recurring_invoices,
                 "edit_credit_product": edit_credit_product,
                 "company_name": SENDER_NAME,
                 "company_phone": COMPANY_PHONE,
@@ -3144,67 +10465,900 @@ def render_client_workspace(request: Request, client_id: str, message: str = "",
                 "message": message,
                 "error": error,
                 "open_letter_url": open_letter_url,
+                "us_states": US_STATES,
+                "client_status_options": CLIENT_STATUS_OPTIONS,
+                "country_options": COUNTRY_OPTIONS,
+                "residency_status_options": RESIDENCY_STATUS_OPTIONS,
+                "client_interview_workflow_statuses": CLIENT_INTERVIEW_WORKFLOW_STATUSES,
+                "employment_status_options": EMPLOYMENT_STATUS_OPTIONS,
+                "housing_status_options": HOUSING_STATUS_OPTIONS,
+                "banking_status_options": BANKING_STATUS_OPTIONS,
+                "additional_income_source_options": ADDITIONAL_INCOME_SOURCE_OPTIONS,
+                "credit_goal_options": CREDIT_GOAL_OPTIONS,
+                "goal_timeframe_options": GOAL_TIMEFRAME_OPTIONS,
+                "pricing_plan_options": billing_program_options,
+                "payment_method_options": PAYMENT_METHODS,
+                "payment_method_labels": PAYMENT_METHOD_LABELS,
+                "card_brand_labels": CARD_BRAND_LABELS,
+                "card_brand_options": CARD_BRAND_OPTIONS,
+                "payment_profile": payment_profile,
+                "saved_payment_methods": saved_payment_methods,
+                "saved_credit_cards": [m for m in (saved_payment_methods or []) if (m.get('payment_method') or '').lower() == 'credit card'],
+                "saved_digital_methods": [m for m in (saved_payment_methods or []) if (m.get('payment_method') or '').lower() in ALT_PAYMENT_METHODS],
+                "saved_other_methods": [m for m in (saved_payment_methods or []) if (m.get('payment_method') or '').lower() in {'cash','ach','money order','other'}],
+                "address_history": address_history,
+                "today_iso": date.today().isoformat(),
+                "current_theme": active_theme_background_for_request(request, "dashboard"),
+                "theme_runtime": active_theme_runtime_for_request(request, "dashboard"),
+                "software_name": SOFTWARE_NAME,
+                "software_tagline": SOFTWARE_TAGLINE,
+                "current_client": {"id": client_id, "name": profile.get("client_name") or " ".join([x for x in [profile.get("first_name"), profile.get("middle_name"), profile.get("last_name")] if x]).strip(), "tab": chosen_tab},
+                "referral_source_form_state": {},
+                "open_referral_source_create_panel": "",
+                "current_profile_ref": current_profile_ref,
+                "accounting_dashboard_href": accounting_dashboard_href,
             }
         )
+        if extra_context:
+            response.context.update(extra_context)
+        return attach_current_client_cookie(response, client_id, profile, chosen_tab)
     finally:
         conn.close()
 
+
+def _client_tab_success_response(request: Request, client_id: str, message_text: str, active_tab: str = 'billing', return_section: str = 'sales', return_subsection: str = 'invoices', return_client_id: str = ''):
+    if (active_tab or '').strip().lower() == 'accounting':
+        url = f'/ui/accounting-dashboard?section={return_section or "sales"}'
+        if return_subsection:
+            url += f'&subsection={return_subsection}'
+        focus_client = (return_client_id or client_id or '').strip()
+        if focus_client:
+            url += f'&client_id={focus_client}'
+        url += f'&message={quote_plus(message_text)}'
+        return RedirectResponse(url=url, status_code=303)
+    return render_client_workspace(request, client_id, message=message_text, active_tab=active_tab)
+
+
+def _client_tab_error_response(request: Request, client_id: str, error_text: str, active_tab: str = 'billing', return_section: str = 'sales', return_subsection: str = 'invoices', return_client_id: str = ''):
+    if (active_tab or '').strip().lower() == 'accounting':
+        url = f'/ui/accounting-dashboard?section={return_section or "sales"}'
+        if return_subsection:
+            url += f'&subsection={return_subsection}'
+        focus_client = (return_client_id or client_id or '').strip()
+        if focus_client:
+            url += f'&client_id={focus_client}'
+        url += f'&error={quote_plus(error_text)}'
+        return RedirectResponse(url=url, status_code=303)
+    return render_client_workspace(request, client_id, error=error_text, active_tab=active_tab)
 
 
 @app.post('/ui/generate-startup-invoice', response_class=HTMLResponse)
-def ui_generate_startup_invoice(request: Request, client_id: str = Form(...), active_tab: str = Form('billing')):
+def ui_generate_startup_invoice(
+    request: Request,
+    client_id: str = Form(...),
+    active_tab: str = Form('billing'),
+    return_section: str = Form('sales'),
+    return_subsection: str = Form('invoices'),
+    return_client_id: str = Form(''),
+):
     conn = get_conn(); conn.autocommit = True
+
     try:
         with conn.cursor() as cur:
             profile = fetch_client_profile(cur, client_id, include_sensitive=False)
+            if not profile or not bool(profile.get('is_active', True)) or str(profile.get('lifecycle_status') or '').strip().lower() == 'cancelled':
+                return _client_tab_error_response(request, client_id, 'This client is inactive. Reactivate the client before generating invoices.', active_tab=active_tab, return_section=return_section, return_subsection=return_subsection, return_client_id=return_client_id)
             amount = _safe_decimal(profile.get('initial_fee'))
             if amount <= 0:
-                return render_client_workspace(request, client_id, error='Startup fee is not set.', active_tab=active_tab)
-            iid = _create_invoice_row(cur, client_id, 'startup', amount, date.today(), date.today(), 'Startup fee', notes='Due on receipt.', is_automated=False)
+                return _client_tab_error_response(request, client_id, 'Start-up fee is not set.', active_tab=active_tab, return_section=return_section, return_subsection=return_subsection, return_client_id=return_client_id)
+            iid = _create_invoice_row(cur, client_id, 'consultation', amount, date.today(), date.today(), 'Consultation and Credit Review Fee', notes='Due on receipt.', is_automated=False)
             generate_invoice_pdf(cur, iid)
-        return render_client_workspace(request, client_id, message='Startup invoice generated.', active_tab=active_tab)
+        return _client_tab_success_response(request, client_id, 'Start-up fee invoice generated.', active_tab=active_tab, return_section=return_section, return_subsection=return_subsection, return_client_id=return_client_id)
     except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+        return _client_tab_error_response(request, client_id, str(e), active_tab=active_tab, return_section=return_section, return_subsection=return_subsection, return_client_id=return_client_id)
     finally:
         conn.close()
 
 
+@app.post('/ui/generate-invoice', response_class=HTMLResponse)
 @app.post('/ui/generate-manual-invoice', response_class=HTMLResponse)
 def ui_generate_manual_invoice(
     request: Request,
     client_id: str = Form(...),
-    invoice_type: str = Form('other'),
-    item_description: str = Form(...),
-    amount: str = Form(...),
-    due_date: str = Form(...),
+    invoice_id: str = Form(''),
+    invoice_item_id: List[str] = Form(...),
+    invoice_date: str = Form(''),
+    regular_amount: List[str] = Form([]),
+    quantity: List[str] = Form([]),
+    discount_item_id: List[str] = Form([]),
+    recurring_enabled: str = Form('0'),
+    recurring_mode: str = Form('until_cancel'),
+    recurring_count: str = Form(''),
+    recurring_frequency: str = Form('monthly'),
+    next_invoice_date: str = Form(''),
     notes: str = Form(''),
     active_tab: str = Form('billing'),
+    return_section: str = Form('sales'),
+    return_subsection: str = Form('invoices'),
+    return_client_id: str = Form(''),
+):
+    conn = get_conn(); conn.autocommit = True
+
+    try:
+        with conn.cursor() as cur:
+            profile = fetch_client_profile(cur, client_id, include_sensitive=False)
+            if not profile or not bool(profile.get('is_active', True)) or str(profile.get('lifecycle_status') or '').strip().lower() == 'cancelled':
+                return _client_tab_error_response(request, client_id, 'This client is inactive. Reactivate the client before generating invoices.', active_tab=active_tab, return_section=return_section, return_subsection=return_subsection, return_client_id=return_client_id)
+            invoice_dt = _to_date(invoice_date) or date.today()
+            line_items = []
+            for idx, item_id in enumerate(invoice_item_id or []):
+                if not item_id:
+                    continue
+                item = fetch_invoice_item_by_id(cur, item_id)
+                if not item:
+                    continue
+                amount_val = regular_amount[idx] if idx < len(regular_amount) else ''
+                unit_amount = _safe_decimal(amount_val or item.get('default_amount') or '0')
+                qty_val = quantity[idx] if idx < len(quantity) else '1'
+                try:
+                    qty = int(str(qty_val or '1').strip())
+                except Exception:
+                    qty = 1
+                if qty <= 0:
+                    qty = 1
+                item_regular = unit_amount * Decimal(qty)
+                discount_id = (discount_item_id[idx] if idx < len(discount_item_id) else '').strip()
+                discount_name = ''
+                discount_mode = ''
+                item_discount = Decimal('0.00')
+                if discount_id:
+                    discount_item = fetch_invoice_item_by_id(cur, discount_id)
+                    if discount_item and str(discount_item.get('invoice_type') or '').startswith('discount_'):
+                        discount_name = discount_item.get('item_name') or ''
+                        discount_mode = 'percent' if discount_item.get('invoice_type') == 'discount_percent' else 'fixed'
+                        raw_discount = _safe_decimal(discount_item.get('default_amount') or '0')
+                        item_discount = (item_regular * raw_discount / Decimal('100.00')) if discount_mode == 'percent' else raw_discount
+                if item_discount < 0:
+                    item_discount = Decimal('0.00')
+                if item_discount > item_regular:
+                    item_discount = item_regular
+                line_items.append({
+                    'item_id': item_id,
+                    'item_name': item.get('item_name') or item.get('default_description') or 'Invoice item',
+                    'description': item.get('default_description') or '',
+                    'quantity': qty,
+                    'unit_amount': unit_amount,
+                    'regular_amount': item_regular,
+                    'discount_amount': item_discount,
+                    'invoice_type': item.get('invoice_type') or 'service',
+                    'discount_item_id': discount_id,
+                    'discount_name': discount_name,
+                    'discount_mode': discount_mode,
+                })
+            if not line_items:
+                raise ValueError('Select at least one invoice item.')
+            subtotal_amount = sum((_safe_decimal(li['regular_amount']) for li in line_items), Decimal('0.00'))
+            discount_total = sum((_safe_decimal(li['discount_amount']) for li in line_items), Decimal('0.00'))
+            sales_tax_rate = get_accounting_sales_tax_rate(cur)
+            tax_amount, final_amount = _compute_invoice_tax(subtotal_amount, discount_total, line_items, sales_tax_rate)
+            if final_amount < 0:
+                final_amount = Decimal('0.00')
+            item_description = line_items[0]['item_name'] + (f" + {len(line_items)-1} more" if len(line_items) > 1 else '')
+            invoice_type = line_items[0].get('invoice_type') or 'service'
+            meta_notes = _encode_invoice_meta(line_items, notes or '')
+            recurring_selected = str(recurring_enabled or '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+            if invoice_id:
+                cur.execute("SELECT COALESCE(status,'unpaid') FROM client_invoices WHERE id = %s::uuid AND client_id = %s::uuid", (invoice_id, client_id))
+                status_row = cur.fetchone()
+                if not status_row:
+                    raise ValueError('Invoice not found.')
+                if str(status_row[0] or '').strip().lower() == 'paid':
+                    raise ValueError('Paid invoices cannot be edited. Remove the payment first, then edit the invoice.')
+                cur.execute(
+                    """
+                    UPDATE client_invoices
+                    SET invoice_type = %s,
+                        issue_date = %s,
+                        due_date = %s,
+                        item_description = %s,
+                        amount = %s,
+                        notes = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s::uuid AND client_id = %s::uuid
+                    """,
+                    (invoice_type, invoice_dt, invoice_dt, item_description, final_amount, meta_notes, invoice_id, client_id)
+                )
+                iid = invoice_id
+                msg = 'Invoice updated.'
+            else:
+                iid = _create_invoice_row(cur, client_id, invoice_type, final_amount, invoice_dt, invoice_dt, item_description, notes=meta_notes, is_automated=False)
+                msg = 'Invoice created.'
+
+            ensure_recurring_invoice_table(cur)
+            existing_schedule_id = None
+            cur.execute("SELECT id::text FROM recurring_invoice_schedules WHERE client_id = %s::uuid AND source_invoice_id = %s::uuid ORDER BY created_at DESC LIMIT 1", (client_id, iid))
+            _row = cur.fetchone()
+            if _row:
+                existing_schedule_id = _row[0]
+
+            if recurring_selected:
+                remaining_count = None
+                if (recurring_mode or '').strip().lower() == 'count':
+                    try:
+                        rc = int(str(recurring_count or '0').strip())
+                    except Exception:
+                        rc = 0
+                    if rc > 1:
+                        remaining_count = rc - 1
+                    elif rc <= 1:
+                        remaining_count = 0
+                recurring_frequency_clean = (recurring_frequency or 'monthly').strip().lower()
+                if recurring_frequency_clean not in {'weekly', 'biweekly', 'monthly'}:
+                    recurring_frequency_clean = 'monthly'
+                next_run_date = _to_date(next_invoice_date) or _next_run_by_frequency(invoice_dt, recurring_frequency_clean)
+                if next_run_date <= invoice_dt:
+                    next_run_date = _next_run_by_frequency(invoice_dt, recurring_frequency_clean)
+                if remaining_count is None or remaining_count > 0:
+                    if existing_schedule_id:
+                        cur.execute(
+                            """
+                            UPDATE recurring_invoice_schedules
+                            SET invoice_meta = %s,
+                                notes = NULLIF(%s,''),
+                                issue_day = %s,
+                                frequency = %s,
+                                next_run_date = %s,
+                                remaining_count = %s,
+                                is_active = TRUE,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = %s::uuid AND client_id = %s::uuid
+                            """,
+                            (meta_notes, notes or '', next_run_date.day, recurring_frequency_clean, next_run_date, remaining_count, existing_schedule_id, client_id)
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            INSERT INTO recurring_invoice_schedules
+                              (id, client_id, source_invoice_id, invoice_meta, notes, issue_day, frequency, next_run_date, remaining_count, is_active)
+                            VALUES
+                              (%s::uuid, %s::uuid, %s::uuid, %s, NULLIF(%s,''), %s, %s, %s, %s, TRUE)
+                            """,
+                            (str(uuid4()), client_id, iid, meta_notes, notes or '', next_run_date.day, recurring_frequency_clean, next_run_date, remaining_count)
+                        )
+                    msg = ('Invoice updated and recurring schedule saved.' if invoice_id else 'Invoice created and recurring schedule saved.')
+                else:
+                    if existing_schedule_id:
+                        cur.execute("UPDATE recurring_invoice_schedules SET is_active = FALSE, remaining_count = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s::uuid AND client_id = %s::uuid", (existing_schedule_id, client_id))
+                    msg = ('Invoice updated. Recurring was not scheduled because the total invoice count is 1.' if invoice_id else 'Invoice created. Recurring was not scheduled because the total invoice count is 1.')
+            else:
+                if existing_schedule_id:
+                    cur.execute("UPDATE recurring_invoice_schedules SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s::uuid AND client_id = %s::uuid", (existing_schedule_id, client_id))
+
+            generate_invoice_pdf(cur, iid)
+        return _client_tab_success_response(request, client_id, msg, active_tab=active_tab, return_section=return_section, return_subsection=return_subsection, return_client_id=return_client_id)
+    except Exception as e:
+        return _client_tab_error_response(request, client_id, str(e), active_tab=active_tab, return_section=return_section, return_subsection=return_subsection, return_client_id=return_client_id)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/accounting/save-invoice-item', response_class=HTMLResponse)
+def ui_accounting_save_invoice_item(
+    request: Request,
+    selected_client_id: str = Form(''),
+    return_subsection: str = Form('products_services'),
+    item_id: str = Form(''),
+    item_name: str = Form(...),
+    item_kind: str = Form('service'),
+    discount_mode: str = Form('fixed'),
+    default_amount: str = Form('0'),
+    default_description: str = Form(''),
 ):
     conn = get_conn(); conn.autocommit = True
     try:
         with conn.cursor() as cur:
-            due = _to_date(due_date)
-            if not due:
-                raise ValueError('Due date is required.')
-            iid = _create_invoice_row(cur, client_id, invoice_type, _safe_decimal(amount), date.today(), due, item_description, notes=notes, is_automated=False)
-            generate_invoice_pdf(cur, iid)
-        return render_client_workspace(request, client_id, message='Invoice generated.', active_tab=active_tab)
+            ensure_default_invoice_items(cur)
+            amount = _safe_decimal(default_amount)
+            kind = (item_kind or 'service').strip().lower()
+            if kind == 'discount':
+                invoice_type = 'discount_percent' if (discount_mode or '').strip().lower() == 'percent' else 'discount_fixed'
+                success_label = 'Discount'
+            elif kind == 'product':
+                invoice_type = 'product'
+                success_label = 'Product'
+            else:
+                invoice_type = 'service'
+                success_label = 'Service'
+            if item_id:
+                cur.execute(
+                    """
+                    UPDATE invoice_service_items
+                    SET item_name = %s, invoice_type = %s, default_amount = %s, default_description = NULLIF(%s,''), is_active = TRUE
+                    WHERE id = %s::uuid
+                    """,
+                    (item_name, invoice_type, amount, default_description, item_id)
+                )
+                msg = f'{success_label} updated.'
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO invoice_service_items (item_name, invoice_type, default_amount, default_description, is_active)
+                    VALUES (%s, %s, %s, NULLIF(%s,''), TRUE)
+                    """,
+                    (item_name, invoice_type, amount, default_description)
+                )
+                msg = f'{success_label} saved.'
+        url = f'/ui/accounting-dashboard?section=sales&subsection={return_subsection}'
+        if selected_client_id:
+            url += f'&client_id={selected_client_id}'
+        url += f'&message={quote_plus(msg)}'
+        return RedirectResponse(url=url, status_code=303)
+    except Exception as e:
+        url = f'/ui/accounting-dashboard?section=sales&subsection={return_subsection}&show_add=1'
+        if selected_client_id:
+            url += f'&client_id={selected_client_id}'
+        url += f'&error={quote_plus(str(e))}'
+        return RedirectResponse(url=url, status_code=303)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/accounting/toggle-invoice-item-active', response_class=HTMLResponse)
+def ui_accounting_toggle_invoice_item_active(
+    request: Request,
+    item_id: str = Form(...),
+    selected_client_id: str = Form(''),
+    return_subsection: str = Form('services'),
+    set_active: str = Form('0'),
+):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            ensure_default_invoice_items(cur)
+            desired_active = str(set_active or '0').strip() in {'1', 'true', 'yes', 'on'}
+            cur.execute(
+                """
+                UPDATE invoice_service_items
+                SET is_active = %s
+                WHERE id = %s::uuid
+                """,
+                (desired_active, item_id)
+            )
+            if cur.rowcount == 0:
+                raise ValueError('Invoice item not found.')
+        url = f'/ui/accounting-dashboard?section=sales&subsection={return_subsection}'
+        if selected_client_id:
+            url += f'&client_id={selected_client_id}'
+        url += f'&message={quote_plus("Reactivated" if desired_active else "Deactivated")}'
+        return RedirectResponse(url=url, status_code=303)
+    except Exception as e:
+        url = f'/ui/accounting-dashboard?section=sales&subsection={return_subsection}'
+        if selected_client_id:
+            url += f'&client_id={selected_client_id}'
+        url += f'&error={quote_plus(str(e))}'
+        return RedirectResponse(url=url, status_code=303)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/accounting/delete-invoice-item', response_class=HTMLResponse)
+def ui_accounting_delete_invoice_item(
+    request: Request,
+    item_id: str = Form(...),
+    selected_client_id: str = Form(''),
+    return_subsection: str = Form('products_services'),
+):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT item_name FROM invoice_service_items WHERE id = %s::uuid", (item_id,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError('Invoice item not found.')
+            item_name = row[0] or ''
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM client_invoices
+                WHERE item_description ILIKE %s OR notes ILIKE %s
+                """,
+                (f'%{item_name}%', f'%"item_name":"{item_name}%')
+            )
+            in_use = int(cur.fetchone()[0] or 0)
+            if in_use > 0:
+                raise ValueError('This item cannot be deleted because at least one invoice already uses it.')
+            cur.execute("UPDATE invoice_service_items SET is_active = FALSE WHERE id = %s::uuid", (item_id,))
+        url = f'/ui/accounting-dashboard?section=sales&subsection={return_subsection}'
+        if selected_client_id:
+            url += f'&client_id={selected_client_id}'
+        url += '&message=Deleted'
+        return RedirectResponse(url=url, status_code=303)
+    except Exception as e:
+        url = f'/ui/accounting-dashboard?section=sales&subsection={return_subsection}'
+        if selected_client_id:
+            url += f'&client_id={selected_client_id}'
+        url += f'&error={quote_plus(str(e))}'
+        return RedirectResponse(url=url, status_code=303)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/accounting/delete-invoice', response_class=HTMLResponse)
+def ui_accounting_delete_invoice(
+    request: Request,
+    invoice_id: str = Form(...),
+    selected_client_id: str = Form(''),
+    return_subsection: str = Form('invoices'),
+):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM client_invoices WHERE id = %s::uuid", (invoice_id,))
+        url = f'/ui/accounting-dashboard?section=sales&subsection={return_subsection}'
+        if selected_client_id:
+            url += f'&client_id={selected_client_id}'
+        url += '&message=Invoice+deleted'
+        return RedirectResponse(url=url, status_code=303)
+    except Exception as e:
+        url = f'/ui/accounting-dashboard?section=sales&subsection={return_subsection}'
+        if selected_client_id:
+            url += f'&client_id={selected_client_id}'
+        url += f'&error={quote_plus(str(e))}'
+        return RedirectResponse(url=url, status_code=303)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/save-invoice-item', response_class=HTMLResponse)
+
+def ui_save_invoice_item(
+    request: Request,
+    client_id: str = Form(...),
+    item_id: str = Form(''),
+    item_name: str = Form(...),
+    item_kind: str = Form('service'),
+    discount_mode: str = Form('fixed'),
+    default_amount: str = Form('0'),
+    default_description: str = Form(''),
+    active_tab: str = Form('billing'),
+):
+    conn = get_conn(); conn.autocommit = True
+    wants_json = (
+        request.headers.get('x-requested-with', '').lower() == 'xmlhttprequest'
+        or 'application/json' in (request.headers.get('accept', '') or '').lower()
+    )
+    try:
+        with conn.cursor() as cur:
+            ensure_default_invoice_items(cur)
+            amount = _safe_decimal(default_amount)
+            kind = (item_kind or 'service').strip().lower()
+            clean_name = (item_name or '').strip()
+            clean_desc = (default_description or '').strip()
+            if not clean_name:
+                raise ValueError('Item name is required.')
+            if kind == 'discount':
+                invoice_type = 'discount_percent' if (discount_mode or '').strip().lower() == 'percent' else 'discount_fixed'
+                success_label = 'Discount'
+            elif kind == 'product':
+                invoice_type = 'product'
+                success_label = 'Product'
+            else:
+                invoice_type = 'service'
+                success_label = 'Service'
+            if item_id:
+                cur.execute(
+                    """
+                    UPDATE invoice_service_items
+                    SET item_name = %s, invoice_type = %s, default_amount = %s, default_description = NULLIF(%s,''), is_active = TRUE
+                    WHERE id = %s::uuid
+                    RETURNING id::text
+                    """,
+                    (clean_name, invoice_type, amount, clean_desc, item_id)
+                )
+                row = cur.fetchone()
+                saved_id = (row[0] if row else item_id)
+                msg = f'{success_label} updated.'
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO invoice_service_items (item_name, invoice_type, default_amount, default_description, is_active)
+                    VALUES (%s, %s, %s, NULLIF(%s,''), TRUE)
+                    RETURNING id::text
+                    """,
+                    (clean_name, invoice_type, amount, clean_desc)
+                )
+                row = cur.fetchone()
+                saved_id = row[0] if row else ''
+                msg = f'{success_label} saved.'
+        if wants_json:
+            created_item = {
+                'id': saved_id,
+                'item_name': clean_name,
+                'default_description': clean_desc,
+                'default_amount': str(amount),
+                'default_amount_display': format_currency(amount),
+                'price_display': format_currency(amount),
+                'invoice_type': invoice_type,
+                'is_active': True,
+                'is_discount': str(invoice_type).startswith('discount_'),
+                'is_service': invoice_type == 'service',
+                'is_product': invoice_type == 'product',
+                'is_taxable': invoice_type == 'product',
+                'discount_mode': 'percent' if invoice_type == 'discount_percent' else ('fixed' if invoice_type == 'discount_fixed' else ''),
+            }
+            return JSONResponse({'ok': True, 'message': msg, 'item': created_item})
+        return _client_tab_success_response(request, client_id, msg, active_tab=active_tab)
+    except Exception as e:
+        if wants_json:
+            return JSONResponse({'ok': False, 'error': str(e)}, status_code=400)
+        return _client_tab_error_response(request, client_id, str(e), active_tab=active_tab)
+    finally:
+        conn.close()
+
+
+
+@app.post('/ui/delete-invoice-item', response_class=HTMLResponse)
+def ui_delete_invoice_item(request: Request, client_id: str = Form(...), item_id: str = Form(...), active_tab: str = Form('billing')):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT item_name FROM invoice_service_items WHERE id = %s::uuid", (item_id,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError('Invoice item not found.')
+            item_name = row[0] or ''
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM client_invoices
+                WHERE item_description ILIKE %s OR notes ILIKE %s
+                """,
+                (f'%{item_name}%', f'%"item_name":"{item_name}%')
+            )
+            in_use = int(cur.fetchone()[0] or 0)
+            if in_use > 0:
+                return render_client_workspace(request, client_id, error='This invoice item cannot be deleted because at least one invoice already uses it.', active_tab=active_tab)
+            cur.execute("UPDATE invoice_service_items SET is_active = FALSE WHERE id = %s::uuid", (item_id,))
+        return render_client_workspace(request, client_id, message='Invoice item deleted.', active_tab=active_tab)
     except Exception as e:
         return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
     finally:
         conn.close()
 
 
-@app.post('/ui/toggle-invoice-paid', response_class=HTMLResponse)
-def ui_toggle_invoice_paid(request: Request, client_id: str = Form(...), invoice_id: str = Form(...), mark_paid: str = Form('0'), active_tab: str = Form('billing')):
+@app.post('/ui/send-payment-warning', response_class=HTMLResponse)
+def ui_send_payment_warning(request: Request, client_id: str = Form(...), active_tab: str = Form('billing')):
     conn = get_conn(); conn.autocommit = True
     try:
         with conn.cursor() as cur:
-            if mark_paid == '1':
-                cur.execute("UPDATE client_invoices SET status = 'paid', paid_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = %s::uuid AND client_id = %s::uuid", (invoice_id, client_id))
+            profile = fetch_client_profile(cur, client_id, include_sensitive=False) or {}
+            invoices = fetch_client_invoices(cur, client_id, 200)
+            snapshot = build_billing_snapshot(profile, invoices)
+            target = None
+            for inv in invoices:
+                if (inv.get('status') or 'unpaid') == 'paid':
+                    continue
+                due = _to_date(inv.get('due_date'))
+                if snapshot.get('has_past_due') and due and due < date.today():
+                    if target is None or due < _to_date(target.get('due_date')):
+                        target = inv
+                elif target is None:
+                    target = inv
+            if not target:
+                return render_client_workspace(request, client_id, error='No unpaid invoice was found for this client.', active_tab=active_tab)
+            inv_no = target.get('invoice_number') or 'invoice'
+            inv_date = format_short_date(target.get('issue_date')) or '—'
+            amt = target.get('amount_display') or format_currency(target.get('amount') or 0)
+            if snapshot.get('has_past_due'):
+                subject = f'Payment request: {inv_no} is past due'
+                body = f'Invoice {inv_no} dated {inv_date} for {amt} is past due. Please submit payment as soon as possible. Thank you for your business.'
+                source = f'manual_payment_warning:{target.get("id")}'
             else:
-                cur.execute("UPDATE client_invoices SET status = 'unpaid', paid_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = %s::uuid AND client_id = %s::uuid", (invoice_id, client_id))
-        return render_client_workspace(request, client_id, message='Invoice updated.', active_tab=active_tab)
+                subject = f'Payment reminder: {inv_no}'
+                body = f'This is a reminder that invoice {inv_no} dated {inv_date} for {amt} is outstanding. Please submit payment when available. Thank you for your business.'
+                source = f'manual_payment_reminder:{target.get("id")}'
+            _queue_client_email_log(cur, client_id, profile, subject, body, source, email_type='billing')
+        return render_client_workspace(request, client_id, message='Payment warning email queued.', active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+    finally:
+        conn.close()
+
+
+
+@app.post('/ui/toggle-invoice-paid', response_class=HTMLResponse)
+@app.post('/ui/mark-invoice-paid', response_class=HTMLResponse)
+def ui_toggle_invoice_paid(
+    request: Request,
+    client_id: str = Form(...),
+    invoice_id: str = Form(...),
+    mark_paid: str = Form('toggle'),
+    paid_date: str = Form(''),
+    payment_method: str = Form(''),
+    payment_card_id: str = Form(''),
+    payment_amount: List[str] = Form([]),
+    split_payment_method: List[str] = Form([]),
+    split_payment_card_id: List[str] = Form([]),
+    split_payment_detail: List[str] = Form([]),
+    active_tab: str = Form('billing')
+):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            ensure_invoice_payment_columns(cur)
+            ensure_invoice_payments_table(cur)
+            cur.execute("""
+                SELECT COALESCE(status,'unpaid'), COALESCE(amount,0)::text
+                FROM client_invoices
+                WHERE id = %s::uuid AND client_id = %s::uuid
+            """, (invoice_id, client_id))
+            row = cur.fetchone()
+            if not row:
+                return render_client_workspace(request, client_id, error='Invoice not found.', active_tab=active_tab)
+            current_status = str(row[0] or 'unpaid').strip().lower()
+            invoice_amount = _safe_decimal(row[1] or '0')
+            raw_mark = str(mark_paid or 'toggle').strip().lower()
+            new_status = 'paid' if raw_mark in {'1','true','yes','paid'} else ('unpaid' if raw_mark in {'0','false','no','unpaid'} else ('unpaid' if current_status == 'paid' else 'paid'))
+            if new_status == 'paid':
+                raw_paid = str(paid_date or '').strip()
+                if not raw_paid:
+                    return render_client_workspace(request, client_id, error='Payment date is required.', active_tab=active_tab)
+                try:
+                    paid_dt = datetime.combine(date.fromisoformat(raw_paid), datetime.min.time())
+                except Exception:
+                    return render_client_workspace(request, client_id, error='Invalid payment date. Use YYYY-MM-DD.', active_tab=active_tab)
+                profile = fetch_client_profile(cur, client_id, include_sensitive=False) or {}
+                payment_profile = fetch_billing_payment_profile(cur, client_id)
+                cards = fetch_saved_payment_methods(cur, client_id)
+                raw_amounts = list(payment_amount or [])
+                raw_methods = list(split_payment_method or [])
+                raw_cards = list(split_payment_card_id or [])
+                raw_details = list(split_payment_detail or [])
+                if not raw_amounts:
+                    raw_amounts = [str(invoice_amount)]
+                    raw_methods = [payment_method or profile.get('preferred_payment_method') or 'zelle']
+                    raw_cards = [payment_card_id or '']
+                    raw_details = ['']
+                payments_to_save = []
+                total_paid = Decimal('0.00')
+                for idx, amt_raw in enumerate(raw_amounts):
+                    amt = _safe_decimal(amt_raw or '0')
+                    if amt <= 0:
+                        continue
+                    method_raw = raw_methods[idx] if idx < len(raw_methods) else (payment_method or profile.get('preferred_payment_method') or 'zelle')
+                    method_clean = _normalize_payment_method(method_raw)
+                    card_raw = raw_cards[idx] if idx < len(raw_cards) else (payment_card_id or '')
+                    detail_raw = raw_details[idx] if idx < len(raw_details) else ''
+                    detail, card_id_clean, card_snapshot = _payment_detail_for_invoice_payment(
+                        cur, client_id, method_clean, explicit_detail=detail_raw, payment_card_id=card_raw,
+                        profile=profile, payment_profile=payment_profile, cards=cards
+                    )
+                    payments_to_save.append({'amount': amt, 'method': method_clean, 'detail': detail, 'card_id': card_id_clean, 'card_snapshot': card_snapshot})
+                    total_paid += amt
+                if not payments_to_save:
+                    return render_client_workspace(request, client_id, error='Enter at least one payment amount.', active_tab=active_tab)
+                # Partial payments are allowed and must be cumulative.
+                # Do NOT delete prior partial-payment rows when applying another payment.
+                # Remove Payment is the separate path below and clears all payment rows intentionally.
+                existing_payment_rows = fetch_invoice_payments_for_invoice(cur, invoice_id)
+                existing_paid_total = sum((_safe_decimal(p.get('amount') or '0') for p in existing_payment_rows), Decimal('0.00'))
+
+                for p in payments_to_save:
+                    cur.execute("""
+                        INSERT INTO invoice_payments
+                            (id, invoice_id, client_id, paid_at, amount, payment_method, payment_detail, payment_card_id, payment_card_snapshot)
+                        VALUES
+                            (%s::uuid, %s::uuid, %s::uuid, %s, %s, %s, NULLIF(%s,''), NULLIF(%s,'')::uuid, NULLIF(%s,''))
+                    """, (str(uuid4()), invoice_id, client_id, paid_dt, p['amount'], p['method'], p['detail'], p['card_id'], p['card_snapshot']))
+
+                total_applied_now = total_paid
+                total_paid_after = existing_paid_total + total_applied_now
+                balance_due_after = invoice_amount - total_paid_after
+                if balance_due_after < Decimal('0.00'):
+                    balance_due_after = Decimal('0.00')
+
+                first = payments_to_save[0]
+                detail_for_invoice = first.get('detail') or first.get('card_snapshot') or ''
+                if len(payments_to_save) > 1:
+                    detail_for_invoice = 'Split payment: ' + '; '.join([
+                        f"{format_currency(p['amount'])} {PAYMENT_METHOD_LABELS.get(p['method'], p['method'].title())}" + (f" ({p['detail'] or p['card_snapshot']})" if (p.get('detail') or p.get('card_snapshot')) else '')
+                        for p in payments_to_save
+                    ])
+                invoice_status_to_save = 'paid' if total_paid_after >= invoice_amount else 'partial'
+                cur.execute("""
+                    UPDATE client_invoices
+                    SET status=%s, paid_at=%s, payment_method=%s, payment_detail=NULLIF(%s,''),
+                        payment_card_id=NULLIF(%s,'')::uuid, payment_card_snapshot=NULLIF(%s,''), updated_at=CURRENT_TIMESTAMP
+                    WHERE id=%s::uuid AND client_id=%s::uuid
+                """, (invoice_status_to_save, paid_dt, first['method'], detail_for_invoice, first['card_id'], first['card_snapshot'], invoice_id, client_id))
+                try:
+                    generate_invoice_pdf(cur, invoice_id)
+                except Exception:
+                    pass
+                if total_paid_after >= invoice_amount:
+                    msg = f"Payment applied: {format_currency(total_applied_now)} received. Invoice is now paid in full."
+                else:
+                    msg = f"Partial payment applied: {format_currency(total_applied_now)} received, {format_currency(total_paid_after)} paid total, {format_currency(balance_due_after)} invoice balance left to pay."
+            else:
+                cur.execute("DELETE FROM invoice_payments WHERE invoice_id = %s::uuid AND client_id = %s::uuid", (invoice_id, client_id))
+                cur.execute("UPDATE client_invoices SET status='unpaid', paid_at=NULL, payment_method=NULL, payment_detail=NULL, payment_card_id=NULL, payment_card_snapshot=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=%s::uuid AND client_id=%s::uuid", (invoice_id, client_id))
+                try:
+                    generate_invoice_pdf(cur, invoice_id)
+                except Exception:
+                    pass
+                msg = 'Invoice marked unpaid and payment details cleared.'
+        return _client_tab_success_response(request, client_id, msg, active_tab=active_tab)
+    except Exception as e:
+        return _client_tab_error_response(request, client_id, str(e), active_tab=active_tab)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/delete-invoice-payment', response_class=HTMLResponse)
+def ui_delete_invoice_payment(
+    request: Request,
+    client_id: str = Form(...),
+    invoice_id: str = Form(...),
+    payment_id: str = Form(...),
+    active_tab: str = Form('billing')
+):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            ensure_invoice_payment_columns(cur)
+            ensure_invoice_payments_table(cur)
+            cur.execute("""
+                SELECT COALESCE(amount,0)::text
+                FROM client_invoices
+                WHERE id = %s::uuid AND client_id = %s::uuid
+            """, (invoice_id, client_id))
+            inv_row = cur.fetchone()
+            if not inv_row:
+                return render_client_workspace(request, client_id, error='Invoice not found.', active_tab=active_tab)
+            invoice_amount = _safe_decimal(inv_row[0] or '0')
+            cur.execute("""
+                DELETE FROM invoice_payments
+                WHERE id = %s::uuid AND invoice_id = %s::uuid AND client_id = %s::uuid
+            """, (payment_id, invoice_id, client_id))
+            if cur.rowcount == 0:
+                return render_client_workspace(request, client_id, error='Selected payment was not found or was already removed.', active_tab=active_tab)
+
+            remaining_payment_rows = fetch_invoice_payments_for_invoice(cur, invoice_id)
+            remaining_total = sum((_safe_decimal(p.get('amount') or '0') for p in remaining_payment_rows), Decimal('0.00'))
+            balance_due = invoice_amount - remaining_total
+            if balance_due < Decimal('0.00'):
+                balance_due = Decimal('0.00')
+
+            if not remaining_payment_rows:
+                cur.execute("""
+                    UPDATE client_invoices
+                    SET status='unpaid', paid_at=NULL, payment_method=NULL, payment_detail=NULL,
+                        payment_card_id=NULL, payment_card_snapshot=NULL, updated_at=CURRENT_TIMESTAMP
+                    WHERE id=%s::uuid AND client_id=%s::uuid
+                """, (invoice_id, client_id))
+                msg = 'Selected payment removed. Invoice is now unpaid.'
+            else:
+                new_status = 'paid' if remaining_total >= invoice_amount and invoice_amount > Decimal('0.00') else 'partial'
+                cur.execute("""
+                    SELECT COALESCE(payment_method,''), COALESCE(payment_detail,''), payment_card_id::text,
+                           COALESCE(payment_card_snapshot,''), paid_at
+                    FROM invoice_payments
+                    WHERE invoice_id = %s::uuid AND client_id = %s::uuid
+                    ORDER BY paid_at DESC, created_at DESC
+                    LIMIT 1
+                """, (invoice_id, client_id))
+                latest = cur.fetchone() or ('', '', '', '', None)
+                if len(remaining_payment_rows) > 1:
+                    detail_for_invoice = 'Multiple payments: ' + '; '.join([p.get('summary') or '' for p in remaining_payment_rows if p.get('summary')])
+                else:
+                    only_payment = remaining_payment_rows[0]
+                    detail_for_invoice = only_payment.get('payment_detail') or only_payment.get('payment_card_snapshot') or ''
+                cur.execute("""
+                    UPDATE client_invoices
+                    SET status=%s, paid_at=%s, payment_method=NULLIF(%s,''), payment_detail=NULLIF(%s,''),
+                        payment_card_id=NULLIF(%s,'')::uuid, payment_card_snapshot=NULLIF(%s,''), updated_at=CURRENT_TIMESTAMP
+                    WHERE id=%s::uuid AND client_id=%s::uuid
+                """, (new_status, latest[4], latest[0] or '', detail_for_invoice, latest[2] or '', latest[3] or '', invoice_id, client_id))
+                if new_status == 'paid':
+                    msg = f'Selected payment removed. Remaining payments still cover the invoice total. Invoice is paid.'
+                else:
+                    msg = f'Selected payment removed. Invoice balance left to pay: {format_currency(balance_due)}.'
+            try:
+                generate_invoice_pdf(cur, invoice_id)
+            except Exception:
+                pass
+        return _client_tab_success_response(request, client_id, msg, active_tab=active_tab)
+    except Exception as e:
+        return _client_tab_error_response(request, client_id, str(e), active_tab=active_tab)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/delete-invoice', response_class=HTMLResponse)
+def ui_delete_invoice(request: Request, client_id: str = Form(...), invoice_id: str = Form(...), active_tab: str = Form('billing')):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(pdf_file_path,'') FROM client_invoices WHERE id = %s::uuid AND client_id = %s::uuid", (invoice_id, client_id))
+            row = cur.fetchone()
+            if not row:
+                return render_client_workspace(request, client_id, error='Invoice not found.', active_tab=active_tab)
+            pdf_path = row[0] or ''
+            cur.execute("DELETE FROM client_invoices WHERE id = %s::uuid AND client_id = %s::uuid", (invoice_id, client_id))
+            if pdf_path and os.path.exists(pdf_path):
+                try:
+                    os.remove(pdf_path)
+                except Exception:
+                    pass
+        return render_client_workspace(request, client_id, message='Invoice deleted.', active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+    finally:
+        conn.close()
+
+
+
+
+@app.post('/ui/delete-invoices-bulk', response_class=HTMLResponse)
+def ui_delete_invoices_bulk(request: Request, client_id: str = Form(...), selected_invoice_ids: str = Form(''), active_tab: str = Form('billing')):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        raw_ids = [s.strip() for s in str(selected_invoice_ids or '').split(',') if s.strip()]
+        if not raw_ids:
+            return render_client_workspace(request, client_id, error='Select at least one invoice to delete.', active_tab=active_tab)
+        deleted_count = 0
+        with conn.cursor() as cur:
+            for invoice_id in raw_ids:
+                cur.execute("SELECT COALESCE(pdf_file_path,'') FROM client_invoices WHERE id = %s::uuid AND client_id = %s::uuid", (invoice_id, client_id))
+                row = cur.fetchone()
+                if not row:
+                    continue
+                pdf_path = row[0] or ''
+                cur.execute("DELETE FROM client_invoices WHERE id = %s::uuid AND client_id = %s::uuid", (invoice_id, client_id))
+                deleted_count += 1
+                if pdf_path and os.path.exists(pdf_path):
+                    try:
+                        os.remove(pdf_path)
+                    except Exception:
+                        pass
+        if deleted_count == 0:
+            return render_client_workspace(request, client_id, error='No matching invoices were deleted.', active_tab=active_tab)
+        label = 'invoice' if deleted_count == 1 else 'invoices'
+        return render_client_workspace(request, client_id, message=f'{deleted_count} {label} deleted.', active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/stop-recurring-invoice', response_class=HTMLResponse)
+def ui_stop_recurring_invoice(request: Request, client_id: str = Form(...), recurring_id: str = Form(...), active_tab: str = Form('billing')):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            ensure_recurring_invoice_table(cur)
+            cur.execute(
+                "UPDATE recurring_invoice_schedules SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s::uuid AND client_id = %s::uuid",
+                (recurring_id, client_id)
+            )
+        return render_client_workspace(request, client_id, message='Recurring invoice stopped.', active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/delete-recurring-invoice', response_class=HTMLResponse)
+def ui_delete_recurring_invoice(request: Request, client_id: str = Form(...), recurring_id: str = Form(...), active_tab: str = Form('billing')):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            ensure_recurring_invoice_table(cur)
+            cur.execute(
+                "DELETE FROM recurring_invoice_schedules WHERE id = %s::uuid AND client_id = %s::uuid",
+                (recurring_id, client_id)
+            )
+        return render_client_workspace(request, client_id, message='Recurring invoice setup deleted.', active_tab=active_tab)
     except Exception as e:
         return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
     finally:
@@ -3271,6 +11425,35 @@ def client_dashboard(client_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+_TEMPLATE_MISSING_TONE_RE = re.compile(r"template not found for tone level\s+(\d+)", re.IGNORECASE)
+
+
+def run_dispute_round_json_with_template_fallback(cur, client_id: str, requested_round_number: int, include_personal_info: bool, client_email: str):
+    requested_round_number = max(1, int(requested_round_number or 1))
+    last_template_error = None
+    for effective_round_number in range(requested_round_number, 0, -1):
+        try:
+            cur.execute(
+                "SELECT process_dispute_round_run_json(%s,%s,%s,%s,%s,%s)::text",
+                (client_id, effective_round_number, include_personal_info, SECRET_KEY, SENDER_NAME, client_email)
+            )
+            payload = cur.fetchone()[0]
+            return json.loads(payload), effective_round_number
+        except Exception as e:
+            message = str(e or "")
+            if _TEMPLATE_MISSING_TONE_RE.search(message):
+                last_template_error = e
+                continue
+            raise
+    if last_template_error:
+        raise RuntimeError(
+            f"Unable to generate the round scaffolding for dispute round {requested_round_number}. "
+            f"The installed SQL dispute templates do not cover that tone level yet. "
+            f"Original database error: {last_template_error}"
+        )
+    raise RuntimeError(f"Unable to generate the round scaffolding for dispute round {requested_round_number}.")
+
 @app.post("/process-round")
 def process_round(req: ProcessRoundRequest):
     try:
@@ -3279,13 +11462,17 @@ def process_round(req: ProcessRoundRequest):
         conn = get_conn()
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT process_dispute_round_run_json(%s,%s,%s,%s,%s,%s)::text",
-                (req.client_id, req.round_number, req.include_personal_info, SECRET_KEY, SENDER_NAME, req.client_email)
+            result_json, effective_round_number = run_dispute_round_json_with_template_fallback(
+                cur,
+                req.client_id,
+                req.round_number,
+                req.include_personal_info,
+                req.client_email,
             )
-            result_text = cur.fetchone()[0]
         conn.close()
-        return json.loads(result_text)
+        if effective_round_number != int(req.round_number or 1):
+            result_json["template_fallback_round_used"] = effective_round_number
+        return result_json
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -3348,6 +11535,174 @@ def ui_open_letter(letter_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/ui/load-letter-editor", response_class=HTMLResponse)
+def ui_load_letter_editor(
+    request: Request,
+    client_id: str = Form(...),
+    letter_id: str = Form(...),
+    active_tab: str = Form("disputes"),
+    dispute_bureau: str = Form("equifax"),
+):
+    return render_client_workspace(request, client_id, active_tab=active_tab, dispute_bureau=dispute_bureau, selected_letter_id=letter_id)
+
+
+@app.post("/ui/save-letter", response_class=HTMLResponse)
+def ui_save_letter(
+    request: Request,
+    client_id: str = Form(...),
+    letter_id: str = Form(...),
+    bureau: str = Form(...),
+    round_number: int = Form(...),
+    subject: str = Form(""),
+    letter_text: str = Form(""),
+    use_client_signature: bool = Form(False),
+    active_tab: str = Form("disputes"),
+):
+    try:
+        bureau = (bureau or '').strip().lower()
+        if bureau not in BUREAUS:
+            raise ValueError("Choose a valid bureau.")
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT round_run_id::text FROM letters WHERE id = %s AND client_id = %s", (letter_id, client_id))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("Saved letter not found.")
+            round_run_id = row[0] if row else ''
+            cur.execute("""
+                UPDATE letters
+                SET bureau = %s,
+                    subject = %s,
+                    letter_text = %s,
+                    use_client_signature = %s
+                WHERE id = %s
+                  AND client_id = %s
+            """, (bureau, subject.strip(), letter_text.strip(), bool(use_client_signature), letter_id, client_id))
+            if round_run_id:
+                cur.execute("""
+                    INSERT INTO round_run_dispute_meta (round_run_id, client_id, round_number)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (round_run_id) DO UPDATE
+                    SET round_number = EXCLUDED.round_number
+                """, (round_run_id, client_id, max(int(round_number or 1), 1)))
+            generate_and_attach_pdf(cur, letter_id)
+            try:
+                upsert_bureau_round_override(cur, client_id, bureau, max(int(round_number or 1), 1) + 1)
+            except Exception:
+                pass
+        conn.close()
+        return render_client_workspace(request, client_id, message="Saved letter updated and PDF re-saved.", active_tab=active_tab, dispute_bureau=bureau, selected_letter_id=letter_id)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab, dispute_bureau=bureau if 'bureau' in locals() else 'equifax', selected_letter_id=letter_id)
+
+
+@app.post("/ui/delete-letter", response_class=HTMLResponse)
+def ui_delete_letter(
+    request: Request,
+    client_id: str = Form(...),
+    letter_id: str = Form(...),
+    active_tab: str = Form("disputes"),
+    dispute_bureau: str = Form("equifax"),
+):
+    try:
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT round_run_id::text, COALESCE(bureau::text, '') FROM letters WHERE id = %s AND client_id = %s", (letter_id, client_id))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("Saved letter not found.")
+            round_run_id, bureau = row
+            cur.execute("DELETE FROM letters WHERE id = %s AND client_id = %s", (letter_id, client_id))
+            if round_run_id:
+                cur.execute("DELETE FROM round_run_dispute_meta WHERE round_run_id = %s AND NOT EXISTS (SELECT 1 FROM letters WHERE round_run_id = %s)", (round_run_id, round_run_id))
+        conn.close()
+        return render_client_workspace(request, client_id, message="Saved letter deleted.", active_tab=active_tab, dispute_bureau=(bureau or dispute_bureau))
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab, dispute_bureau=dispute_bureau)
+
+
+@app.post("/ui/set-bureau-round-override", response_class=HTMLResponse)
+def ui_set_bureau_round_override(
+    request: Request,
+    client_id: str = Form(...),
+    bureau: str = Form(...),
+    current_round_number: int = Form(...),
+    active_tab: str = Form("disputes"),
+):
+    try:
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            upsert_bureau_round_override(cur, client_id, bureau, current_round_number)
+        conn.close()
+        return render_client_workspace(request, client_id, message=f"Next {bureau.title()} round set to {max(int(current_round_number or 1), 1)}.", active_tab=active_tab, dispute_bureau=bureau)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab, dispute_bureau=bureau)
+
+
+@app.post("/ui/clear-bureau-round-override", response_class=HTMLResponse)
+def ui_clear_bureau_round_override(
+    request: Request,
+    client_id: str = Form(...),
+    bureau: str = Form(...),
+    active_tab: str = Form("disputes"),
+):
+    try:
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            clear_bureau_round_override(cur, client_id, bureau)
+        conn.close()
+        return render_client_workspace(request, client_id, message=f"Manual {bureau.title()} round override cleared.", active_tab=active_tab, dispute_bureau=bureau)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab, dispute_bureau=bureau)
+
+
+
+@app.post("/ui/load-custom-template", response_class=HTMLResponse)
+def ui_load_custom_template(
+    request: Request,
+    client_id: str = Form(...),
+    template_id: str = Form(...),
+    active_tab: str = Form("disputes"),
+    dispute_bureau: str = Form("equifax"),
+):
+    return render_client_workspace(request, client_id, active_tab=active_tab, dispute_bureau=dispute_bureau, selected_template_id=template_id)
+
+
+@app.post("/ui/save-custom-template", response_class=HTMLResponse)
+async def ui_save_custom_template(
+    request: Request,
+    client_id: str = Form(...),
+    bureau: str = Form("equifax"),
+    template_file: UploadFile = File(None),
+    active_tab: str = Form("disputes"),
+    dispute_bureau: str = Form("equifax"),
+):
+    try:
+        saved = save_custom_letter_template_upload(template_file, bureau)
+        return render_client_workspace(request, client_id, message=f"Template '{saved.get('file_name')}' uploaded.", active_tab=active_tab, dispute_bureau=dispute_bureau or bureau, selected_template_id=saved.get('id'))
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab, dispute_bureau=dispute_bureau or bureau)
+
+
+@app.post("/ui/delete-custom-template", response_class=HTMLResponse)
+def ui_delete_custom_template(
+    request: Request,
+    client_id: str = Form(...),
+    template_id: str = Form(...),
+    active_tab: str = Form("disputes"),
+    dispute_bureau: str = Form("equifax"),
+):
+    try:
+        if not delete_custom_letter_template(template_id):
+            raise ValueError("Template not found.")
+        return render_client_workspace(request, client_id, message="Template deleted.", active_tab=active_tab, dispute_bureau=dispute_bureau)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab, dispute_bureau=dispute_bureau)
+
 # ---------------------------
 # UI routes
 # ---------------------------
@@ -3376,357 +11731,3499 @@ def _get_public_tables_with_client_id(cur):
     return [r[0] for r in cur.fetchall()]
 
 
-def _safe_merge_client_records(cur, source_client_id: str, target_client_id: str):
-    if source_client_id == target_client_id:
-        raise ValueError("Source and target client cannot be the same.")
-
-    cur.execute("""
-        SELECT first_name, middle_name, last_name, suffix, phone, primary_email, email, secondary_email,
-               date_of_birth, ssn_last4, ssn_full_enc, is_active, lifecycle_status
-        FROM clients WHERE id = %s
-    """, (source_client_id,))
-    src = cur.fetchone()
-    cur.execute("""
-        SELECT first_name, middle_name, last_name, suffix, phone, primary_email, email, secondary_email,
-               date_of_birth, ssn_last4, ssn_full_enc, is_active, lifecycle_status
-        FROM clients WHERE id = %s
-    """, (target_client_id,))
-    tgt = cur.fetchone()
-    if not src or not tgt:
-        raise ValueError("Source or target client was not found.")
-
-    updates = {
-        "middle_name": tgt[1] or src[1],
-        "suffix": tgt[3] or src[3],
-        "phone": tgt[4] or src[4],
-        "primary_email": tgt[5] or src[5],
-        "email": tgt[6] or src[6] or tgt[5] or src[5],
-        "secondary_email": tgt[7] or src[7],
-        "date_of_birth": tgt[8] or src[8],
-        "ssn_last4": tgt[9] or src[9],
-        "ssn_full_enc": tgt[10] or src[10],
-        "is_active": bool(tgt[11] or src[11]),
-        "lifecycle_status": tgt[12] or src[12] or "candidate",
-    }
-    cur.execute("""
-        UPDATE clients
-        SET middle_name = %s,
-            suffix = %s,
-            phone = %s,
-            primary_email = %s,
-            email = %s,
-            secondary_email = %s,
-            date_of_birth = %s,
-            ssn_last4 = %s,
-            ssn_full_enc = %s,
-            is_active = %s,
-            lifecycle_status = %s,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = %s
-    """, (
-        updates["middle_name"], updates["suffix"], updates["phone"], updates["primary_email"],
-        updates["email"], updates["secondary_email"], updates["date_of_birth"], updates["ssn_last4"],
-        updates["ssn_full_enc"], updates["is_active"], updates["lifecycle_status"], target_client_id
-    ))
-
-    for table_name in _get_public_tables_with_client_id(cur):
-        q = sql.SQL("UPDATE {} SET client_id = %s WHERE client_id = %s").format(sql.Identifier(table_name))
-        cur.execute(q, (target_client_id, source_client_id))
-
-    cur.execute("UPDATE client_associations SET primary_client_id = %s WHERE primary_client_id = %s", (target_client_id, source_client_id))
-    cur.execute("UPDATE client_associations SET associated_client_id = %s WHERE associated_client_id = %s", (target_client_id, source_client_id))
-    cur.execute("DELETE FROM client_associations WHERE primary_client_id = associated_client_id")
-    cur.execute("""
-        DELETE FROM client_associations a
-        USING client_associations b
-        WHERE a.ctid < b.ctid
-          AND a.primary_client_id = b.primary_client_id
-          AND a.associated_client_id = b.associated_client_id
-          AND COALESCE(a.relationship_label,'') = COALESCE(b.relationship_label,'')
-    """)
-
-    cur.execute("""
-        SELECT 1 FROM client_addresses
-        WHERE client_id = %s AND is_current = TRUE
-        LIMIT 1
-    """, (target_client_id,))
-    tgt_addr = cur.fetchone()
-    if not tgt_addr:
-        cur.execute("""
-            INSERT INTO client_addresses (client_id, is_current, line1, apt_unit, line2, city, state, zip)
-            SELECT %s, TRUE, line1, apt_unit, line2, city, state, zip
-            FROM client_addresses
-            WHERE client_id = %s AND is_current = TRUE
-            ORDER BY created_at DESC
-            LIMIT 1
-        """, (target_client_id, source_client_id))
-
-    cur.execute("DELETE FROM client_associations WHERE primary_client_id = %s OR associated_client_id = %s", (source_client_id, source_client_id))
-    cur.execute("DELETE FROM clients WHERE id = %s", (source_client_id,))
 
 
 def _safe_delete_client_record(cur, client_id: str):
     for table_name in _get_public_tables_with_client_id(cur):
         q = sql.SQL("DELETE FROM {} WHERE client_id = %s").format(sql.Identifier(table_name))
         cur.execute(q, (client_id,))
-    cur.execute("DELETE FROM client_associations WHERE primary_client_id = %s OR associated_client_id = %s", (client_id, client_id))
+    cur.execute("DELETE FROM client_associations WHERE client_id = %s OR associated_client_id = %s", (client_id, client_id))
     cur.execute("DELETE FROM clients WHERE id = %s", (client_id,))
 
 
-@app.get("/", response_class=HTMLResponse)
-def ui_home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+@app.post("/ui/delete-client", response_class=HTMLResponse)
+def ui_delete_client(
+    request: Request,
+    client_id: str = Form(...),
+):
+    try:
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            profile = fetch_client_profile(cur, client_id, include_sensitive=False)
+            if not profile:
+                return templates.TemplateResponse("index.html", {"request": request, "error": "Client not found."})
+            display_name = profile.get("client_name") or " ".join(
+                [x for x in [profile.get("first_name"), profile.get("middle_name"), profile.get("last_name")] if x]
+            ).strip() or "Client"
+            _safe_delete_client_record(cur, client_id)
+        conn.close()
+        response = templates.TemplateResponse("index.html", {"request": request, "message": f"{display_name} deleted.", "page_title": "Lobby",
+        "software_name": SOFTWARE_NAME,
+        "software_tagline": SOFTWARE_TAGLINE,
+        "software_name": SOFTWARE_NAME,
+        "software_tagline": SOFTWARE_TAGLINE,
+        "theme_catalog": THEME_CATALOG,
+        "current_theme": active_theme_background_for_request(request, "login"),
+        "active_theme_key": get_active_theme_key(request),
+        "theme_runtime": active_theme_runtime_for_request(request, "login"), "active_module": "lobby", "dashboard_summary": get_main_dashboard_snapshot(), "current_client": get_current_client_context(request)})
+        if request.cookies.get("crm_current_client_id") == client_id:
+            clear_current_client_cookie(response)
+        return response
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return render_client_workspace(request, client_id, error=str(e), active_tab="overview")
 
 
-@app.get("/ui/search", response_class=HTMLResponse)
-def ui_search(request: Request, q: str = ""):
-    q = (q or "").strip()
-    if not q:
-        return templates.TemplateResponse("index.html", {"request": request, "error": "Enter a search term."})
 
-    like = f"%{q}%"
-    digits = re.sub(r"\D+", "", q)
-    results = []
+
+def _money_display(value) -> str:
+    try:
+        return f"${Decimal(value or 0):,.2f}"
+    except Exception:
+        return "$0.00"
+
+
+def get_main_dashboard_snapshot():
+    snapshot = {
+        "active_clients": 0,
+        "prospects": 0,
+        "open_invoices_count": 0,
+        "open_invoices_amount": "$0.00",
+        "followups_due_7d": 0,
+        "pending_doc_review": 0,
+        "appointments_next_7d": 0,
+        "open_upload_requests": 0,
+        "latest_backup_name": "No back-up yet",
+        "latest_backup_when": "Create your first back-up from Settings → Back-Up.",
+        "data_warning": "",
+    }
+
+    latest = next(iter(sorted(BACKUP_DIR.glob("*.zip"), key=lambda x: x.stat().st_mtime, reverse=True)), None)
+    if latest:
+        snapshot["latest_backup_name"] = latest.name
+        snapshot["latest_backup_when"] = datetime.fromtimestamp(latest.stat().st_mtime).strftime("%m/%d/%Y %I:%M %p")
 
     try:
         conn = get_conn()
         with conn.cursor() as cur:
-            try:
-                if digits and len(digits) >= 4:
-                    cur.execute("""
-                        SELECT id::text, first_name, last_name, phone, email, status::text
-                        FROM clients
-                        WHERE COALESCE(first_name,'') ILIKE %s
-                           OR COALESCE(last_name,'') ILIKE %s
-                           OR COALESCE(phone,'') ILIKE %s
-                           OR COALESCE(email,'') ILIKE %s
-                           OR COALESCE(status::text,'') ILIKE %s
-                           OR COALESCE(ssn_last4,'') ILIKE %s
-                        ORDER BY last_name NULLS LAST, first_name NULLS LAST
-                        LIMIT 50
-                    """, (like, like, like, like, like, f"%{digits[-4:]}%"))
-                else:
-                    cur.execute("""
-                        SELECT id::text, first_name, last_name, phone, email, status::text
-                        FROM clients
-                        WHERE COALESCE(first_name,'') ILIKE %s
-                           OR COALESCE(last_name,'') ILIKE %s
-                           OR COALESCE(phone,'') ILIKE %s
-                           OR COALESCE(email,'') ILIKE %s
-                           OR COALESCE(status::text,'') ILIKE %s
-                        ORDER BY last_name NULLS LAST, first_name NULLS LAST
-                        LIMIT 50
-                    """, (like, like, like, like, like))
-                for r in cur.fetchall():
-                    results.append({
-                        "id": r[0], "first_name": r[1], "last_name": r[2],
-                        "phone": r[3], "email": r[4], "status": r[5]
-                    })
-            except psycopg2.errors.UndefinedColumn:
-                conn.rollback()
-                cur.execute("""
-                    SELECT id::text, first_name, last_name, phone, status::text
-                    FROM clients
-                    WHERE COALESCE(first_name,'') ILIKE %s
-                       OR COALESCE(last_name,'') ILIKE %s
-                       OR COALESCE(phone,'') ILIKE %s
-                       OR COALESCE(status::text,'') ILIKE %s
-                    ORDER BY last_name NULLS LAST, first_name NULLS LAST
-                    LIMIT 50
-                """, (like, like, like, like))
-                for r in cur.fetchall():
-                    results.append({
-                        "id": r[0], "first_name": r[1], "last_name": r[2],
-                        "phone": r[3], "email": None, "status": r[4]
-                    })
+            cur.execute("SELECT COUNT(*) FROM clients WHERE COALESCE(is_active, TRUE) = TRUE")
+            snapshot["active_clients"] = cur.fetchone()[0] or 0
+
+            cur.execute("SELECT COUNT(*) FROM clients WHERE LOWER(COALESCE(lifecycle_status::text, COALESCE(status::text, ''))) = 'prospect'")
+            snapshot["prospects"] = cur.fetchone()[0] or 0
+
+            cur.execute("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM client_invoices WHERE LOWER(COALESCE(status, '')) = 'unpaid'")
+            row = cur.fetchone() or (0, 0)
+            snapshot["open_invoices_count"] = row[0] or 0
+            snapshot["open_invoices_amount"] = _money_display(row[1])
+
+            cur.execute("SELECT COUNT(*) FROM client_followups WHERE LOWER(COALESCE(status, '')) = 'open' AND due_date IS NOT NULL AND due_date <= CURRENT_DATE + 7")
+            snapshot["followups_due_7d"] = cur.fetchone()[0] or 0
+
+            cur.execute("SELECT COUNT(*) FROM client_documents WHERE LOWER(COALESCE(review_status, 'pending')) = 'pending'")
+            snapshot["pending_doc_review"] = cur.fetchone()[0] or 0
+
+            cur.execute("SELECT COUNT(*) FROM client_appointments WHERE LOWER(COALESCE(status, '')) = 'scheduled' AND appointment_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7")
+            snapshot["appointments_next_7d"] = cur.fetchone()[0] or 0
+
+            cur.execute("SELECT COUNT(*) FROM client_upload_requests WHERE LOWER(COALESCE(status, '')) = 'open'")
+            snapshot["open_upload_requests"] = cur.fetchone()[0] or 0
         conn.close()
-        return templates.TemplateResponse(
-            "index.html",
-            {
-                "request": request,
-                "q": q,
-                "results": results,
-                "results_count": len(results),
-                "no_results": len(results) == 0,
-                "prefill": _prefill_name_from_query(q),
-            }
+    except Exception as exc:
+        snapshot["data_warning"] = f"Dashboard metrics could not fully load: {exc}"
+
+    return snapshot
+
+
+def get_credit_repair_dashboard_snapshot(profile_id: str = '', profile_type: str = 'corporate'):
+    if not (profile_id or '').strip() or profile_type != 'corporate':
+        return get_main_dashboard_snapshot()
+    snapshot = {
+        "active_clients": 0,
+        "prospects": 0,
+        "open_invoices_count": 0,
+        "open_invoices_amount": "$0.00",
+        "followups_due_7d": 0,
+        "pending_doc_review": 0,
+        "appointments_next_7d": 0,
+        "open_upload_requests": 0,
+        "latest_backup_name": "No back-up yet",
+        "latest_backup_when": "Create your first back-up from Settings → Back-Up.",
+        "data_warning": "",
+    }
+
+    latest = next(iter(sorted(BACKUP_DIR.glob("*.zip"), key=lambda x: x.stat().st_mtime, reverse=True)), None)
+    if latest:
+        snapshot["latest_backup_name"] = latest.name
+        snapshot["latest_backup_when"] = datetime.fromtimestamp(latest.stat().st_mtime).strftime("%m/%d/%Y %I:%M %p")
+
+    pid = (profile_id or '').strip()
+    try:
+        conn = get_conn()
+        with conn.cursor() as cur:
+            ensure_credit_repair_dashboard_query_columns(cur)
+            cur.execute("SELECT COUNT(*) FROM clients WHERE COALESCE(is_active, TRUE) = TRUE AND COALESCE(business_profile_id,'') = %s", (pid,))
+            snapshot["active_clients"] = cur.fetchone()[0] or 0
+
+            cur.execute("SELECT COUNT(*) FROM clients WHERE LOWER(COALESCE(lifecycle_status::text, COALESCE(status::text,''))) = 'prospect' AND COALESCE(business_profile_id,'') = %s", (pid,))
+            snapshot["prospects"] = cur.fetchone()[0] or 0
+
+            cur.execute("""
+                SELECT COUNT(*), COALESCE(SUM(ci.amount), 0)
+                FROM client_invoices ci
+                JOIN clients c ON c.id = ci.client_id
+                WHERE LOWER(COALESCE(ci.status, '')) IN ('unpaid','open','past due','past_due')
+                  AND COALESCE(c.business_profile_id,'') = %s
+            """, (pid,))
+            row = cur.fetchone() or (0, 0)
+            snapshot["open_invoices_count"] = row[0] or 0
+            snapshot["open_invoices_amount"] = _money_display(row[1])
+
+            cur.execute("""
+                SELECT COUNT(*)
+                FROM client_followups f
+                JOIN clients c ON c.id = f.client_id
+                WHERE LOWER(COALESCE(f.status, '')) = 'open'
+                  AND f.due_date IS NOT NULL
+                  AND f.due_date <= CURRENT_DATE + 7
+                  AND COALESCE(c.business_profile_id,'') = %s
+            """, (pid,))
+            snapshot["followups_due_7d"] = cur.fetchone()[0] or 0
+
+            cur.execute("""
+                SELECT COUNT(*)
+                FROM client_documents d
+                JOIN clients c ON c.id = d.client_id
+                WHERE LOWER(COALESCE(d.review_status, 'pending')) = 'pending'
+                  AND COALESCE(c.business_profile_id,'') = %s
+            """, (pid,))
+            snapshot["pending_doc_review"] = cur.fetchone()[0] or 0
+
+            cur.execute("""
+                SELECT COUNT(*)
+                FROM client_appointments a
+                JOIN clients c ON c.id = a.client_id
+                WHERE LOWER(COALESCE(a.status, '')) = 'scheduled'
+                  AND a.appointment_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7
+                  AND COALESCE(c.business_profile_id,'') = %s
+            """, (pid,))
+            snapshot["appointments_next_7d"] = cur.fetchone()[0] or 0
+
+            cur.execute("""
+                SELECT COUNT(*)
+                FROM client_upload_requests u
+                JOIN clients c ON c.id = u.client_id
+                WHERE LOWER(COALESCE(u.status, '')) = 'open'
+                  AND COALESCE(c.business_profile_id,'') = %s
+            """, (pid,))
+            snapshot["open_upload_requests"] = cur.fetchone()[0] or 0
+        conn.close()
+    except Exception as exc:
+        snapshot["data_warning"] = f"Dashboard metrics could not fully load: {exc}"
+
+    return snapshot
+
+
+
+LEGACY_PROFILE_LOGO_DIR = os.path.join(UPLOAD_DIR, "business_profiles")
+PROFILE_LOGO_DIR = os.path.join(UPLOAD_DIR, "corporate_profiles")
+os.makedirs(LEGACY_PROFILE_LOGO_DIR, exist_ok=True)
+os.makedirs(PROFILE_LOGO_DIR, exist_ok=True)
+
+
+def ensure_corporate_profiles_table(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS corporate_profiles (
+            id TEXT PRIMARY KEY,
+            business_name TEXT NOT NULL,
+            dba_name TEXT,
+            business_address TEXT,
+            address1 TEXT,
+            suite_unit TEXT,
+            city TEXT,
+            state TEXT,
+            zip_code TEXT,
+            business_address1 TEXT,
+            business_suite_unit TEXT,
+            business_city TEXT,
+            business_state TEXT,
+            business_zip TEXT,
+            mailing_address1 TEXT,
+            mailing_suite_unit TEXT,
+            mailing_city TEXT,
+            mailing_state TEXT,
+            mailing_zip TEXT,
+            contact_person TEXT,
+            contact_first_name TEXT,
+            contact_middle_name TEXT,
+            contact_last_name TEXT,
+            business_phone TEXT,
+            business_phone_type TEXT,
+            business_phone_extension TEXT,
+            phone TEXT,
+            contact_phone TEXT,
+            contact_phone_type TEXT,
+            contact_phone_extension TEXT,
+            email TEXT,
+            contact_email TEXT,
+            website TEXT,
+            ein TEXT,
+            entity_type TEXT,
+            tax_treatment TEXT,
+            tax_election TEXT,
+            nonprofit_indicator BOOLEAN DEFAULT FALSE,
+            is_nonprofit BOOLEAN DEFAULT FALSE,
+            llc_managers_json TEXT,
+            corp_officers_json TEXT,
+            role_contacts_json TEXT,
+            managers TEXT,
+            profile_kind TEXT DEFAULT 'credit_repair_accounting',
+            module_mode TEXT DEFAULT 'credit_repair_accounting',
+            is_credit_repair BOOLEAN DEFAULT TRUE,
+            is_accounting BOOLEAN DEFAULT TRUE,
+            is_personal BOOLEAN DEFAULT FALSE,
+            fiscal_year_end_month INTEGER DEFAULT 12,
+            fiscal_year_end_day INTEGER DEFAULT 31,
+            business_start_date DATE,
+            start_date DATE,
+            fiscal_year_label TEXT,
+            accounting_method TEXT,
+            dashboard_theme TEXT DEFAULT 'royal_blue',
+            hours_of_operation TEXT,
+            logo_file_name TEXT,
+            logo_file_path TEXT,
+            is_active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
+    """)
+    for ddl in [
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS dba_name TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_address TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS address1 TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS suite_unit TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS city TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS state TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS zip_code TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_address1 TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_suite_unit TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_city TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_state TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_zip TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_address1 TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_suite_unit TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_city TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_state TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_zip TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_person TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_first_name TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_middle_name TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_last_name TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_phone TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_phone_type TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_phone_extension TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS phone TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_phone TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_phone_type TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_phone_extension TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS email TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_email TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS website TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS ein TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS entity_type TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS tax_treatment TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS tax_election TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS nonprofit_indicator BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS is_nonprofit BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS llc_managers_json TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS corp_officers_json TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS role_contacts_json TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS managers TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS profile_kind TEXT DEFAULT 'credit_repair_accounting'",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS module_mode TEXT DEFAULT 'credit_repair_accounting'",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_start_date DATE",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS start_date DATE",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS fiscal_year_label TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS accounting_method TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS dashboard_theme TEXT DEFAULT 'royal_blue'",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS hours_of_operation TEXT",
+        "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE"
+    ]:
+        try:
+            cur.execute(ddl)
+        except Exception:
+            pass
+
+
+def ensure_personal_profiles_table(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS personal_profiles (
+            id TEXT PRIMARY KEY,
+            full_name TEXT NOT NULL,
+            first_name TEXT,
+            middle_name TEXT,
+            last_name TEXT,
+            address_text TEXT,
+            address1 TEXT,
+            suite_unit TEXT,
+            city TEXT,
+            state TEXT,
+            zip_code TEXT,
+            phone TEXT,
+            email TEXT,
+            ssn TEXT,
+            date_of_birth DATE,
+            logo_file_name TEXT,
+            logo_file_path TEXT,
+            is_active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+def ensure_profile_link_columns(cur):
+    for ddl in [
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS business_profile_id text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS business_profile_type text",
+        "ALTER TABLE client_invoices ADD COLUMN IF NOT EXISTS business_profile_id text",
+        "ALTER TABLE client_invoices ADD COLUMN IF NOT EXISTS business_profile_type text"
+    ]:
+        try:
+            cur.execute(ddl)
+        except Exception:
+            pass
+
+
+def ensure_credit_repair_dashboard_query_columns(cur):
+    for ddl in [
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS first_name text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS middle_name text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS last_name text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS phone text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS primary_phone text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS secondary_phone text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS email text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS primary_email text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS secondary_email text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS status text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS lifecycle_status text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS is_active boolean DEFAULT TRUE",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS business_profile_id text",
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS business_profile_type text",
+        "ALTER TABLE client_invoices ADD COLUMN IF NOT EXISTS business_profile_id text",
+        "ALTER TABLE client_invoices ADD COLUMN IF NOT EXISTS business_profile_type text",
+    ]:
+        try:
+            cur.execute(ddl)
+        except Exception:
+            pass
+
+
+def save_profile_logo(upload: Optional[UploadFile]) -> tuple[str, str]:
+    if not upload or not getattr(upload, 'filename', ''):
+        return '', ''
+    filename = os.path.basename(upload.filename)
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in {'.png', '.jpg', '.jpeg', '.gif', '.webp'}:
+        ext = '.png'
+    stored = f"{uuid4().hex}{ext}"
+    path = os.path.join(PROFILE_LOGO_DIR, stored)
+    with open(path, 'wb') as f:
+        shutil.copyfileobj(upload.file, f)
+    return filename, path
+
+
+def _profile_logo_url(profile_type: str, profile_id: str) -> str:
+    return f"/ui/profile-logo/{profile_type}/{profile_id}"
+
+
+STATE_OPTIONS = ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC']
+
+
+def _normalize_ein(value: str) -> str:
+    digits = re.sub(r'\D+', '', value or '')
+    if not digits:
+        return ''
+    if len(digits) != 9:
+        raise ValueError('EIN must be in the format XX-XXXXXXX.')
+    return f"{digits[:2]}-{digits[2:]}"
+
+
+def _validate_email_field(value: str) -> str:
+    value = (value or '').strip()
+    if value and not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', value):
+        raise ValueError('Email must be a valid email address.')
+    return value
+
+
+def _validate_phone_field(value: str) -> str:
+    value = (value or '').strip()
+    digits = re.sub(r'\D+', '', value)
+    if value and len(digits) < 10:
+        raise ValueError('Telephone must contain at least 10 digits.')
+    return value
+
+
+def _validate_website_field(value: str) -> str:
+    value = (value or '').strip()
+    if value and not re.match(r'^(https?://)?([A-Za-z0-9-]+\.)+[A-Za-z]{2,}(/.*)?$', value):
+        raise ValueError('Website must be a valid website address.')
+    return value
+
+
+
+
+
+def _profile_mode_label(module_mode: str = '') -> str:
+    mode = (module_mode or '').strip().lower()
+    if mode == 'credit_repair_accounting':
+        return 'Credit Repair + Accounting Software'
+    if mode == 'accounting_only':
+        return 'Accounting Only Software'
+    if mode == 'personal_bookkeeping':
+        return 'Personal Bookkeeping'
+    return mode.replace('_', ' ').title() if mode else ''
+
+def _combine_entity_and_tax(entity_type: str = '', tax_treatment: str = '', is_nonprofit: bool = False) -> str:
+    entity = (entity_type or '').strip()
+    tax = (tax_treatment or '').strip()
+    parts = []
+    if entity:
+        parts.append(entity)
+    if tax and tax.lower() != entity.lower():
+        parts.append(tax)
+    if is_nonprofit and not any('nonprofit' in p.lower() for p in parts):
+        parts.append('Nonprofit')
+    return ' + '.join(parts) if parts else ('Nonprofit' if is_nonprofit else '')
+
+def _format_profile_phone(number: str = '', phone_type: str = '', extension: str = '') -> str:
+    number = (number or '').strip()
+    phone_type = (phone_type or '').strip()
+    extension = (extension or '').strip()
+    parts = []
+    if number:
+        parts.append(number)
+    if phone_type:
+        parts.append(f"({phone_type})")
+    if extension:
+        parts.append(f"Ext. {extension}")
+    return ' '.join(parts).strip()
+
+def _compose_profile_address(address1: str = '', suite_unit: str = '', city: str = '', state: str = '', zip_code: str = '', fallback: str = '') -> str:
+    line1 = (address1 or '').strip()
+    if suite_unit:
+        line1 = f"{line1}, {suite_unit.strip()}" if line1 else suite_unit.strip()
+    city_state = ", ".join([p for p in [(city or '').strip(), (state or '').strip()] if p])
+    line2 = " ".join([p for p in [city_state, (zip_code or '').strip()] if p]).strip()
+    if line1 and line2:
+        return f"{line1}\n{line2}"
+    return line1 or line2 or (fallback or '').strip()
+
+
+def fetch_corporate_profiles() -> list[dict]:
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            ensure_corporate_profiles_table(cur)
+            for stmt in [
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS dba_name TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS phone TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS email TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS module_mode TEXT DEFAULT 'credit_repair_accounting'",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS is_nonprofit BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS managers TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS start_date DATE",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS fiscal_year_label TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS accounting_method TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS llc_managers_json TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS corp_officers_json TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_address1 TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_suite_unit TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_city TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_state TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_zip TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS hours_of_operation TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS tax_election TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS role_contacts_json TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS website TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_phone TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_phone_type TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_phone_extension TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_phone TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_phone_type TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_phone_extension TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS address1 TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS suite_unit TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS city TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS state TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS zip_code TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS tax_treatment TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_email TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS dashboard_theme TEXT DEFAULT 'royal_blue'",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS use_custom_theme BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_address1 TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_suite_unit TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_city TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_state TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_zip TEXT"
+            ]:
+                try:
+                    cur.execute(stmt)
+                except Exception:
+                    pass
+            cur.execute("""
+                SELECT id,
+                       COALESCE(business_name,''),
+                       COALESCE(contact_person,''),
+                       COALESCE(phone,''),
+                       COALESCE(email,''),
+                       COALESCE(NULLIF(module_mode,''), NULLIF(profile_kind,''), 'credit_repair_accounting'),
+                       COALESCE(entity_type,''),
+                       COALESCE(ein,''),
+                       COALESCE(is_nonprofit, nonprofit_indicator, FALSE),
+                       COALESCE(is_active, TRUE),
+                       COALESCE(logo_file_name,''),
+                       COALESCE(logo_file_path,''),
+                       created_at,
+                       updated_at,
+                       COALESCE(address1, COALESCE(business_address1,'')),
+                       COALESCE(suite_unit, COALESCE(business_suite_unit,'')),
+                       COALESCE(city, COALESCE(business_city,'')),
+                       COALESCE(state, COALESCE(business_state,'')),
+                       COALESCE(zip_code, COALESCE(business_zip,'')),
+                       COALESCE(business_address,''),
+                       COALESCE(website,''),
+                       COALESCE(business_phone, COALESCE(phone,'')),
+                       COALESCE(business_phone_type,''),
+                       COALESCE(business_phone_extension,''),
+                       COALESCE(contact_phone,''),
+                       COALESCE(contact_phone_type,''),
+                       COALESCE(contact_phone_extension,''),
+                       COALESCE(tax_treatment,''),
+                       COALESCE(contact_email,''),
+                       start_date,
+                       COALESCE(dba_name,''),
+                       COALESCE(dashboard_theme,'royal_blue')
+                FROM corporate_profiles
+                ORDER BY lower(COALESCE(business_name,''))
+            """)
+            rows = []
+            for r in cur.fetchall():
+                display_address = _compose_profile_address(r[14], r[15], r[16], r[17], r[18], r[19])
+                structure = _combine_entity_and_tax(r[6], r[27], bool(r[8]))
+                rows.append({
+                    'id': r[0],
+                    'profile_type': 'corporate',
+                    'business_name': r[1],
+                    'contact_person': r[2],
+                    'phone': r[3],
+                    'email': r[4],
+                    'module_mode': r[5] or 'credit_repair_accounting',
+                    'entity_type': r[6] or '',
+                    'ein': r[7] or '',
+                    'is_nonprofit': bool(r[8]),
+                    'is_active': bool(r[9]),
+                    'logo_file_name': r[10] or '',
+                    'logo_file_path': r[11] or '',
+                    'logo_url': (_profile_logo_url('corporate', r[0]) if (r[11] or '') else ''),
+                    'created_at': r[12],
+                    'updated_at': r[13],
+                    'address1': r[14] or '',
+                    'suite_unit': r[15] or '',
+                    'city': r[16] or '',
+                    'state': r[17] or '',
+                    'zip_code': r[18] or '',
+                    'business_address': r[19] or '',
+                    'website': r[20] or '',
+                    'business_phone': r[21] or '',
+                    'business_phone_type': r[22] or '',
+                    'business_phone_extension': r[23] or '',
+                    'contact_phone': r[24] or '',
+                    'contact_phone_type': r[25] or '',
+                    'contact_phone_extension': r[26] or '',
+                    'tax_treatment': r[27] or '',
+                    'contact_email': r[28] or '',
+                    'start_date': r[29].isoformat() if r[29] else '',
+                    'dba_name': r[30] or '',
+                    'display_address': display_address,
+                    'display_business_phone': _format_profile_phone(r[21] or r[3] or '', r[22] or '', r[23] or ''),
+                    'display_contact_phone': _format_profile_phone(r[24] or '', r[25] or '', r[26] or ''),
+                    'mode_label': _profile_mode_label(r[5]),
+                    'structure_label': structure,
+                })
+            return rows
     except Exception as e:
-        return templates.TemplateResponse("index.html", {"request": request, "error": str(e), "q": q, "prefill": _prefill_name_from_query(q)})
+        print('fetch_corporate_profiles failed:', repr(e))
+        return []
+    finally:
+        conn.close()
+
+
+def fetch_personal_profiles() -> list[dict]:
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            ensure_personal_profiles_table(cur)
+            for stmt in ["ALTER TABLE personal_profiles ADD COLUMN IF NOT EXISTS first_name TEXT","ALTER TABLE personal_profiles ADD COLUMN IF NOT EXISTS middle_name TEXT","ALTER TABLE personal_profiles ADD COLUMN IF NOT EXISTS last_name TEXT","ALTER TABLE personal_profiles ADD COLUMN IF NOT EXISTS address1 TEXT","ALTER TABLE personal_profiles ADD COLUMN IF NOT EXISTS suite_unit TEXT","ALTER TABLE personal_profiles ADD COLUMN IF NOT EXISTS city TEXT","ALTER TABLE personal_profiles ADD COLUMN IF NOT EXISTS state TEXT","ALTER TABLE personal_profiles ADD COLUMN IF NOT EXISTS zip_code TEXT","ALTER TABLE personal_profiles ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE","ALTER TABLE personal_profiles ADD COLUMN IF NOT EXISTS dashboard_theme TEXT DEFAULT 'royal_blue'"]:
+                cur.execute(stmt)
+            cur.execute("""
+                SELECT id, COALESCE(full_name,''), COALESCE(phone,''), COALESCE(email,''), COALESCE(address_text,''),
+                       COALESCE(ssn,''), date_of_birth, COALESCE(is_active, TRUE), COALESCE(logo_file_name,''), COALESCE(logo_file_path,''), created_at, updated_at,
+                       COALESCE(address1,''), COALESCE(suite_unit,''), COALESCE(city,''), COALESCE(state,''), COALESCE(zip_code,''), COALESCE(dashboard_theme,'royal_blue')
+                FROM personal_profiles
+                ORDER BY lower(COALESCE(full_name,''))
+            """)
+            rows = []
+            for r in cur.fetchall():
+                display_address = _compose_profile_address(r[12], r[13], r[14], r[15], r[16], r[4])
+                rows.append({
+                    'id': r[0], 'profile_type': 'personal', 'full_name': r[1], 'phone': r[2], 'email': r[3], 'address_text': r[4],
+                    'ssn': r[5], 'date_of_birth': r[6].isoformat() if r[6] else '', 'is_active': bool(r[7]),
+                    'logo_file_name': r[8], 'logo_file_path': r[9], 'logo_url': (_profile_logo_url('personal', r[0]) if (r[9] or '') else ''),
+                    'created_at': r[10], 'updated_at': r[11],
+                    'address1': r[12], 'suite_unit': r[13], 'city': r[14], 'state': r[15], 'zip_code': r[16],
+                    'dashboard_theme': r[17] if len(r) > 17 else 'royal_blue',
+                    'display_address': display_address,
+                    'display_phone': _format_profile_phone(r[2] or '', '', ''),
+                    'mode_label': 'Personal Accounting',
+                })
+            return rows
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def fetch_corporate_profile(profile_id: str) -> dict:
+    if not profile_id:
+        return {}
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            ensure_corporate_profiles_table(cur)
+            for stmt in [
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS address1 TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS suite_unit TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS city TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS state TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS zip_code TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_phone TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_phone_type TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS business_phone_extension TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_phone TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_phone_type TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_phone_extension TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS tax_treatment TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_email TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS dashboard_theme TEXT DEFAULT 'royal_blue'",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_address1 TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_suite_unit TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_city TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_state TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_zip TEXT"
+            ]:
+                try:
+                    cur.execute(stmt)
+                except Exception:
+                    pass
+            has_use_custom_theme = _table_has_column(cur, 'corporate_profiles', 'use_custom_theme') or _safe_add_column(
+                cur,
+                'corporate_profiles',
+                'use_custom_theme',
+                "ALTER TABLE corporate_profiles ADD COLUMN use_custom_theme BOOLEAN DEFAULT FALSE",
+            )
+            use_custom_theme_sql = "COALESCE(use_custom_theme, FALSE)" if has_use_custom_theme else "FALSE"
+            cur.execute(f"""
+                SELECT id,
+                       COALESCE(business_name,''),
+                       COALESCE(dba_name,''),
+                       COALESCE(business_address,''),
+                       COALESCE(contact_person,''),
+                       COALESCE(phone,''),
+                       COALESCE(email,''),
+                       COALESCE(website,''),
+                       COALESCE(ein,''),
+                       COALESCE(entity_type,''),
+                       COALESCE(is_nonprofit, nonprofit_indicator, FALSE),
+                       COALESCE(managers,''),
+                       start_date,
+                       COALESCE(fiscal_year_label,''),
+                       COALESCE(accounting_method,''),
+                       COALESCE(NULLIF(module_mode,''), NULLIF(profile_kind,''), 'credit_repair_accounting'),
+                       COALESCE(logo_file_name,''),
+                       COALESCE(logo_file_path,''),
+                       COALESCE(address1,''),
+                       COALESCE(suite_unit,''),
+                       COALESCE(city,''),
+                       COALESCE(state,''),
+                       COALESCE(zip_code,''),
+                       COALESCE(business_phone, COALESCE(phone,'')),
+                       COALESCE(business_phone_type,''),
+                       COALESCE(business_phone_extension,''),
+                       COALESCE(contact_phone,''),
+                       COALESCE(contact_phone_type,''),
+                       COALESCE(contact_phone_extension,''),
+                       COALESCE(contact_email,''),
+                       COALESCE(is_active, TRUE),
+                       COALESCE(tax_treatment,''),
+                       COALESCE(contact_first_name,''),
+                       COALESCE(contact_middle_name,''),
+                       COALESCE(contact_last_name,''),
+                       COALESCE(llc_managers_json,'[]'),
+                       COALESCE(corp_officers_json,'[]'),
+                       COALESCE(dashboard_theme,'royal_blue'),
+                       {use_custom_theme_sql}
+                FROM corporate_profiles
+                WHERE id = %s
+            """, (profile_id,))
+            r = cur.fetchone()
+            if not r:
+                return {}
+            structure = _combine_entity_and_tax(r[9], r[31], bool(r[10]))
+            return {
+                'id': r[0],
+                'business_name': r[1],
+                'dba_name': r[2],
+                'business_address': r[3],
+                'contact_person': r[4],
+                'phone': r[5],
+                'email': r[6],
+                'website': r[7],
+                'ein': r[8],
+                'entity_type': r[9],
+                'is_nonprofit': bool(r[10]),
+                'managers': r[11],
+                'start_date': r[12].isoformat() if r[12] else '',
+                'fiscal_year_label': r[13],
+                'accounting_method': r[14],
+                'module_mode': r[15],
+                'logo_file_name': r[16],
+                'logo_file_path': r[17],
+                'logo_url': (_profile_logo_url('corporate', r[0]) if (r[17] or '') else ''),
+                'address1': r[18],
+                'suite_unit': r[19],
+                'city': r[20],
+                'state': r[21],
+                'zip_code': r[22],
+                'business_phone': r[23],
+                'business_phone_type': r[24],
+                'business_phone_extension': r[25],
+                'contact_phone': r[26],
+                'contact_phone_type': r[27],
+                'contact_phone_extension': r[28],
+                'contact_email': r[29] or '',
+                'is_active': bool(r[30]),
+                'tax_treatment': r[31] or '',
+                'contact_first_name': r[32] or '',
+                'contact_middle_name': r[33] or '',
+                'contact_last_name': r[34] or '',
+                'llc_managers_json': r[35] or '[]',
+                'corp_officers_json': r[36] or '[]',
+                'dashboard_theme': r[37] if len(r) > 37 else 'royal_blue',
+                'use_custom_theme': bool(r[38]) if len(r) > 38 else False,
+                'display_address': _compose_profile_address(r[18], r[19], r[20], r[21], r[22], r[3]),
+                'display_business_phone': _format_profile_phone(r[23], r[24], r[25]),
+                'display_contact_phone': _format_profile_phone(r[26], r[27], r[28]),
+                'mode_label': _profile_mode_label(r[15]),
+                'structure_label': structure,
+            }
+    except Exception as e:
+        print('fetch_corporate_profile failed:', repr(e))
+        return {}
+    finally:
+        conn.close()
+
+
+def fetch_personal_profile(profile_id: str) -> dict:
+    if not profile_id:
+        return {}
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            ensure_personal_profiles_table(cur)
+            try:
+                cur.execute("ALTER TABLE personal_profiles ADD COLUMN IF NOT EXISTS dashboard_theme TEXT DEFAULT 'royal_blue'")
+            except Exception:
+                pass
+            has_use_custom_theme = _table_has_column(cur, 'personal_profiles', 'use_custom_theme') or _safe_add_column(
+                cur,
+                'personal_profiles',
+                'use_custom_theme',
+                "ALTER TABLE personal_profiles ADD COLUMN use_custom_theme BOOLEAN DEFAULT FALSE",
+            )
+            use_custom_theme_sql = "COALESCE(use_custom_theme, FALSE)" if has_use_custom_theme else "FALSE"
+            cur.execute(f"""
+                SELECT id, COALESCE(full_name,''), COALESCE(first_name,''), COALESCE(middle_name,''), COALESCE(last_name,''),
+                       COALESCE(address_text,''), COALESCE(address1,''), COALESCE(suite_unit,''), COALESCE(city,''), COALESCE(state,''), COALESCE(zip_code,''),
+                       COALESCE(phone,''), COALESCE(email,''), COALESCE(ssn,''), date_of_birth, COALESCE(logo_file_name,''), COALESCE(logo_file_path,''), COALESCE(is_active, TRUE), COALESCE(dashboard_theme,'royal_blue'), {use_custom_theme_sql}
+                FROM personal_profiles WHERE id = %s
+            """, (profile_id,))
+            r = cur.fetchone()
+            if not r:
+                return {}
+            return {
+                'id': r[0], 'full_name': r[1], 'first_name': r[2], 'middle_name': r[3], 'last_name': r[4],
+                'address_text': r[5], 'address1': r[6], 'suite_unit': r[7], 'city': r[8], 'state': r[9], 'zip_code': r[10],
+                'phone': r[11], 'email': r[12], 'ssn': r[13], 'date_of_birth': r[14].isoformat() if r[14] else '',
+                'logo_file_name': r[15], 'logo_file_path': r[16], 'is_active': bool(r[17]), 'dashboard_theme': r[18] if len(r) > 18 else 'royal_blue', 'use_custom_theme': bool(r[19]) if len(r) > 19 else False,
+                'display_address': _compose_profile_address(r[6], r[7], r[8], r[9], r[10], r[5]),
+                'display_phone': _format_profile_phone(r[11] or '', '', ''),
+                'mode_label': 'Personal Accounting', 'logo_url': (_profile_logo_url('personal', r[0]) if (r[16] or '') else '')
+            }
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+
+def get_platform_overview_snapshot() -> dict:
+    corporate = fetch_corporate_profiles()
+    personal = fetch_personal_profiles()
+    latest_backup_name = 'No backups yet'
+    latest_backup_when = ''
+    try:
+        latest = next(iter(sorted(BACKUP_DIR.glob('*.zip'), key=lambda p: p.stat().st_mtime, reverse=True)), None)
+        if latest:
+            latest_backup_name = latest.name
+            latest_backup_when = datetime.fromtimestamp(latest.stat().st_mtime).strftime('%Y-%m-%d %I:%M %p')
+    except Exception:
+        pass
+    return {
+        'credit_repair_businesses': sum(1 for p in corporate if (p.get('module_mode') or '') == 'credit_repair_accounting'),
+        'accounting_only_businesses': sum(1 for p in corporate if (p.get('module_mode') or '') == 'accounting_only'),
+        'personal_books': len(personal),
+        'latest_backup_name': latest_backup_name,
+        'latest_backup_when': latest_backup_when,
+        'total_profiles': len(corporate) + len(personal),
+    }
 
 
 
+
+def _format_client_display_name(first_name: str = '', middle_name: str = '', last_name: str = '') -> str:
+    parts = [p.strip() for p in [first_name or '', middle_name or '', last_name or ''] if (p or '').strip()]
+    return ' '.join(parts).strip()
+
+
+def _safe_client_sort(sort_by: str, sort_dir: str) -> tuple[str, str]:
+    sort_by = (sort_by or 'name').strip().lower()
+    sort_dir = 'desc' if (sort_dir or '').strip().lower() == 'desc' else 'asc'
+    allowed = {'name', 'status', 'last_activity', 'active'}
+    if sort_by not in allowed:
+        sort_by = 'name'
+    return sort_by, sort_dir
+
+
+def _client_profile_filter_sql(profile_id: str = '', alias: str = '') -> tuple[str, list]:
+    pid = (profile_id or '').strip()
+    if not pid:
+        return '', []
+    prefix = f"{alias}." if alias else ''
+    return f" AND COALESCE({prefix}business_profile_id,'') = %s AND COALESCE({prefix}business_profile_type,'corporate') = 'corporate'", [pid]
+
+
+def _credit_repair_client_rows(cur, where_sql: str = '', params: tuple = (), sort_by: str = 'name', sort_dir: str = 'asc') -> list[dict]:
+    ensure_credit_repair_dashboard_query_columns(cur)
+    sort_by, sort_dir = _safe_client_sort(sort_by, sort_dir)
+    order_map = {
+        'name': f"lower(COALESCE(last_name,'')) {sort_dir}, lower(COALESCE(first_name,'')) {sort_dir}, lower(COALESCE(middle_name,'')) {sort_dir}",
+        'status': f"lower(COALESCE(lifecycle_status::text, COALESCE(status::text,''))) {sort_dir}, lower(COALESCE(last_name,'')) asc",
+        'last_activity': f"COALESCE(updated_at, created_at) {sort_dir}",
+        'active': f"COALESCE(is_active, TRUE) {'DESC' if sort_dir=='asc' else 'ASC'}, lower(COALESCE(last_name,'')) asc",
+    }
+    query = f"""
+        SELECT id::text, COALESCE(first_name,''), COALESCE(middle_name,''), COALESCE(last_name,''),
+               COALESCE(phone, COALESCE(primary_phone,'')),
+               COALESCE(primary_email, COALESCE(email,'')),
+               COALESCE(lifecycle_status::text, COALESCE(status::text,'')),
+               COALESCE(is_active, TRUE),
+               COALESCE(updated_at, created_at)
+        FROM clients
+        {where_sql}
+        ORDER BY {order_map.get(sort_by, order_map['name'])}
+        LIMIT 100
+    """
+    try:
+        cur.execute(query, params)
+        rows = []
+        for r in cur.fetchall():
+            rows.append({
+                'id': r[0],
+                'display_name': _format_client_display_name(r[1], r[2], r[3]) or r[0],
+                'first_name': r[1], 'middle_name': r[2], 'last_name': r[3],
+                'phone': r[4], 'email': r[5], 'status': display_client_workflow_status(r[6]), 'raw_status': r[6] or '', 'is_active': bool(r[7]),
+                'last_activity': r[8].strftime('%Y-%m-%d') if r[8] else '',
+            })
+        return rows
+    except Exception as e:
+        print("_credit_repair_client_rows failed:", repr(e))
+        return []
+
+
+def get_credit_repair_search_results(q: str = '', sort_by: str = 'name', sort_dir: str = 'asc', profile_id: str = '') -> list[dict]:
+    q = (q or '').strip()
+    if not q:
+        return []
+    like = f"%{q}%"
+    digits = re.sub(r"\D+", "", q)
+    tokens = [t for t in re.split(r"\s+", q) if t]
+    token_set = {t.lower() for t in tokens}
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            ensure_credit_repair_dashboard_query_columns(cur)
+            clauses = [
+                "COALESCE(first_name,'') ILIKE %s",
+                "COALESCE(middle_name,'') ILIKE %s",
+                "COALESCE(last_name,'') ILIKE %s",
+                "COALESCE(phone,'') ILIKE %s",
+                "COALESCE(secondary_phone,'') ILIKE %s",
+                "COALESCE(primary_email, COALESCE(email,'')) ILIKE %s",
+                "COALESCE(secondary_email,'') ILIKE %s",
+                "COALESCE(lifecycle_status::text, COALESCE(status::text,'')) ILIKE %s",
+            ]
+            params = [like, like, like, like, like, like, like, like]
+            if 'active' in token_set:
+                clauses.append("COALESCE(is_active, TRUE) = TRUE")
+            if 'inactive' in token_set:
+                clauses.append("COALESCE(is_active, TRUE) = FALSE")
+            if digits and len(digits) >= 4:
+                clauses.append("COALESCE(ssn_last4,'') ILIKE %s")
+                params.append(f"%{digits[-4:]}%")
+            for token in tokens:
+                token_like = f"%{token}%"
+                clauses.extend([
+                    "COALESCE(first_name,'') ILIKE %s",
+                    "COALESCE(middle_name,'') ILIKE %s",
+                    "COALESCE(last_name,'') ILIKE %s",
+                ])
+                params.extend([token_like, token_like, token_like])
+
+            where_base = "WHERE (" + " OR ".join(clauses) + ")"
+            if (profile_id or '').strip():
+                return _credit_repair_client_rows(cur, where_base + " AND COALESCE(business_profile_id,'') = %s AND COALESCE(business_profile_type,'corporate') = 'corporate'", tuple(params) + (profile_id.strip(),), sort_by, sort_dir)
+            return _credit_repair_client_rows(cur, where_base, tuple(params), sort_by, sort_dir)
+    except Exception as e:
+        print("get_credit_repair_search_results failed:", repr(e))
+        return []
+    finally:
+        conn.close()
+
+
+def get_credit_repair_focus_rows(focus: str = '', sort_by: str = 'name', sort_dir: str = 'asc', profile_id: str = '') -> list[dict]:
+    focus = (focus or '').strip().lower()
+    if not focus:
+        return []
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            ensure_credit_repair_dashboard_query_columns(cur)
+            client_profile_sql, client_profile_params = _client_profile_filter_sql(profile_id, 'c')
+            bare_profile_sql, bare_profile_params = _client_profile_filter_sql(profile_id)
+            if focus == 'active_clients':
+                return _credit_repair_client_rows(cur, "WHERE COALESCE(is_active, TRUE) = TRUE" + bare_profile_sql, tuple(bare_profile_params), sort_by, sort_dir)
+            if focus == 'prospects':
+                return _credit_repair_client_rows(cur, "WHERE lower(COALESCE(lifecycle_status::text, COALESCE(status::text,''))) IN ('prospect','candidate','lead')" + bare_profile_sql, tuple(bare_profile_params), sort_by, sort_dir)
+            if focus == 'unpaid_invoices':
+                cur.execute(f"""
+                    SELECT DISTINCT c.id::text, COALESCE(c.first_name,''), COALESCE(c.middle_name,''), COALESCE(c.last_name,''),
+                           COALESCE(c.phone, COALESCE(c.primary_phone,'')), COALESCE(c.primary_email, COALESCE(c.email,'')),
+                           COALESCE(c.lifecycle_status::text, COALESCE(c.status::text,'')), COALESCE(c.is_active, TRUE),
+                           COALESCE(ci.updated_at, ci.created_at, c.updated_at, c.created_at)
+                    FROM client_invoices ci
+                    JOIN clients c ON c.id = ci.client_id
+                    WHERE lower(COALESCE(ci.status,'')) IN ('unpaid','open','past due','past_due') {client_profile_sql}
+                    ORDER BY COALESCE(ci.updated_at, ci.created_at, c.updated_at, c.created_at) DESC
+                    LIMIT 100
+                """, tuple(client_profile_params))
+                return [{
+                    'id': r[0], 'display_name': _format_client_display_name(r[1], r[2], r[3]) or r[0],
+                    'first_name': r[1], 'middle_name': r[2], 'last_name': r[3],
+                    'phone': r[4], 'email': r[5], 'status': r[6] or '', 'is_active': bool(r[7]),
+                    'last_activity': r[8].strftime('%Y-%m-%d') if r[8] else '',
+                } for r in cur.fetchall()]
+            if focus in ('followups_due', 'redisputes_due'):
+                cur.execute(f"""
+                    SELECT DISTINCT c.id::text, COALESCE(c.first_name,''), COALESCE(c.middle_name,''), COALESCE(c.last_name,''),
+                           COALESCE(c.phone, COALESCE(c.primary_phone,'')), COALESCE(c.primary_email, COALESCE(c.email,'')),
+                           COALESCE(c.lifecycle_status::text, COALESCE(c.status::text,'')), COALESCE(c.is_active, TRUE),
+                           COALESCE(f.due_date::timestamp, c.updated_at, c.created_at)
+                    FROM client_followups f
+                    JOIN clients c ON c.id = f.client_id
+                    WHERE lower(COALESCE(f.status,'')) = 'open' AND f.due_date IS NOT NULL {client_profile_sql}
+                    ORDER BY f.due_date ASC
+                    LIMIT 100
+                """, tuple(client_profile_params))
+                return [{
+                    'id': r[0], 'display_name': _format_client_display_name(r[1], r[2], r[3]) or r[0],
+                    'first_name': r[1], 'middle_name': r[2], 'last_name': r[3],
+                    'phone': r[4], 'email': r[5], 'status': r[6] or '', 'is_active': bool(r[7]),
+                    'last_activity': r[8].strftime('%Y-%m-%d') if r[8] else '',
+                } for r in cur.fetchall()]
+            if focus == 'pending_doc_review':
+                cur.execute(f"""
+                    SELECT DISTINCT c.id::text, COALESCE(c.first_name,''), COALESCE(c.middle_name,''), COALESCE(c.last_name,''),
+                           COALESCE(c.phone, COALESCE(c.primary_phone,'')), COALESCE(c.primary_email, COALESCE(c.email,'')),
+                           COALESCE(c.lifecycle_status::text, COALESCE(c.status::text,'')), COALESCE(c.is_active, TRUE),
+                           COALESCE(d.updated_at, d.created_at, c.updated_at, c.created_at)
+                    FROM client_documents d
+                    JOIN clients c ON c.id = d.client_id
+                    WHERE lower(COALESCE(d.review_status,'pending')) = 'pending' {client_profile_sql}
+                    ORDER BY COALESCE(d.updated_at, d.created_at, c.updated_at, c.created_at) DESC
+                    LIMIT 100
+                """, tuple(client_profile_params))
+                return [{
+                    'id': r[0], 'display_name': _format_client_display_name(r[1], r[2], r[3]) or r[0],
+                    'first_name': r[1], 'middle_name': r[2], 'last_name': r[3],
+                    'phone': r[4], 'email': r[5], 'status': r[6] or '', 'is_active': bool(r[7]),
+                    'last_activity': r[8].strftime('%Y-%m-%d') if r[8] else '',
+                } for r in cur.fetchall()]
+            if focus == 'appointments_next_7d':
+                cur.execute(f"""
+                    SELECT DISTINCT c.id::text, COALESCE(c.first_name,''), COALESCE(c.middle_name,''), COALESCE(c.last_name,''),
+                           COALESCE(c.phone, COALESCE(c.primary_phone,'')), COALESCE(c.primary_email, COALESCE(c.email,'')),
+                           COALESCE(c.lifecycle_status::text, COALESCE(c.status::text,'')), COALESCE(c.is_active, TRUE),
+                           COALESCE(a.appointment_date::timestamp, c.updated_at, c.created_at)
+                    FROM client_appointments a
+                    JOIN clients c ON c.id = a.client_id
+                    WHERE lower(COALESCE(a.status,'')) = 'scheduled'
+                      AND a.appointment_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7 {client_profile_sql}
+                    ORDER BY a.appointment_date ASC
+                    LIMIT 100
+                """, tuple(client_profile_params))
+                return [{
+                    'id': r[0], 'display_name': _format_client_display_name(r[1], r[2], r[3]) or r[0],
+                    'first_name': r[1], 'middle_name': r[2], 'last_name': r[3],
+                    'phone': r[4], 'email': r[5], 'status': r[6] or '', 'is_active': bool(r[7]),
+                    'last_activity': r[8].strftime('%Y-%m-%d') if r[8] else '',
+                } for r in cur.fetchall()]
+            if focus == 'open_upload_requests':
+                cur.execute(f"""
+                    SELECT DISTINCT c.id::text, COALESCE(c.first_name,''), COALESCE(c.middle_name,''), COALESCE(c.last_name,''),
+                           COALESCE(c.phone, COALESCE(c.primary_phone,'')), COALESCE(c.primary_email, COALESCE(c.email,'')),
+                           COALESCE(c.lifecycle_status::text, COALESCE(c.status::text,'')), COALESCE(c.is_active, TRUE),
+                           COALESCE(u.updated_at, u.created_at, c.updated_at, c.created_at)
+                    FROM client_upload_requests u
+                    JOIN clients c ON c.id = u.client_id
+                    WHERE lower(COALESCE(u.status,'')) = 'open' {client_profile_sql}
+                    ORDER BY COALESCE(u.updated_at, u.created_at, c.updated_at, c.created_at) DESC
+                    LIMIT 100
+                """, tuple(client_profile_params))
+                return [{
+                    'id': r[0], 'display_name': _format_client_display_name(r[1], r[2], r[3]) or r[0],
+                    'first_name': r[1], 'middle_name': r[2], 'last_name': r[3],
+                    'phone': r[4], 'email': r[5], 'status': r[6] or '', 'is_active': bool(r[7]),
+                    'last_activity': r[8].strftime('%Y-%m-%d') if r[8] else '',
+                } for r in cur.fetchall()]
+            return []
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+
+
+def _slugify_presentation(value: str) -> str:
+    text = re.sub(r"[^a-zA-Z0-9]+", "-", (value or "").strip().lower()).strip("-")
+    return text or "presentation"
+
+
+def _presentation_workspace_key(profile: dict) -> str:
+    if not profile or not profile.get("id"):
+        return "unlinked_workspace"
+    label = profile.get("business_name") or profile.get("full_name") or profile.get("name") or "workspace"
+    return f"{profile.get('type','workspace')}_{profile.get('id')}_{_slugify_presentation(label)[:48]}"
+
+
+def _presentation_workspace_dir(profile: dict) -> Path:
+    target = Path(PRESENTATION_LIBRARY_DIR) / _presentation_workspace_key(profile)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _presentation_meta_path(deck_dir: Path) -> Path:
+    return deck_dir / "deck.json"
+
+
+def _presentation_office_binary() -> str:
+    candidates = [shutil.which("libreoffice"), shutil.which("soffice")]
+    if os.name == "nt":
+        candidates.extend([
+            r"C:\Program Files\LibreOffice\program\soffice.exe",
+            r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+        ])
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return ""
+
+
+def _presentation_slide_outline_from_pptx(pptx_path: Path) -> list[dict]:
+    outline = []
+    if not PptxPresentation or not pptx_path.exists():
+        return outline
+    try:
+        deck = PptxPresentation(str(pptx_path))
+        for idx, slide in enumerate(deck.slides, start=1):
+            title = f"Slide {idx}"
+            bullets = []
+            for shape in slide.shapes:
+                if getattr(shape, "has_text_frame", False):
+                    raw = [p.text.strip() for p in shape.text_frame.paragraphs if p.text and p.text.strip()]
+                    if raw:
+                        if title == f"Slide {idx}":
+                            title = raw[0][:120]
+                            bullets.extend(raw[1:])
+                        else:
+                            bullets.extend(raw)
+            outline.append({
+                "number": idx,
+                "title": title,
+                "bullets": bullets[:6],
+            })
+    except Exception:
+        return []
+    return outline
+
+
+def _presentation_try_convert_pdf(pptx_path: Path, deck_dir: Path) -> Path | None:
+    office_bin = _presentation_office_binary()
+    if not office_bin or not pptx_path.exists():
+        return None
+    try:
+        subprocess.run(
+            [office_bin, "--headless", "--convert-to", "pdf", "--outdir", str(deck_dir), str(pptx_path)],
+            check=False,
+            capture_output=True,
+            timeout=120,
+        )
+        pdf_path = deck_dir / f"{pptx_path.stem}.pdf"
+        return pdf_path if pdf_path.exists() else None
+    except Exception:
+        return None
+
+
+def _presentation_contact_block(profile: dict) -> dict:
+    return {
+        "business_name": profile.get("business_name") or profile.get("full_name") or profile.get("name") or "Current Workspace",
+        "dba_name": profile.get("dba_name") or "",
+        "address": profile.get("display_address") or profile.get("address_text") or "",
+        "phone": profile.get("display_business_phone") or profile.get("phone") or "",
+        "email": profile.get("email") or "",
+        "website": profile.get("website") or "",
+        "logo_url": profile.get("logo_url") or "",
+    }
+
+
+def _presentation_default_sections(form_data: dict) -> list[dict]:
+    consultation_fee = form_data.get("consultation_fee") or "175"
+    monthly_fee = form_data.get("monthly_fee") or "125"
+    months = form_data.get("program_months") or "12"
+    years = form_data.get("credit_years") or "13"
+    banking = form_data.get("banking_years") or "8"
+    state = (form_data.get("target_state") or "").strip().upper()
+    billing_note = form_data.get("billing_note") or "Monthly billing is for work completed the month before. If the client cancels, the final earned payment remains due."
+    lang = form_data.get("language") or "english"
+    english = lang == "english"
+    sections = []
+    if english:
+        sections = [
+            {"title": "Introduction", "bullets": [f"Over {years} years in credit repair and counseling.", f"Banking, lending, and financial experience of over {banking} years.", "We educate clients so they can keep the credit they rebuild."]},
+            {"title": "What Is Credit?", "bullets": ["Credit is flexibility, but it is not free money.", "Credit measures risk and payment behavior.", "Credit affects housing, vehicles, rates, and opportunities."]},
+            {"title": "The Credit Bureaus", "bullets": ["Equifax, Experian, and TransUnion are repositories of data.", "They are not government agencies and they receive data from creditors.", "Reports are tied to name, Social Security number, address, and date of birth."]},
+            {"title": "How Credit Goes Bad", "bullets": ["A payment made one day after the due date is already late with the creditor.", "Bureaus usually report 30, 60, 90, 120, 150, and sometimes 180 day late status.", "A 30-day late can sharply reduce the score, and getting current next month does not immediately restore those points.", "Severe delinquency can lead to charge-off, then later outside collection activity."]},
+            {"title": "Collections, Judgments, and Bankruptcy", "bullets": ["Collection accounts may later appear under outside companies collecting for the original creditor.", "If a collector sues and wins, collection powers can increase substantially.", "When debt and lawsuits become unmanageable, a bankruptcy consultation may be the correct path.", "Always align lawsuit risk and statutes of limitation to the client's state."]},
+            {"title": "How Credit Cards Work", "bullets": ["Utilization is the percentage of the limit that reports when the statement closes.", "The same $500 balance affects a $1,000 card very differently than a $10,000 card.", "The due date avoids lateness; the statement date is usually when the balance reports.", "To maximize score, the lowest possible balance should show on the statement date."]},
+            {"title": "What the Law Allows", "bullets": ["The Fair Credit Reporting Act allows consumers to dispute report information with the bureaus.", "Each bureau must be worked separately.", "No one can guarantee results because they do not control the mail, bureaus, creditors, or lenders.", "Consumers can do this themselves, but many hire help because the work is time-consuming and technical."]},
+            {"title": "Important Disclosures", "bullets": ["Credit repair companies cannot charge the full service amount upfront.", f"Consulting and education fee: ${consultation_fee}.", f"Standard monthly service fee: ${monthly_fee} for {months} months.", billing_note]},
+            {"title": "Our Standard Program", "bullets": ["We review all 3 reports, educate the client, prepare disputes, and mail the work completed each cycle.", "We confirm the current pricing and billing structure for the active business before finalizing the deck.", "This deck is branded automatically from the business record you opened."]},
+            {"title": "Next Steps", "bullets": ["Sign the agreement and required disclosures.", "Provide two IDs and two proofs of address.", "Send all bureau and collection responses received by mail.", "Do not apply for new credit without discussing strategy first."]},
+        ]
+        if state:
+            sections.insert(7, {"title": f"State Focus: {state}", "bullets": ["Statutes of limitation and lawsuit timing must be confirmed for the client state.", "State law affects litigation risk and whether settlement, waiting, or bankruptcy should be discussed first."]})
+    else:
+        sections = [
+            {"title": "Introducción", "bullets": [f"Más de {years} años de experiencia en reparación y educación de crédito.", f"Experiencia bancaria, préstamos y finanzas por más de {banking} años.", "Educamos al cliente para que conserve el crédito que vuelva a establecer."]},
+            {"title": "¿Qué es el crédito?", "bullets": ["El crédito es flexibilidad, pero no es dinero gratis.", "El crédito mide riesgo y comportamiento de pago.", "Afecta vivienda, autos, intereses y oportunidades."]},
+            {"title": "Los burós de crédito", "bullets": ["Equifax, Experian y TransUnion son repositorios de datos.", "No son agencias del gobierno y reciben la información de los acreedores.", "Los reportes se atan al nombre, seguro social, dirección y fecha de nacimiento."]},
+            {"title": "Cómo se daña el crédito", "bullets": ["Un pago hecho un día después de la fecha límite ya está tarde con el acreedor.", "Los burós usualmente reportan 30, 60, 90, 120, 150 y a veces 180 días tarde.", "Un pago de 30 días tarde puede bajar el puntaje fuertemente y ponerse al día al mes siguiente no devuelve esos puntos de inmediato.", "La morosidad severa puede terminar en charge-off y luego en cuentas externas de colección."]},
+            {"title": "Colecciones, juicios y bancarrota", "bullets": ["Las colecciones pueden aparecer luego bajo compañías externas cobrando para el acreedor original.", "Si un cobrador demanda y gana, su poder de cobro aumenta mucho.", "Cuando las deudas y demandas se vuelven inmanejables, una consulta de bancarrota puede ser la decisión correcta.", "Siempre hay que alinear el riesgo legal con el estado donde se está arreglando el crédito."]},
+            {"title": "Cómo funcionan las tarjetas", "bullets": ["La utilización es el porcentaje del límite que reporta cuando corta el estado de cuenta.", "Los mismos $500 afectan muy diferente una tarjeta de $1,000 frente a una de $10,000.", "La fecha de pago evita la tardanza; la fecha de corte es usualmente cuando reporta el balance.", "Para maximizar el puntaje, el balance debe estar lo más bajo posible en la fecha de corte."]},
+            {"title": "Lo que permite la ley", "bullets": ["La Ley del Crédito Justo permite disputar información con los burós.", "Cada buró se trabaja por separado.", "Nadie puede garantizar resultados porque no controla el correo, los burós, los acreedores ni los prestamistas.", "El cliente puede hacerlo solo, pero muchos contratan ayuda por tiempo y experiencia."]},
+            {"title": "Divulgaciones importantes", "bullets": ["Las compañías de reparación de crédito no pueden cobrar el servicio completo por adelantado.", f"Tarifa de consulta y educación: ${consultation_fee}.", f"Tarifa mensual estándar: ${monthly_fee} por {months} meses.", billing_note]},
+            {"title": "Nuestro programa estándar", "bullets": ["Revisamos los 3 reportes, educamos al cliente, preparamos disputas y enviamos el trabajo de cada ciclo.", "La presentación confirma los precios y facturación vigentes del negocio activo antes de finalizarse.", "La marca del negocio se toma automáticamente del registro abierto."]},
+            {"title": "Próximos pasos", "bullets": ["Firmar acuerdo y divulgaciones requeridas.", "Proveer dos identificaciones y dos pruebas de dirección.", "Enviar toda respuesta que llegue por correo de los burós o cobradores.", "No solicitar crédito nuevo sin hablar primero de la estrategia."]},
+        ]
+        if state:
+            sections.insert(7, {"title": f"Enfoque estatal: {state}", "bullets": ["El término para demandar y el tiempo de reporte deben confirmarse según el estado del cliente.", "La ley estatal afecta si conviene disputar, esperar, negociar o considerar bancarrota primero."]})
+    return sections
+
+
+def _presentation_create_pptx(deck_path: Path, profile: dict, form_data: dict, sections: list[dict]):
+    if not PptxPresentation:
+        raise RuntimeError("python-pptx is not available")
+    prs = PptxPresentation()
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+
+    contact = _presentation_contact_block(profile)
+    brand_name = contact["business_name"]
+    subtitle = form_data.get("audience") or ("Client Education" if (form_data.get("language") or "english") == "english" else "Educación al Cliente")
+
+    def add_title_slide(title: str, subtitle_text: str):
+        slide = prs.slides.add_slide(prs.slide_layouts[0])
+        slide.shapes.title.text = title
+        slide.placeholders[1].text = subtitle_text
+        return slide
+
+    def add_bullets_slide(title: str, bullets: list[str]):
+        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        slide.shapes.title.text = title
+        tf = slide.placeholders[1].text_frame
+        tf.clear()
+        for i, bullet in enumerate(bullets):
+            p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+            p.text = bullet
+            p.level = 0
+        return slide
+
+    add_title_slide(form_data.get("presentation_title") or f"{brand_name} Presentation", subtitle)
+    add_bullets_slide("Business Branding", [
+        brand_name,
+        f"DBA: {contact['dba_name']}" if contact['dba_name'] else "",
+        f"Phone: {contact['phone']}" if contact['phone'] else "",
+        f"Website: {contact['website']}" if contact['website'] else "",
+    ])
+
+    for sec in sections:
+        bullets = [b for b in sec.get("bullets") or [] if b]
+        add_bullets_slide(sec.get("title") or "Section", bullets)
+
+    contact_bullets = [b for b in [contact.get("address"), contact.get("phone"), contact.get("email"), contact.get("website")] if b]
+    add_bullets_slide("Contact Information" if (form_data.get("language") or "english") == "english" else "Información de Contacto", contact_bullets)
+    prs.save(str(deck_path))
+
+
+def _presentation_store_metadata(deck_dir: Path, meta: dict):
+    _presentation_meta_path(deck_dir).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+
+def _presentation_load_library(profile: dict) -> list[dict]:
+    workspace_dir = _presentation_workspace_dir(profile)
+    rows = []
+    for child in sorted(workspace_dir.iterdir(), reverse=True):
+        if not child.is_dir():
+            continue
+        meta_path = _presentation_meta_path(child)
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        meta["deck_id"] = child.name
+        meta["pptx_exists"] = bool(meta.get("pptx_file") and (child / meta.get("pptx_file")).exists())
+        meta["pdf_exists"] = bool(meta.get("pdf_file") and (child / meta.get("pdf_file")).exists())
+        meta["outline"] = meta.get("outline") or []
+        rows.append(meta)
+    rows.sort(key=lambda x: x.get("updated_at") or x.get("created_at") or "", reverse=True)
+    return rows
+
+
+def _presentation_find_deck(profile: dict, deck_id: str) -> tuple[Path, dict] | tuple[None, None]:
+    deck_dir = _presentation_workspace_dir(profile) / deck_id
+    meta_path = _presentation_meta_path(deck_dir)
+    if not deck_dir.exists() or not meta_path.exists():
+        return None, None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None, None
+    meta["deck_id"] = deck_id
+    return deck_dir, meta
+
+
+def _presentation_summary_cards(profile: dict, decks: list[dict]) -> list[dict]:
+    return [
+        {"label": "Workspace", "value": profile.get("business_name") or profile.get("full_name") or profile.get("name") or "No workspace", "note": "Presentation library follows the active business record and its branding."},
+        {"label": "Presentations", "value": len(decks), "note": "Uploaded PowerPoints and generated draft decks for this workspace."},
+        {"label": "Languages", "value": ", ".join(sorted({(d.get("language") or "English").title() for d in decks})) if decks else "—", "note": "Deck language availability in this workspace."},
+    ]
+
+
+def render_presentations_module(request: Request, message: str = "", error: str = "", selected_deck_id: str = ""):
+    current_profile = get_current_profile_context(request)
+    decks = _presentation_load_library(current_profile)
+    selected = None
+    if selected_deck_id:
+        for deck in decks:
+            if deck.get("deck_id") == selected_deck_id:
+                selected = deck
+                break
+    return templates.TemplateResponse(
+        "presentations.html",
+        {
+            "request": request,
+            "active_module": "presentations",
+            "page_title": "Presentations",
+            "workspace_title": current_profile.get("business_name") or current_profile.get("full_name") or current_profile.get("name") or "Presentations",
+            "current_client": get_current_client_context(request),
+            "current_profile": current_profile,
+            "current_theme": active_theme_background_for_request(request, "module", current_profile),
+            "theme_runtime": active_theme_runtime_for_request(request, "module", current_profile),
+            "software_name": SOFTWARE_NAME,
+            "software_tagline": SOFTWARE_TAGLINE,
+            "presentation_decks": decks,
+            "presentation_selected": selected,
+            "summary_cards": _presentation_summary_cards(current_profile, decks),
+            "message": message,
+            "error": error,
+        },
+    )
+def get_current_profile_context(request: Request) -> dict:
+    pid = (request.cookies.get('crm_current_profile_id') or '').strip()
+    ptype = (request.cookies.get('crm_current_profile_type') or '').strip()
+    pname = (request.cookies.get('crm_current_profile_name') or '').strip()
+    pmode = (request.cookies.get('crm_current_profile_mode') or '').strip()
+    if not pid:
+        return {}
+    profile = {}
+    if ptype == 'corporate':
+        profile = fetch_corporate_profile(pid)
+        if profile:
+            profile['type'] = 'corporate'
+            profile['name'] = profile.get('business_name') or pname
+    elif ptype == 'personal':
+        profile = fetch_personal_profile(pid)
+        if profile:
+            profile['type'] = 'personal'
+            profile['name'] = profile.get('full_name') or pname
+    if not profile:
+        return {'id': pid, 'name': pname, 'mode': pmode, 'type': ptype}
+    profile['id'] = pid
+    profile['mode'] = profile.get('module_mode') or pmode
+    profile['name'] = profile.get('name') or pname
+    return profile
+
+
+def attach_current_profile_cookie(response, profile_id: str, profile_name: str, mode: str, profile_type: str):
+    response.set_cookie('crm_current_profile_id', str(profile_id), path='/')
+    response.set_cookie('crm_current_profile_name', str(profile_name or ''), path='/')
+    response.set_cookie('crm_current_profile_mode', str(mode or ''), path='/')
+    response.set_cookie('crm_current_profile_type', str(profile_type or ''), path='/')
+    return response
+
+
+def clear_current_profile_cookie(response):
+    for key in ('crm_current_profile_id', 'crm_current_profile_name', 'crm_current_profile_mode', 'crm_current_profile_type'):
+        response.delete_cookie(key, path='/')
+    return response
+
+
+def render_credit_repair_dashboard(request: Request, q: str = '', focus: str = '', sort_by: str = 'name', sort_dir: str = 'asc', message: str = '', error: str = '', calendar_view: str = 'month', calendar_month: str = '', calendar_date: str = '', work_queue: str = 'redisputes'):
+    sort_by, sort_dir = _safe_client_sort(sort_by, sort_dir)
+    current_profile = get_current_profile_context(request)
+    profile_id = current_profile.get('id', '')
+    profile_type = current_profile.get('type', 'corporate')
+    dashboard_summary = get_credit_repair_dashboard_snapshot(profile_id=profile_id, profile_type=profile_type)
+    calendar_appointments, calendar_followups, calendar_redisputes = [], [], []
+    calendar_warning = ''
+    conn = None
+    try:
+        conn = get_conn()
+        with conn.cursor() as cur:
+            calendar_appointments, calendar_followups, calendar_redisputes = fetch_credit_repair_dashboard_calendar_data(cur, profile_id=profile_id)
+    except Exception as exc:
+        calendar_warning = f"Credit Repair Dashboard calendar could not fully load: {exc}"
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+    credit_dashboard_calendar = build_client_calendar_month(
+        appointments=calendar_appointments,
+        followups=calendar_followups,
+        redispute_events=calendar_redisputes,
+        month_value=calendar_month or '',
+        calendar_view=calendar_view or 'month',
+        calendar_date=calendar_date or ''
+    )
+    credit_dashboard_work_queue = build_credit_repair_dashboard_work_queue(
+        appointments=calendar_appointments,
+        followups=calendar_followups,
+        redisputes=calendar_redisputes,
+        selected_queue=work_queue or 'redisputes'
+    )
+    default_focus = ''
+    search_results = get_credit_repair_search_results(q, sort_by, sort_dir, profile_id=profile_id) if q else []
+    focus_results = get_credit_repair_focus_rows(focus, sort_by, sort_dir, profile_id=profile_id) if (focus and not q) else []
+    if not q and not focus and profile_id:
+        default_focus = 'active_clients'
+        focus_results = get_credit_repair_focus_rows(default_focus, sort_by, sort_dir, profile_id=profile_id)
+    active_focus = focus or default_focus
+    workspace_title = current_profile.get('business_name') or current_profile.get('full_name') or current_profile.get('name') or 'Credit Repair Dashboard'
+    return templates.TemplateResponse('credit_repair_dashboard.html', {
+        'request': request,
+        'page_title': workspace_title,
+        'workspace_title': workspace_title,
+        'active_module': 'credit_repair',
+        'current_client': get_current_client_context(request),
+        'current_profile': current_profile,
+        'current_theme': active_theme_for_request(request, current_profile),
+        'theme_catalog': THEME_CATALOG,
+        'software_name': SOFTWARE_NAME,
+        'software_tagline': SOFTWARE_TAGLINE,
+        'dashboard_summary': dashboard_summary,
+        'credit_dashboard_calendar': credit_dashboard_calendar,
+        'credit_dashboard_work_queue': credit_dashboard_work_queue,
+        'calendar_warning': calendar_warning,
+        'calendar_view': calendar_view,
+        'calendar_month': calendar_month,
+        'calendar_date': calendar_date,
+        'work_queue': credit_dashboard_work_queue.get('selected'),
+        'dashboard_calendar_return_url': f"/ui/credit-repair-dashboard?work_queue={credit_dashboard_work_queue.get('selected')}&calendar_view={credit_dashboard_calendar.get('view_mode')}&calendar_month={credit_dashboard_calendar.get('month_value')}&calendar_date={credit_dashboard_calendar.get('selected_date')}",
+        'search_query': q,
+        'search_results': search_results,
+        'results_count': len(search_results),
+        'focus_key': active_focus,
+        'focus_results': focus_results,
+        'focus_count': len(focus_results),
+        'focus_label': ('Current Company Clients' if active_focus == 'active_clients' and not focus and not q else (active_focus or '').replace('_',' ').title()),
+        'sort_by': sort_by,
+        'sort_dir': sort_dir,
+        'message': message,
+        'error': error,
+    })
+
+
+@app.get('/ui/profile-logo/{profile_type}/{profile_id}')
+def ui_profile_logo(profile_type: str, profile_id: str):
+    profile = fetch_corporate_profile(profile_id) if profile_type == 'corporate' else fetch_personal_profile(profile_id)
+    path = profile.get('logo_file_path') or ''
+    if path and os.path.exists(path):
+        ext = os.path.splitext(path)[1].lower()
+        media_type = 'image/png' if ext == '.png' else 'image/jpeg'
+        return FileResponse(path, media_type=media_type)
+    fallback_letter = (profile.get('business_name') or profile.get('full_name') or profile.get('name') or 'P')[:1]
+    fallback_primary = '#0b1f33' if profile_type == 'corporate' else '#1f5a8a'
+    return HTMLResponse(content=_avatar_svg(fallback_letter, primary=fallback_primary, secondary='#d7af57'), media_type='image/svg+xml')
+
+
+@app.get('/ui/credit-repair-dashboard' , response_class=HTMLResponse)
+@app.get('/ui/credit-repair', response_class=HTMLResponse)
+def ui_credit_repair(request: Request, q: str = '', focus: str = '', sort_by: str = 'name', sort_dir: str = 'asc', profile_id: str = '', message: str = '', error: str = '', calendar_view: str = 'month', calendar_month: str = '', calendar_date: str = '', work_queue: str = 'redisputes'):
+    if not is_authenticated(request):
+        return RedirectResponse(url="/", status_code=303)
+    if profile_id:
+        return RedirectResponse(url='/ui/open-profile?' + urlencode({'profile_type': 'corporate', 'profile_id': profile_id, 'target': 'credit_repair'}), status_code=303)
+    return render_credit_repair_dashboard(request, q=q, focus=focus, sort_by=sort_by, sort_dir=sort_dir, message=message, error=error, calendar_view=calendar_view, calendar_month=calendar_month, calendar_date=calendar_date, work_queue=work_queue)
+
+
+def _safe_ui_return_target(return_to: str, fallback: str = '/ui/lobby') -> str:
+    target = (return_to or '').strip()
+    if not target.startswith('/ui/'):
+        target = fallback
+    try:
+        parsed = urlsplit(target)
+        if not (parsed.path or '').startswith('/ui/'):
+            parsed = urlsplit(fallback)
+        clean_pairs = [
+            (k, v)
+            for (k, v) in parse_qsl(parsed.query, keep_blank_values=True)
+            if k not in {'edit_corporate_id', 'edit_personal_id', 'open_editor', 'return_to'}
+        ]
+        clean_query = urlencode(clean_pairs, doseq=True)
+        return urlunsplit(('', '', parsed.path or '/ui/lobby', clean_query, ''))
+    except Exception:
+        fallback_parsed = urlsplit(fallback if fallback.startswith('/ui/') else '/ui/lobby')
+        clean_pairs = [
+            (k, v)
+            for (k, v) in parse_qsl(fallback_parsed.query, keep_blank_values=True)
+            if k not in {'edit_corporate_id', 'edit_personal_id', 'open_editor', 'return_to'}
+        ]
+        return urlunsplit(('', '', fallback_parsed.path or '/ui/lobby', urlencode(clean_pairs, doseq=True), ''))
+
+
+def _append_redirect_message(base_url: str, key: str, value: str) -> str:
+    sep = '&' if '?' in base_url else '?'
+    return f"{base_url}{sep}{key}={quote_plus(value)}"
+
+
+def _append_query_params(base_url: str, params: dict[str, str]) -> str:
+    parsed = urlsplit(base_url if (base_url or '').startswith('/ui/') else '/ui/lobby')
+    pairs = list(parse_qsl(parsed.query, keep_blank_values=True))
+    for key, value in (params or {}).items():
+        if value is None:
+            continue
+        pairs.append((key, value))
+    return urlunsplit(('', '', parsed.path or '/ui/lobby', urlencode(pairs, doseq=True), ''))
+
+
+@app.post('/ui/profile/corporate/save', response_class=HTMLResponse)
+def ui_save_corporate_profile(
+    request: Request,
+    profile_id: str = Form(''),
+    business_name: str = Form(...),
+    dba_name: str = Form(''),
+    business_address: str = Form(''),
+    address1: str = Form(''),
+    suite_unit: str = Form(''),
+    city: str = Form(''),
+    state: str = Form(''),
+    zip_code: str = Form(''),
+    contact_person: str = Form(''),
+    contact_first_name: str = Form(''),
+    contact_middle_name: str = Form(''),
+    contact_last_name: str = Form(''),
+    business_phone: str = Form(''),
+    business_phone_type: str = Form(''),
+    business_phone_extension: str = Form(''),
+    contact_phone: str = Form(''),
+    contact_phone_type: str = Form(''),
+    contact_phone_extension: str = Form(''),
+    email: str = Form(''),
+    contact_email: str = Form(''),
+    website: str = Form(''),
+    ein: str = Form(''),
+    entity_type: str = Form(''),
+    tax_treatment: str = Form(''),
+    is_nonprofit: Optional[str] = Form(None),
+    llc_managers_json: str = Form('[]'),
+    corp_officers_json: str = Form('[]'),
+    managers: str = Form(''),
+    start_date: str = Form(''),
+    fiscal_year_label: str = Form('January 1 to December 31'),
+    accounting_method: str = Form('calendar_year'),
+    module_mode: str = Form('credit_repair_accounting'),
+    logo_file: UploadFile = File(None),
+    dashboard_theme: str = Form('royal_blue'),
+    return_to: str = Form(''),
+):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            ensure_corporate_profiles_table(cur)
+            for ddl in [
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS dba_name TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS phone TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_person TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS managers TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS start_date DATE",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS fiscal_year_label TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS accounting_method TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS module_mode TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS is_nonprofit BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS dashboard_theme TEXT DEFAULT 'royal_blue'",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS use_custom_theme BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS tax_treatment TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS llc_managers_json TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS corp_officers_json TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS contact_email TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS dashboard_theme TEXT DEFAULT 'royal_blue'",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_address1 TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_suite_unit TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_city TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_state TEXT",
+                "ALTER TABLE corporate_profiles ADD COLUMN IF NOT EXISTS mailing_zip TEXT"
+            ]:
+                try:
+                    cur.execute(ddl)
+                except Exception:
+                    pass
+            existing = fetch_corporate_profile(profile_id) if profile_id else {}
+            logo_name = existing.get('logo_file_name','')
+            logo_path = existing.get('logo_file_path','')
+            new_logo_name, new_logo_path = save_profile_logo(logo_file)
+            if new_logo_path:
+                logo_name, logo_path = new_logo_name, new_logo_path
+
+            business_name = (business_name or '').strip()
+            dba_name = (dba_name or '').strip()
+            address1 = (address1 or '').strip()
+            suite_unit = (suite_unit or '').strip()
+            city = (city or '').strip()
+            state = (state or '').strip().upper()
+            zip_code = (zip_code or '').strip()
+            business_address = _compose_profile_address(address1, suite_unit, city, state, zip_code, business_address)
+            business_phone = _validate_phone_field(business_phone or '') if (business_phone or '').strip() else ''
+            contact_phone = _validate_phone_field(contact_phone or '') if (contact_phone or '').strip() else ''
+            email = _validate_email_field(email or '')
+            contact_email = _validate_email_field(contact_email or '')
+            website = _validate_website_field(website or '')
+            ein = _normalize_ein(ein) if (ein or '').strip() else ''
+            dashboard_theme = dashboard_theme if dashboard_theme in THEME_CATALOG else existing.get('dashboard_theme', '')
+            use_custom_theme = bool(existing.get('use_custom_theme')) and bool(dashboard_theme)
+            contact_person = (contact_person or '').strip() or ' '.join([p for p in [(contact_first_name or '').strip(), (contact_middle_name or '').strip(), (contact_last_name or '').strip()] if p]).strip()
+            pid = profile_id or uuid4().hex
+            cur.execute("""
+                INSERT INTO corporate_profiles (
+                    id,business_name,dba_name,business_address,address1,suite_unit,city,state,zip_code,
+                    contact_person,contact_first_name,contact_middle_name,contact_last_name,
+                    phone,business_phone,business_phone_type,business_phone_extension,
+                    contact_phone,contact_phone_type,contact_phone_extension,
+                    email,contact_email,website,ein,entity_type,tax_treatment,is_nonprofit,
+                    llc_managers_json,corp_officers_json,managers,start_date,fiscal_year_label,accounting_method,module_mode,
+                    logo_file_name,logo_file_path,dashboard_theme,use_custom_theme,is_active,updated_at
+                )
+                VALUES (
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,
+                    %s,%s,%s,%s,
+                    %s,%s,%s,
+                    %s,%s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,NULLIF(%s,'')::date,%s,%s,%s,
+                    %s,%s,%s,%s,TRUE,CURRENT_TIMESTAMP
+                )
+                ON CONFLICT (id) DO UPDATE SET
+                    business_name=EXCLUDED.business_name, dba_name=EXCLUDED.dba_name, business_address=EXCLUDED.business_address,
+                    address1=EXCLUDED.address1, suite_unit=EXCLUDED.suite_unit, city=EXCLUDED.city, state=EXCLUDED.state, zip_code=EXCLUDED.zip_code,
+                    contact_person=EXCLUDED.contact_person, contact_first_name=EXCLUDED.contact_first_name, contact_middle_name=EXCLUDED.contact_middle_name, contact_last_name=EXCLUDED.contact_last_name,
+                    phone=EXCLUDED.phone, business_phone=EXCLUDED.business_phone, business_phone_type=EXCLUDED.business_phone_type, business_phone_extension=EXCLUDED.business_phone_extension,
+                    contact_phone=EXCLUDED.contact_phone, contact_phone_type=EXCLUDED.contact_phone_type, contact_phone_extension=EXCLUDED.contact_phone_extension,
+                    email=EXCLUDED.email, contact_email=EXCLUDED.contact_email, website=EXCLUDED.website, ein=EXCLUDED.ein, entity_type=EXCLUDED.entity_type, tax_treatment=EXCLUDED.tax_treatment,
+                    is_nonprofit=EXCLUDED.is_nonprofit, llc_managers_json=EXCLUDED.llc_managers_json, corp_officers_json=EXCLUDED.corp_officers_json, managers=EXCLUDED.managers,
+                    start_date=EXCLUDED.start_date, fiscal_year_label=EXCLUDED.fiscal_year_label, accounting_method=EXCLUDED.accounting_method, module_mode=EXCLUDED.module_mode,
+                    logo_file_name=EXCLUDED.logo_file_name, logo_file_path=EXCLUDED.logo_file_path, dashboard_theme=EXCLUDED.dashboard_theme, use_custom_theme=EXCLUDED.use_custom_theme, updated_at=CURRENT_TIMESTAMP
+            """, (
+                pid, business_name, dba_name, business_address, address1, suite_unit, city, state, zip_code,
+                contact_person, (contact_first_name or '').strip(), (contact_middle_name or '').strip(), (contact_last_name or '').strip(),
+                business_phone, business_phone, (business_phone_type or '').strip(), (business_phone_extension or '').strip(),
+                contact_phone, (contact_phone_type or '').strip(), (contact_phone_extension or '').strip(),
+                email, contact_email, website, ein, (entity_type or '').strip(), (tax_treatment or '').strip(), bool(is_nonprofit),
+                llc_managers_json or '[]', corp_officers_json or '[]', managers, start_date, fiscal_year_label, accounting_method, module_mode,
+                logo_name, logo_path, dashboard_theme, use_custom_theme
+            ))
+        destination = _safe_ui_return_target(return_to, '/ui/lobby')
+        return RedirectResponse(url=_append_redirect_message(destination, 'message', 'Corporate profile saved.'), status_code=303)
+    except Exception as exc:
+        if (return_to or '').strip().startswith('/ui/'):
+            base_target = _safe_ui_return_target(return_to, '/ui/lobby')
+            error_url = _append_query_params(base_target, {
+                'error': str(exc),
+                'open_editor': 'corporate',
+                'edit_corporate_id': profile_id or '',
+                'return_to': base_target,
+            })
+            return RedirectResponse(url=error_url, status_code=303)
+        return RedirectResponse(url='/ui/lobby?error=' + quote_plus(str(exc)), status_code=303)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/profile/personal/save', response_class=HTMLResponse)
+def ui_save_personal_profile(
+    request: Request,
+    profile_id: str = Form(''),
+    full_name: str = Form(''),
+    first_name: str = Form(''),
+    middle_name: str = Form(''),
+    last_name: str = Form(''),
+    address_text: str = Form(''),
+    address1: str = Form(''),
+    suite_unit: str = Form(''),
+    city: str = Form(''),
+    state: str = Form(''),
+    zip_code: str = Form(''),
+    phone: str = Form(''),
+    email: str = Form(''),
+    ssn: str = Form(''),
+    date_of_birth: str = Form(''),
+    logo_file: UploadFile = File(None),
+    dashboard_theme: str = Form('royal_blue'),
+    return_to: str = Form(''),
+):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            ensure_personal_profiles_table(cur)
+            try:
+                cur.execute("ALTER TABLE personal_profiles ADD COLUMN IF NOT EXISTS dashboard_theme TEXT DEFAULT 'royal_blue'")
+                cur.execute("ALTER TABLE personal_profiles ADD COLUMN IF NOT EXISTS use_custom_theme BOOLEAN DEFAULT FALSE")
+            except Exception:
+                pass
+            existing = fetch_personal_profile(profile_id) if profile_id else {}
+            logo_name = existing.get('logo_file_name','')
+            logo_path = existing.get('logo_file_path','')
+            new_logo_name, new_logo_path = save_profile_logo(logo_file)
+            if new_logo_path:
+                logo_name, logo_path = new_logo_name, new_logo_path
+            full_name = (full_name or '').strip() or ' '.join([p for p in [(first_name or '').strip(), (middle_name or '').strip(), (last_name or '').strip()] if p]).strip()
+            if not full_name:
+                raise ValueError('Full name is required.')
+            address_text = _compose_profile_address((address1 or '').strip(), (suite_unit or '').strip(), (city or '').strip(), (state or '').strip().upper(), (zip_code or '').strip(), address_text)
+            phone = _validate_phone_field(phone or '') if (phone or '').strip() else ''
+            email = _validate_email_field(email or '')
+            dashboard_theme = dashboard_theme if dashboard_theme in THEME_CATALOG else existing.get('dashboard_theme', '')
+            use_custom_theme = bool(existing.get('use_custom_theme')) and bool(dashboard_theme)
+            pid = profile_id or uuid4().hex
+            cur.execute("""
+                INSERT INTO personal_profiles (id,full_name,first_name,middle_name,last_name,address_text,address1,suite_unit,city,state,zip_code,phone,email,ssn,date_of_birth,logo_file_name,logo_file_path,dashboard_theme,use_custom_theme,is_active,updated_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULLIF(%s,'')::date,%s,%s,%s,%s,TRUE,CURRENT_TIMESTAMP)
+                ON CONFLICT (id) DO UPDATE SET
+                    full_name=EXCLUDED.full_name, first_name=EXCLUDED.first_name, middle_name=EXCLUDED.middle_name, last_name=EXCLUDED.last_name,
+                    address_text=EXCLUDED.address_text, address1=EXCLUDED.address1, suite_unit=EXCLUDED.suite_unit, city=EXCLUDED.city, state=EXCLUDED.state, zip_code=EXCLUDED.zip_code,
+                    phone=EXCLUDED.phone, email=EXCLUDED.email, ssn=EXCLUDED.ssn, date_of_birth=EXCLUDED.date_of_birth,
+                    logo_file_name=EXCLUDED.logo_file_name, logo_file_path=EXCLUDED.logo_file_path, dashboard_theme=EXCLUDED.dashboard_theme, use_custom_theme=EXCLUDED.use_custom_theme, updated_at=CURRENT_TIMESTAMP
+            """, (pid, full_name, (first_name or '').strip(), (middle_name or '').strip(), (last_name or '').strip(), address_text, (address1 or '').strip(), (suite_unit or '').strip(), (city or '').strip(), (state or '').strip().upper(), (zip_code or '').strip(), phone, email, (ssn or '').strip(), date_of_birth, logo_name, logo_path, dashboard_theme, use_custom_theme))
+        destination = _safe_ui_return_target(return_to, '/ui/lobby')
+        return RedirectResponse(url=_append_redirect_message(destination, 'message', 'Personal profile saved.'), status_code=303)
+    except Exception as exc:
+        if (return_to or '').strip().startswith('/ui/'):
+            base_target = _safe_ui_return_target(return_to, '/ui/lobby')
+            error_url = _append_query_params(base_target, {
+                'error': str(exc),
+                'open_editor': 'personal',
+                'edit_personal_id': profile_id or '',
+                'return_to': base_target,
+            })
+            return RedirectResponse(url=error_url, status_code=303)
+        return RedirectResponse(url='/ui/lobby?error=' + quote_plus(str(exc)), status_code=303)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/profile/toggle-active', response_class=HTMLResponse)
+def ui_toggle_profile_active(profile_type: str = Form(...), profile_id: str = Form(...), desired_state: str = Form(...)):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        active = str(desired_state).strip().lower() in {'1','true','yes','active'}
+        with conn.cursor() as cur:
+            if profile_type == 'personal':
+                ensure_personal_profiles_table(cur)
+                cur.execute('UPDATE personal_profiles SET is_active = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s', (active, profile_id))
+            else:
+                ensure_corporate_profiles_table(cur)
+                cur.execute('UPDATE corporate_profiles SET is_active = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s', (active, profile_id))
+        return RedirectResponse(url='/ui/lobby?message=' + quote_plus('Profile ' + ('activated.' if active else 'deactivated.')), status_code=303)
+    except Exception as exc:
+        return RedirectResponse(url='/ui/lobby?error=' + quote_plus(str(exc)), status_code=303)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/profile/attach-legacy', response_class=HTMLResponse)
+def ui_attach_legacy_records(profile_type: str = Form(...), profile_id: str = Form(...)):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            ensure_profile_link_columns(cur)
+            if profile_type == 'personal':
+                profile = fetch_personal_profile(profile_id)
+                profile_name = (profile or {}).get('full_name') or 'selected profile'
+            else:
+                profile = fetch_corporate_profile(profile_id)
+                profile_name = (profile or {}).get('business_name') or 'selected business'
+            if not profile:
+                return RedirectResponse(url='/ui/lobby?error=' + quote_plus('The selected profile could not be found.'), status_code=303)
+            cur.execute(
+                """
+                UPDATE clients
+                   SET business_profile_id = %s,
+                       business_profile_type = %s
+                 WHERE COALESCE(NULLIF(business_profile_id, ''), '') = ''
+                """,
+                (profile_id, profile_type),
+            )
+            client_count = cur.rowcount or 0
+            cur.execute(
+                """
+                UPDATE client_invoices
+                   SET business_profile_id = %s,
+                       business_profile_type = %s
+                 WHERE COALESCE(NULLIF(business_profile_id, ''), '') = ''
+                """,
+                (profile_id, profile_type),
+            )
+            invoice_count = cur.rowcount or 0
+        return RedirectResponse(
+            url='/ui/lobby?message=' + quote_plus(
+                f'Attached {client_count} client record(s) and {invoice_count} invoice record(s) to {profile_name}.'
+            ),
+            status_code=303
+        )
+    except Exception as exc:
+        return RedirectResponse(url='/ui/lobby?error=' + quote_plus(str(exc)), status_code=303)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/profile/delete', response_class=HTMLResponse)
+def ui_delete_profile(profile_type: str = Form(...), profile_id: str = Form(...)):
+    return RedirectResponse(url='/ui/lobby?error=' + quote_plus('Profiles are not hard-deleted from this screen. Use Deactivate instead.'), status_code=303)
+
+@app.get("/", response_class=HTMLResponse)
+def ui_login_entry(request: Request, open_panel: int = 0):
+    return templates.TemplateResponse("login.html", {
+        "request": request,
+        "software_name": SOFTWARE_NAME,
+        "software_tagline": SOFTWARE_TAGLINE,
+        "current_theme": active_theme_background_for_request(request, "login"),
+        "active_theme_key": get_active_theme_key(request),
+        "theme_runtime": active_theme_runtime_for_request(request, "login"),
+        "theme_catalog": THEME_CATALOG,
+        "panel_open": bool(open_panel),
+        "license_activated": is_license_activated(),
+        "already_authenticated": is_authenticated(request),
+        "message": request.query_params.get("message", ""),
+        "error": request.query_params.get("error", ""),
+    })
+
+
+@app.post("/ui/login/open", response_class=HTMLResponse)
+def ui_login_open():
+    if not is_license_activated():
+        return RedirectResponse(url="/ui/license", status_code=303)
+    return RedirectResponse(url="/?open_panel=1", status_code=303)
+
+
+
+
+@app.post("/ui/login", response_class=HTMLResponse)
+def ui_login(username: str = Form(""), password: str = Form("")):
+    if not is_license_activated():
+        return RedirectResponse(url="/ui/license", status_code=303)
+
+    migrate_legacy_first_user()
+    username = (username or "").strip()
+    password = password or ""
+    if active_user_count() <= 0:
+        return RedirectResponse(
+            url="/ui/setup-first-use?message=" + quote_plus("Please create the first user before signing in."),
+            status_code=303,
+        )
+    if not username or not password:
+        return RedirectResponse(url='/?open_panel=1&error=' + quote_plus('Enter your username or email and password.'), status_code=303)
+
+    user = fetch_app_user_for_login(username)
+    now = datetime.now()
+    if user and user.get('locked_until_raw') and user.get('locked_until_raw') > now:
+        return RedirectResponse(url='/?open_panel=1&error=' + quote_plus('This account is temporarily locked. Try again later or use Forgot Password.'), status_code=303)
+    if not user or not user.get('is_active'):
+        return RedirectResponse(url='/?open_panel=1&error=' + quote_plus('Invalid username or password.'), status_code=303)
+    if not verify_password_hash(password, user.get('password_hash') or ''):
+        try:
+            with get_conn() as conn:
+                conn.autocommit = True
+                with conn.cursor() as cur:
+                    ensure_app_users_table(cur)
+                    failures = int(user.get('failed_login_attempts') or 0) + 1
+                    locked_until = now + timedelta(minutes=15) if failures >= 5 else None
+                    cur.execute("UPDATE app_users SET failed_login_attempts=%s, locked_until=%s, updated_at=CURRENT_TIMESTAMP WHERE id=%s", (failures, locked_until, user.get('id') or ''))
+        except Exception:
+            pass
+        return RedirectResponse(url='/?open_panel=1&error=' + quote_plus('Invalid username or password.'), status_code=303)
+
+    try:
+        with get_conn() as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                ensure_app_users_table(cur)
+                cur.execute("UPDATE app_users SET failed_login_attempts=0, locked_until=NULL, last_login_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=%s", (user.get('id') or '',))
+    except Exception:
+        pass
+
+    destination = "/ui/password/change?message=" + quote_plus("Please set a new password before continuing.") if user.get('force_password_reset') else "/ui/lobby"
+    response = RedirectResponse(url=destination, status_code=303)
+    return attach_auth_cookie(response, user.get('display_name') or user.get('username') or 'User', user.get('id') or '', user.get('role') or 'administrator')
+
+@app.get("/ui/logout", response_class=HTMLResponse)
+@app.post("/ui/logout", response_class=HTMLResponse)
+def ui_logout():
+    response = RedirectResponse(url='/?message=' + quote_plus('Logged out.'), status_code=303)
+    response = clear_auth_cookie(response)
+    response = clear_current_profile_cookie(response)
+    response = clear_current_client_cookie(response)
+    return response
+
+
+@app.get("/ui/license", response_class=HTMLResponse)
+def ui_license_screen(request: Request):
+    return templates.TemplateResponse("license.html", {
+        "request": request,
+        "software_name": SOFTWARE_NAME,
+        "software_tagline": SOFTWARE_TAGLINE,
+        "current_theme": active_theme_background_for_request(request, "login"),
+        "active_theme_key": get_active_theme_key(request),
+        "theme_runtime": active_theme_runtime_for_request(request, "login"),
+        "theme_catalog": THEME_CATALOG,
+        "message": request.query_params.get("message", ""),
+        "error": request.query_params.get("error", ""),
+        "demo_license_key": "CS-DEV-DEMO",
+        "reg_name": system_setting("registration_name", ""),
+        "reg_company": system_setting("registration_company", ""),
+        "reg_address": system_setting("registration_address", ""),
+        "reg_phone": system_setting("registration_phone", ""),
+        "reg_email": system_setting("registration_email", system_setting("admin_email", "")),
+        "reg_website": system_setting("registration_website", ""),
+    })
+
+
+
+@app.post("/ui/license/activate", response_class=HTMLResponse)
+def ui_license_activate(
+    license_key: str = Form(""),
+    registration_name: str = Form(""),
+    registration_company: str = Form(""),
+    registration_address: str = Form(""),
+    registration_phone: str = Form(""),
+    registration_email: str = Form(""),
+    registration_website: str = Form(""),
+):
+    clean_key = (license_key or "").strip()
+    if not clean_key:
+        return RedirectResponse(url="/ui/license?error=" + quote_plus("Enter a license key to continue."), status_code=303)
+    save_system_setting("license_key", clean_key)
+    save_system_setting("registration_name", (registration_name or "").strip())
+    save_system_setting("registration_company", (registration_company or "").strip())
+    save_system_setting("registration_address", (registration_address or "").strip())
+    save_system_setting("registration_phone", (registration_phone or "").strip())
+    save_system_setting("registration_email", (registration_email or "").strip())
+    save_system_setting("registration_website", (registration_website or "").strip())
+    response = RedirectResponse(url="/ui/setup-first-use?message=" + quote_plus("Software registration saved. Please create the first user."), status_code=303)
+    return response
+
+
+
+@app.get("/ui/setup-first-use", response_class=HTMLResponse)
+def ui_setup_first_use(request: Request):
+    if not is_license_activated():
+        return RedirectResponse(url="/ui/license", status_code=303)
+    migrate_legacy_first_user()
+    if active_user_count() > 0:
+        return RedirectResponse(url="/ui/settings?section=users&message=" + quote_plus("A user already exists. Manage additional users from Settings."), status_code=303)
+    return templates.TemplateResponse("setup_first_use.html", {
+        "request": request,
+        "software_name": SOFTWARE_NAME,
+        "software_tagline": SOFTWARE_TAGLINE,
+        "current_theme": active_theme_background_for_request(request, "login"),
+        "active_theme_key": get_active_theme_key(request),
+        "theme_runtime": active_theme_runtime_for_request(request, "login"),
+        "theme_catalog": THEME_CATALOG,
+        "message": request.query_params.get("message", ""),
+        "error": request.query_params.get("error", ""),
+        "admin_display_name": system_setting("registration_name", "Administrator") or "Administrator",
+        "admin_email": system_setting("registration_email", ""),
+        "admin_username": saved_admin_username(),
+        "admin_role": "administrator",
+        "role_catalog": ROLE_CATALOG,
+    })
+
+
+
+@app.post("/ui/setup-first-use", response_class=HTMLResponse)
+def ui_setup_first_use_save(
+    admin_display_name: str = Form("Administrator"),
+    admin_username: str = Form(""),
+    admin_email: str = Form(""),
+    admin_role: str = Form("administrator"),
+    admin_password: str = Form(""),
+    admin_password_confirm: str = Form(""),
+):
+    admin_display_name = (admin_display_name or "Administrator").strip() or "Administrator"
+    admin_username = (admin_username or admin_email or admin_display_name).strip()
+    admin_email = (admin_email or "").strip()
+    admin_role = _normalize_role(admin_role)
+
+    if not admin_username:
+        return RedirectResponse(url='/ui/setup-first-use?error=' + quote_plus('Enter the first username.'), status_code=303)
+    if not admin_password:
+        return RedirectResponse(url='/ui/setup-first-use?error=' + quote_plus('Create the first password.'), status_code=303)
+    if admin_password != admin_password_confirm:
+        return RedirectResponse(url='/ui/setup-first-use?error=' + quote_plus('Passwords do not match.'), status_code=303)
+    try:
+        validate_user_password_policy(admin_password)
+    except Exception as exc:
+        return RedirectResponse(url='/ui/setup-first-use?error=' + quote_plus(str(exc)), status_code=303)
+
+    with get_conn() as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_app_users_table(cur)
+            cur.execute("SELECT COUNT(*) FROM app_users")
+            total = int((cur.fetchone() or [0])[0] or 0)
+            if total > 0:
+                return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus('A user already exists. Use Settings > Users.'), status_code=303)
+            new_user_id = uuid4().hex
+            cur.execute(
+                """
+                INSERT INTO app_users (id, display_name, username, email, role, password_hash, is_active, created_at, updated_at, password_changed_at, force_password_reset)
+                VALUES (%s,%s,%s,%s,%s,%s,TRUE,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,FALSE)
+                """,
+                (new_user_id, admin_display_name, admin_username, admin_email, admin_role, make_password_hash(admin_password)),
+            )
+
+    save_system_setting("admin_display_name", admin_display_name)
+    save_system_setting("admin_username", admin_username)
+    save_system_setting("admin_email", admin_email)
+    save_system_setting("first_use_complete", "1")
+
+    return RedirectResponse(url="/?open_panel=1&message=" + quote_plus("First user created. Please sign in with your new credentials."), status_code=303)
+
+@app.get("/ui/open-profile", response_class=HTMLResponse)
+def ui_open_profile(request: Request, profile_type: str = 'corporate', profile_id: str = '', target: str = ''):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    profile_type = (profile_type or 'corporate').strip().lower()
+    profile_id = (profile_id or '').strip()
+    target = (target or '').strip().lower()
+    if not profile_id:
+        return RedirectResponse(url='/ui/lobby?error=' + quote_plus('Select a company or personal record first.'), status_code=303)
+
+    profile = fetch_personal_profile(profile_id) if profile_type == 'personal' else fetch_corporate_profile(profile_id)
+    if not profile:
+        return RedirectResponse(url='/ui/lobby?error=' + quote_plus('The selected workspace could not be found.'), status_code=303)
+    if not profile.get('is_active', True):
+        return RedirectResponse(url='/ui/lobby?error=' + quote_plus('That workspace is inactive. Activate it before opening it.'), status_code=303)
+
+    mode = (profile.get('module_mode') or ('personal_bookkeeping' if profile_type == 'personal' else 'credit_repair_accounting')).strip()
+    if profile_type == 'personal':
+        destination = '/ui/accounting-dashboard'
+    elif target == 'accounting' or mode == 'accounting_only':
+        destination = '/ui/accounting-dashboard'
+    else:
+        destination = '/ui/credit-repair-dashboard'
+
+    response = RedirectResponse(url=destination, status_code=303)
+    response = attach_current_profile_cookie(
+        response,
+        profile.get('id') or profile_id,
+        profile.get('business_name') or profile.get('full_name') or profile.get('name') or 'Workspace',
+        mode,
+        profile_type,
+    )
+    response = clear_current_client_cookie(response)
+    return response
+
+
+@app.get("/ui/platform-lobby", response_class=HTMLResponse)
+def ui_platform_lobby_alias(request: Request, message: str = '', error: str = '', edit_corporate_id: str = '', edit_personal_id: str = '', open_editor: str = '', return_to: str = ''):
+    return ui_home(request, message=message, error=error, edit_corporate_id=edit_corporate_id, edit_personal_id=edit_personal_id, open_editor=open_editor, return_to=return_to)
+
+
+
+@app.post('/ui/settings/save-lobby-theme', response_class=HTMLResponse)
+def ui_save_lobby_theme(lobby_theme: str = Form(DEFAULT_LOBBY_THEME)):
+    clean = set_active_theme_key(lobby_theme)
+    return RedirectResponse(url='/ui/global-settings?section=appearance&message=' + quote_plus('Global theme saved: ' + THEME_CATALOG.get(clean, {}).get('label', clean)), status_code=303)
+
+
+@app.post('/ui/settings/theme/apply', response_class=HTMLResponse)
+def ui_theme_apply(
+    request: Request,
+    theme_key: str = Form(DEFAULT_LOBBY_THEME),
+    apply_scope: str = Form('global'),
+    profile_type: str = Form(''),
+    profile_id: str = Form(''),
+):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    clean = normalize_theme_key(theme_key, THEME_PACK_LIBRARY)
+    if apply_scope == 'workspace' and profile_id:
+        try:
+            with get_conn() as conn:
+                conn.autocommit = True
+                with conn.cursor() as cur:
+                    if (profile_type or '').strip().lower() == 'personal':
+                        ensure_personal_profiles_table(cur)
+                        has_use_custom_theme = _table_has_column(cur, 'personal_profiles', 'use_custom_theme') or _safe_add_column(
+                            cur,
+                            'personal_profiles',
+                            'use_custom_theme',
+                            "ALTER TABLE personal_profiles ADD COLUMN use_custom_theme BOOLEAN DEFAULT FALSE",
+                        )
+                        if has_use_custom_theme:
+                            cur.execute("update personal_profiles set dashboard_theme=%s, use_custom_theme=TRUE, updated_at=CURRENT_TIMESTAMP where id=%s", (clean, profile_id))
+                        else:
+                            cur.execute("update personal_profiles set dashboard_theme=%s, updated_at=CURRENT_TIMESTAMP where id=%s", (clean, profile_id))
+                    else:
+                        ensure_corporate_profiles_table(cur)
+                        has_use_custom_theme = _table_has_column(cur, 'corporate_profiles', 'use_custom_theme') or _safe_add_column(
+                            cur,
+                            'corporate_profiles',
+                            'use_custom_theme',
+                            "ALTER TABLE corporate_profiles ADD COLUMN use_custom_theme BOOLEAN DEFAULT FALSE",
+                        )
+                        if has_use_custom_theme:
+                            cur.execute("update corporate_profiles set dashboard_theme=%s, use_custom_theme=TRUE, updated_at=CURRENT_TIMESTAMP where id=%s", (clean, profile_id))
+                        else:
+                            cur.execute("update corporate_profiles set dashboard_theme=%s, updated_at=CURRENT_TIMESTAMP where id=%s", (clean, profile_id))
+            response = RedirectResponse(url='/ui/global-settings?section=appearance&message=' + quote_plus('Workspace theme saved.'), status_code=303)
+            return _set_theme_cookie(response, get_active_theme_key(request))
+        except Exception as exc:
+            return RedirectResponse(url='/ui/global-settings?section=appearance&error=' + quote_plus(f'Unable to save workspace theme: {exc}'), status_code=303)
+
+    clean = set_active_theme_key(clean)
+    response = RedirectResponse(url='/ui/global-settings?section=appearance&message=' + quote_plus('Global theme applied: ' + THEME_CATALOG.get(clean, {}).get('label', clean)), status_code=303)
+    return _set_theme_cookie(response, clean)
+
+
+@app.post('/ui/settings/theme/ai-generate', response_class=HTMLResponse)
+def ui_theme_ai_generate(request: Request, prompt: str = Form('')):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    prompt = (prompt or '').strip()
+    if not prompt:
+        return RedirectResponse(url='/ui/global-settings?section=appearance&error=' + quote_plus('Enter a prompt for the AI Theme Agent.'), status_code=303)
+    refresh_theme_state()
+    generated = THEME_AGENT.generate_visual_only_theme_pack(prompt, existing_library=THEME_PACK_LIBRARY)
+    library = load_theme_library(THEME_LIBRARY_PATH)
+    key = normalize_theme_key(generated.get('key'), library) if generated.get('key') in library else generated.get('key')
+    library[key] = generated.get('pack') or {}
+    save_theme_library(THEME_LIBRARY_PATH, library)
+    refresh_theme_state()
+    return RedirectResponse(url='/ui/global-settings?section=appearance&message=' + quote_plus('AI Theme Agent saved draft theme pack: ' + library[key].get('label', key)), status_code=303)
+
+
+@app.get("/ui/lobby", response_class=HTMLResponse)
+@app.get("/ui/dashboard", response_class=HTMLResponse)
+def ui_home(
+    request: Request,
+    message: str = '',
+    error: str = '',
+    edit_corporate_id: str = '',
+    edit_personal_id: str = '',
+    open_editor: str = '',
+    prefill_business_name: str = '',
+    prefill_module_mode: str = '',
+    prefill_contact_person: str = '',
+    prefill_full_name: str = '',
+    prefill_email: str = '',
+    return_to: str = '',
+):
+    if not is_authenticated(request):
+        return RedirectResponse(url="/", status_code=303)
+    try:
+        conn = get_conn(); conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_corporate_profiles_table(cur)
+            ensure_personal_profiles_table(cur)
+            ensure_profile_link_columns(cur)
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    corporate_profiles = fetch_corporate_profiles()
+    personal_profiles = fetch_personal_profiles()
+    edit_corporate_profile = fetch_corporate_profile(edit_corporate_id) if edit_corporate_id else {}
+    edit_personal_profile = fetch_personal_profile(edit_personal_id) if edit_personal_id else {}
+
+    if open_editor == 'corporate' and not edit_corporate_profile:
+        draft_mode = (prefill_module_mode or 'credit_repair_accounting').strip()
+        if draft_mode not in {'credit_repair_accounting', 'accounting_only'}:
+            draft_mode = 'credit_repair_accounting'
+        edit_corporate_profile = {
+            'business_name': (prefill_business_name or '').strip(),
+            'module_mode': draft_mode,
+            'contact_person': (prefill_contact_person or '').strip(),
+            'email': (prefill_email or '').strip(),
+            'dashboard_theme': get_lobby_theme(),
+            'llc_managers_json': '[]',
+            'corp_officers_json': '[]',
+        }
+    if open_editor == 'personal' and not edit_personal_profile:
+        edit_personal_profile = {
+            'full_name': (prefill_full_name or '').strip(),
+            'email': (prefill_email or '').strip(),
+            'dashboard_theme': get_lobby_theme(),
+        }
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "page_title": "Lobby",
+        "software_name": SOFTWARE_NAME,
+        "software_tagline": SOFTWARE_TAGLINE,
+        "theme_catalog": THEME_CATALOG,
+        "current_theme": active_theme_background_for_request(request, "lobby"),
+        "active_theme_key": get_active_theme_key(request),
+        "theme_runtime": active_theme_runtime_for_request(request, "login"),
+        "active_module": "dashboard",
+        "platform_snapshot": get_platform_overview_snapshot(),
+        "current_client": get_current_client_context(request),
+        "lobby_theme": get_lobby_theme(request),
+        "current_profile": get_current_profile_context(request),
+        "corporate_profiles": corporate_profiles,
+        "personal_profiles": personal_profiles,
+        "edit_corporate_profile": edit_corporate_profile,
+        "edit_personal_profile": edit_personal_profile,
+        "open_editor": open_editor,
+        "return_to": return_to,
+        "message": message,
+        "error": error,
+    })
+
+
+
+@app.get("/ui/global-settings", response_class=HTMLResponse)
+@app.get("/ui/settings", response_class=HTMLResponse)
+def ui_settings(request: Request, section: str = "software_registration", edit_referral_source_id: str = "", edit_user_id: str = "", generated_reset_link: str = "", generated_reset_name: str = ""):
+    if not is_authenticated(request):
+        return RedirectResponse(url="/", status_code=303)
+    if not has_role_permission(current_user_role(request), 'global_settings'):
+        return RedirectResponse(url='/ui/lobby?error=' + quote_plus('You do not have permission to access Global Settings.'), status_code=303)
+    section = normalize_settings_section('global', section)
+    edit_user = fetch_app_user(edit_user_id) if edit_user_id and edit_user_id != 'new' else {}
+    extra_context = {
+        'registration_data': get_software_registration_data(),
+        'app_users': fetch_app_users(include_inactive=True),
+        'role_catalog': ROLE_CATALOG,
+        'role_permission_catalog': ROLE_PERMISSION_CATALOG,
+        'edit_user': edit_user,
+        'show_user_editor': bool(edit_user_id),
+        'current_user_name': request.cookies.get('crm_user_name') or 'Carlos G Suarez',
+        'current_user_role': request.cookies.get('crm_user_role') or 'administrator',
+        'current_user_role_label': ROLE_CATALOG.get(_normalize_role(request.cookies.get('crm_user_role') or 'administrator'), 'Administrator'),
+        'current_user_id': request.cookies.get('crm_user_id') or '',
+        'generated_reset_link': generated_reset_link,
+        'generated_reset_name': generated_reset_name,
+    }
+    if section in {"credit_repair_tables_records"}:
+        editor_state = {'source_id': '', 'source_name': '', 'company_name': '', 'source_type': 'other', 'phone': '', 'email': '', 'notes': '', 'is_active': True}
+        if edit_referral_source_id:
+            loaded = _fetch_referral_source_for_settings(edit_referral_source_id)
+            if loaded:
+                editor_state.update(loaded)
+        extra_context.update({'referral_source_editor_state': editor_state, 'show_referral_source_editor': True})
+    return render_settings_page(request, section=section, extra_context=extra_context, scope="global")
+
+
+
+@app.get("/ui/credit-repair-settings", response_class=HTMLResponse)
+def ui_credit_repair_settings(request: Request, section: str = "credit_repair_configuration", edit_referral_source_id: str = ""):
+    if not is_authenticated(request):
+        return RedirectResponse(url="/", status_code=303)
+    if not has_role_permission(current_user_role(request), 'credit_repair'):
+        return RedirectResponse(url='/ui/lobby?error=' + quote_plus('You do not have permission to access Credit Repair Settings.'), status_code=303)
+    section = normalize_settings_section('credit_repair', section)
+    extra_context = {}
+    if section in {"credit_repair_tables_records"}:
+        editor_state = {'source_id': '', 'source_name': '', 'company_name': '', 'source_type': 'other', 'phone': '', 'email': '', 'notes': '', 'is_active': True}
+        if edit_referral_source_id:
+            loaded = _fetch_referral_source_for_settings(edit_referral_source_id)
+            if loaded:
+                editor_state.update(loaded)
+        extra_context.update({'referral_source_editor_state': editor_state, 'show_referral_source_editor': True})
+    return render_settings_page(request, section=section, extra_context=extra_context, scope="credit_repair")
+
+
+@app.get("/ui/accounting-settings", response_class=HTMLResponse)
+def ui_accounting_settings(request: Request, section: str = "billing_invoice_configuration"):
+    if not is_authenticated(request):
+        return RedirectResponse(url="/", status_code=303)
+    if not has_role_permission(current_user_role(request), 'accounting'):
+        return RedirectResponse(url='/ui/lobby?error=' + quote_plus('You do not have permission to access Accounting Settings.'), status_code=303)
+    section = normalize_settings_section('accounting', section)
+    return render_settings_page(request, section=section, extra_context={}, scope="accounting")
+
+
+
+
+
+@app.post('/ui/settings/save-registration', response_class=HTMLResponse)
+def ui_settings_save_registration(
+    request: Request,
+    license_key: str = Form(''),
+    registration_name: str = Form(''),
+    registration_company: str = Form(''),
+    registration_address: str = Form(''),
+    registration_phone: str = Form(''),
+    registration_email: str = Form(''),
+    registration_website: str = Form(''),
+):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    clean_key = (license_key or '').strip()
+    if not clean_key:
+        return RedirectResponse(url='/ui/global-settings?section=software_registration&error=' + quote_plus('License key is required.'), status_code=303)
+    save_system_setting('license_key', clean_key)
+    save_system_setting('registration_name', (registration_name or '').strip())
+    save_system_setting('registration_company', (registration_company or '').strip())
+    save_system_setting('registration_address', (registration_address or '').strip())
+    save_system_setting('registration_phone', (registration_phone or '').strip())
+    save_system_setting('registration_email', (registration_email or '').strip())
+    save_system_setting('registration_website', (registration_website or '').strip())
+    return RedirectResponse(url='/ui/global-settings?section=software_registration&message=' + quote_plus('Software registration saved.'), status_code=303)
+
+
+
+@app.post('/ui/settings/users/save', response_class=HTMLResponse)
+def ui_settings_users_save(
+    request: Request,
+    user_id: str = Form(''),
+    display_name: str = Form(''),
+    username: str = Form(''),
+    email: str = Form(''),
+    role: str = Form('administrator'),
+    password: str = Form(''),
+    password_confirm: str = Form(''),
+    is_active: Optional[str] = Form(None),
+    require_password_reset: Optional[str] = Form(None),
+):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    if not has_role_permission(current_user_role(request), 'manage_users'):
+        return RedirectResponse(url='/ui/lobby?error=' + quote_plus('You do not have permission to manage users.'), status_code=303)
+    if not user_id and not is_administrator(request):
+        return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus('Only administrators can create software users.'), status_code=303)
+    display_name = (display_name or '').strip() or 'User'
+    username = (username or email or display_name).strip()
+    email = (email or '').strip()
+    role = _normalize_role(role)
+    active = bool(is_active)
+    require_reset = bool(require_password_reset)
+    current_user_id = current_user_id_cookie(request)
+    existing_user = fetch_app_user(user_id) if user_id else {}
+    if not username:
+        return _user_editor_redirect(user_id=user_id, is_new=not bool(user_id), error='Username is required.')
+    if email:
+        try:
+            email = _validate_email_field(email)
+        except Exception as exc:
+            return _user_editor_redirect(user_id=user_id, is_new=not bool(user_id), error=str(exc))
+    if user_id and (password or password_confirm) and password != password_confirm:
+        return _user_editor_redirect(user_id=user_id, error='Passwords do not match.')
+    if not user_id and not password:
+        return _user_editor_redirect(is_new=True, error='Password is required for a new user.')
+    if not user_id and password != password_confirm:
+        return _user_editor_redirect(is_new=True, error='Passwords do not match.')
+    if password:
+        try:
+            validate_user_password_policy(password)
+        except Exception as exc:
+            return _user_editor_redirect(user_id=user_id, is_new=not bool(user_id), error=str(exc))
+    if user_id and existing_user:
+        if existing_user.get('id') == current_user_id and not active:
+            return _user_editor_redirect(user_id=user_id, error='You cannot deactivate your own account from this screen.')
+        if existing_user.get('id') == current_user_id and role != 'administrator' and count_active_admins() <= 1:
+            return _user_editor_redirect(user_id=user_id, error='You cannot remove the last administrator role from yourself.')
+        if existing_user.get('role') == 'administrator' and role != 'administrator' and count_active_admins() <= 1:
+            return _user_editor_redirect(user_id=user_id, error='At least one active administrator must remain.')
+    try:
+        with get_conn() as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                ensure_app_users_table(cur)
+                cur.execute("SELECT id FROM app_users WHERE lower(username)=lower(%s) AND id <> COALESCE(NULLIF(%s,''),'')", (username, user_id))
+                if cur.fetchone():
+                    return _user_editor_redirect(user_id=user_id, is_new=not bool(user_id), error='That username is already in use.')
+                if email:
+                    cur.execute("SELECT id FROM app_users WHERE lower(COALESCE(email,''))=lower(%s) AND id <> COALESCE(NULLIF(%s,''),'')", (email, user_id))
+                    if cur.fetchone():
+                        return _user_editor_redirect(user_id=user_id, is_new=not bool(user_id), error='That email is already in use.')
+                if user_id:
+                    if password:
+                        cur.execute(
+                            """
+                            UPDATE app_users
+                               SET display_name=%s, username=%s, email=%s, role=%s, is_active=%s,
+                                   password_hash=%s, password_changed_at=CURRENT_TIMESTAMP,
+                                   force_password_reset=%s, updated_by=%s, updated_at=CURRENT_TIMESTAMP
+                             WHERE id=%s
+                            """,
+                            (display_name, username, email, role, active, make_password_hash(password), require_reset, current_user_id, user_id),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            UPDATE app_users
+                               SET display_name=%s, username=%s, email=%s, role=%s, is_active=%s,
+                                   force_password_reset=%s, updated_by=%s, updated_at=CURRENT_TIMESTAMP
+                             WHERE id=%s
+                            """,
+                            (display_name, username, email, role, active, require_reset, current_user_id, user_id),
+                        )
+                    msg = 'User updated.'
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO app_users (
+                            id, display_name, username, email, role, password_hash, is_active,
+                            created_at, updated_at, password_changed_at, force_password_reset,
+                            failed_login_attempts, created_by, updated_by
+                        )
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,%s,0,%s,%s)
+                        """,
+                        (uuid4().hex, display_name, username, email, role, make_password_hash(password), active, (require_reset or True), current_user_id, current_user_id),
+                    )
+                    msg = 'User created.'
+        return RedirectResponse(url='/ui/global-settings?section=users&message=' + quote_plus(msg), status_code=303)
+    except Exception as exc:
+        return _user_editor_redirect(user_id=user_id, is_new=not bool(user_id), error=str(exc))
+
+
+@app.post('/ui/settings/users/toggle-active', response_class=HTMLResponse)
+def ui_settings_users_toggle_active(request: Request, user_id: str = Form(...), desired_state: str = Form('1')):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    if not has_role_permission(current_user_role(request), 'manage_users'):
+        return RedirectResponse(url='/ui/lobby?error=' + quote_plus('You do not have permission to manage users.'), status_code=303)
+    active = str(desired_state).strip().lower() in {'1','true','yes','active'}
+    target = fetch_app_user(user_id)
+    current_user_id = current_user_id_cookie(request)
+    if not target:
+        return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus('User not found.'), status_code=303)
+    if target.get('id') == current_user_id and not active:
+        return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus('You cannot deactivate your own account from this screen.'), status_code=303)
+    if target.get('role') == 'administrator' and not active and count_active_admins() <= 1:
+        return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus('At least one active administrator must remain.'), status_code=303)
+    try:
+        with get_conn() as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                ensure_app_users_table(cur)
+                cur.execute("UPDATE app_users SET is_active=%s, updated_by=%s, updated_at=CURRENT_TIMESTAMP WHERE id=%s", (active, current_user_id, user_id))
+        return RedirectResponse(url='/ui/global-settings?section=users&message=' + quote_plus('User ' + ('activated.' if active else 'deactivated.')), status_code=303)
+    except Exception as exc:
+        return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus(str(exc)), status_code=303)
+
+
+@app.post('/ui/settings/users/delete', response_class=HTMLResponse)
+def ui_settings_users_delete(request: Request, user_id: str = Form(...)):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    if not is_administrator(request):
+        return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus('Only administrators can delete software users.'), status_code=303)
+    target = fetch_app_user(user_id)
+    current_user_id = current_user_id_cookie(request)
+    if not target:
+        return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus('User not found.'), status_code=303)
+    if target.get('id') == current_user_id:
+        return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus('You cannot delete your own account.'), status_code=303)
+    if target.get('role') == 'administrator' and count_active_admins() <= 1:
+        return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus('You cannot delete the last administrator.'), status_code=303)
+    if target.get('last_login_at_raw'):
+        return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus('This user has already logged in. Deactivate the account instead of deleting it.'), status_code=303)
+    try:
+        with get_conn() as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                ensure_app_users_table(cur)
+                cur.execute("DELETE FROM app_users WHERE id=%s", (user_id,))
+        return RedirectResponse(url='/ui/global-settings?section=users&message=' + quote_plus('User deleted.'), status_code=303)
+    except Exception as exc:
+        return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus(str(exc)), status_code=303)
+
+
+@app.post('/ui/settings/users/force-reset', response_class=HTMLResponse)
+def ui_settings_users_force_reset(request: Request, user_id: str = Form(...)):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    if not has_role_permission(current_user_role(request), 'manage_users'):
+        return RedirectResponse(url='/ui/lobby?error=' + quote_plus('You do not have permission to manage users.'), status_code=303)
+    try:
+        with get_conn() as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                ensure_app_users_table(cur)
+                cur.execute("UPDATE app_users SET force_password_reset=TRUE, updated_by=%s, updated_at=CURRENT_TIMESTAMP WHERE id=%s", (current_user_id_cookie(request), user_id))
+        return RedirectResponse(url='/ui/global-settings?section=users&message=' + quote_plus('Password reset required at next login.'), status_code=303)
+    except Exception as exc:
+        return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus(str(exc)), status_code=303)
+
+
+@app.post('/ui/settings/users/unlock', response_class=HTMLResponse)
+def ui_settings_users_unlock(request: Request, user_id: str = Form(...)):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    if not has_role_permission(current_user_role(request), 'manage_users'):
+        return RedirectResponse(url='/ui/lobby?error=' + quote_plus('You do not have permission to manage users.'), status_code=303)
+    try:
+        with get_conn() as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                ensure_app_users_table(cur)
+                cur.execute("UPDATE app_users SET failed_login_attempts=0, locked_until=NULL, updated_by=%s, updated_at=CURRENT_TIMESTAMP WHERE id=%s", (current_user_id_cookie(request), user_id))
+        return RedirectResponse(url='/ui/global-settings?section=users&message=' + quote_plus('User unlocked.'), status_code=303)
+    except Exception as exc:
+        return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus(str(exc)), status_code=303)
+
+
+@app.post('/ui/settings/users/generate-reset-link', response_class=HTMLResponse)
+def ui_settings_users_generate_reset_link(request: Request, user_id: str = Form(...)):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    if not has_role_permission(current_user_role(request), 'manage_users'):
+        return RedirectResponse(url='/ui/lobby?error=' + quote_plus('You do not have permission to manage users.'), status_code=303)
+    user = fetch_app_user(user_id)
+    if not user:
+        return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus('User not found.'), status_code=303)
+    raw_token, token_hash, expires_at = generate_user_reset_token()
+    try:
+        with get_conn() as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                ensure_app_users_table(cur)
+                cur.execute(
+                    """
+                    UPDATE app_users
+                       SET reset_token_hash=%s,
+                           reset_token_expires_at=%s,
+                           reset_sent_at=CURRENT_TIMESTAMP,
+                           force_password_reset=TRUE,
+                           updated_by=%s,
+                           updated_at=CURRENT_TIMESTAMP
+                     WHERE id=%s
+                    """,
+                    (token_hash, expires_at, current_user_id_cookie(request), user_id),
+                )
+        params = {
+            'section': 'users',
+            'message': f'Reset link generated for {user.get("display_name") or user.get("username") or "user"}.',
+            'generated_reset_link': '/ui/password/reset?token=' + raw_token,
+            'generated_reset_name': user.get('display_name') or user.get('username') or 'User',
+        }
+        return RedirectResponse(url='/ui/global-settings?' + urlencode(params), status_code=303)
+    except Exception as exc:
+        return RedirectResponse(url='/ui/global-settings?section=users&error=' + quote_plus(str(exc)), status_code=303)
+
+
+@app.get('/ui/password/change', response_class=HTMLResponse)
+def ui_password_change(request: Request, message: str = '', error: str = ''):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    user = fetch_app_user(current_user_id_cookie(request))
+    return templates.TemplateResponse('password_change.html', {
+        'request': request,
+        'page_title': 'Change Password',
+        'software_name': SOFTWARE_NAME,
+        'software_tagline': SOFTWARE_TAGLINE,
+        'message': message,
+        'error': error,
+        'current_theme': active_theme_background_for_request(request, 'login'),
+        'active_theme_key': get_active_theme_key(request),
+        'theme_runtime': active_theme_runtime_for_request(request, 'login'),
+        'display_name': user.get('display_name') or request.cookies.get('crm_user_name') or 'User',
+        'force_password_reset': bool(user.get('force_password_reset')),
+    })
+
+
+@app.post('/ui/password/change', response_class=HTMLResponse)
+def ui_password_change_save(request: Request, current_password: str = Form(''), new_password: str = Form(''), new_password_confirm: str = Form('')):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    current_user = fetch_app_user(current_user_id_cookie(request))
+    if not current_user:
+        return RedirectResponse(url='/?error=' + quote_plus('User session not found.'), status_code=303)
+
+    force_password_reset = bool(current_user.get('force_password_reset'))
+    login_user = fetch_app_user_for_login(current_user.get('username') or current_user.get('email') or '')
+    if not login_user:
+        return RedirectResponse(url='/?error=' + quote_plus('User session not found.'), status_code=303)
+
+    if not force_password_reset:
+        if not verify_password_hash(current_password or '', login_user.get('password_hash') or ''):
+            return RedirectResponse(url='/ui/password/change?error=' + quote_plus('Current password is not correct.'), status_code=303)
+
+    if (new_password or '') != (new_password_confirm or ''):
+        return RedirectResponse(url='/ui/password/change?error=' + quote_plus('Passwords do not match.'), status_code=303)
+    try:
+        validate_user_password_policy(new_password)
+    except Exception as exc:
+        return RedirectResponse(url='/ui/password/change?error=' + quote_plus(str(exc)), status_code=303)
+    try:
+        with get_conn() as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                ensure_app_users_table(cur)
+                cur.execute(
+                    """
+                    UPDATE app_users
+                       SET password_hash=%s,
+                           password_changed_at=CURRENT_TIMESTAMP,
+                           force_password_reset=FALSE,
+                           reset_token_hash=NULL,
+                           reset_token_expires_at=NULL,
+                           updated_by=%s,
+                           updated_at=CURRENT_TIMESTAMP
+                     WHERE id=%s
+                    """,
+                    (make_password_hash(new_password), current_user_id_cookie(request), current_user_id_cookie(request)),
+                )
+        response = RedirectResponse(url='/?open_panel=1&message=' + quote_plus('Password updated. Sign in with your new password.'), status_code=303)
+        response = clear_auth_cookie(response)
+        response = clear_current_profile_cookie(response)
+        response = clear_current_client_cookie(response)
+        return response
+    except Exception as exc:
+        return RedirectResponse(url='/ui/password/change?error=' + quote_plus(str(exc)), status_code=303)
+
+
+@app.get('/ui/forgot-password', response_class=HTMLResponse)
+def ui_forgot_password(request: Request, message: str = '', error: str = ''):
+    return templates.TemplateResponse('forgot_password.html', {
+        'request': request,
+        'page_title': 'Forgot Password',
+        'software_name': SOFTWARE_NAME,
+        'software_tagline': SOFTWARE_TAGLINE,
+        'message': message,
+        'error': error,
+        'current_theme': active_theme_background_for_request(request, 'login'),
+        'active_theme_key': get_active_theme_key(request),
+        'theme_runtime': active_theme_runtime_for_request(request, 'login'),
+    })
+
+
+@app.post('/ui/forgot-password', response_class=HTMLResponse)
+def ui_forgot_password_send(email: str = Form('')):
+    clean_email = (email or '').strip().lower()
+    if clean_email:
+        try:
+            with get_conn() as conn:
+                conn.autocommit = True
+                with conn.cursor() as cur:
+                    ensure_app_users_table(cur)
+                    cur.execute("SELECT id FROM app_users WHERE lower(COALESCE(email,''))=%s AND COALESCE(is_active, TRUE)=TRUE LIMIT 1", (clean_email,))
+                    row = cur.fetchone()
+                    if row:
+                        _raw_token, token_hash, expires_at = generate_user_reset_token()
+                        cur.execute("UPDATE app_users SET reset_token_hash=%s, reset_token_expires_at=%s, reset_sent_at=CURRENT_TIMESTAMP, force_password_reset=TRUE, updated_at=CURRENT_TIMESTAMP WHERE id=%s", (token_hash, expires_at, row[0]))
+        except Exception:
+            pass
+    return RedirectResponse(url='/ui/forgot-password?message=' + quote_plus('If an account matches that email, reset instructions have been prepared.'), status_code=303)
+
+
+@app.get('/ui/password/reset', response_class=HTMLResponse)
+def ui_password_reset(request: Request, token: str = '', message: str = '', error: str = ''):
+    token = (token or '').strip()
+    if not token:
+        return RedirectResponse(url='/ui/forgot-password?error=' + quote_plus('That reset link is not valid.'), status_code=303)
+    return templates.TemplateResponse('password_reset.html', {
+        'request': request,
+        'page_title': 'Reset Password',
+        'software_name': SOFTWARE_NAME,
+        'software_tagline': SOFTWARE_TAGLINE,
+        'message': message,
+        'error': error,
+        'current_theme': active_theme_background_for_request(request, 'login'),
+        'active_theme_key': get_active_theme_key(request),
+        'theme_runtime': active_theme_runtime_for_request(request, 'login'),
+        'token': token,
+    })
+
+
+@app.post('/ui/password/reset', response_class=HTMLResponse)
+def ui_password_reset_save(token: str = Form(''), new_password: str = Form(''), new_password_confirm: str = Form('')):
+    token = (token or '').strip()
+    if not token:
+        return RedirectResponse(url='/ui/forgot-password?error=' + quote_plus('That reset link is not valid.'), status_code=303)
+    if (new_password or '') != (new_password_confirm or ''):
+        return RedirectResponse(url='/ui/password/reset?token=' + quote_plus(token) + '&error=' + quote_plus('Passwords do not match.'), status_code=303)
+    try:
+        validate_user_password_policy(new_password)
+    except Exception as exc:
+        return RedirectResponse(url='/ui/password/reset?token=' + quote_plus(token) + '&error=' + quote_plus(str(exc)), status_code=303)
+    token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
+    try:
+        with get_conn() as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                ensure_app_users_table(cur)
+                cur.execute("SELECT id, reset_token_expires_at FROM app_users WHERE reset_token_hash=%s LIMIT 1", (token_hash,))
+                row = cur.fetchone()
+                if not row:
+                    return RedirectResponse(url='/ui/forgot-password?error=' + quote_plus('That reset link is not valid.'), status_code=303)
+                expires_at = row[1]
+                if not expires_at or expires_at < datetime.now():
+                    return RedirectResponse(url='/ui/forgot-password?error=' + quote_plus('That reset link has expired.'), status_code=303)
+                cur.execute(
+                    """
+                    UPDATE app_users
+                       SET password_hash=%s,
+                           password_changed_at=CURRENT_TIMESTAMP,
+                           force_password_reset=FALSE,
+                           failed_login_attempts=0,
+                           locked_until=NULL,
+                           reset_token_hash=NULL,
+                           reset_token_expires_at=NULL,
+                           updated_at=CURRENT_TIMESTAMP
+                     WHERE id=%s
+                    """,
+                    (make_password_hash(new_password), row[0]),
+                )
+        return RedirectResponse(url='/?message=' + quote_plus('Password reset complete. You can sign in now.'), status_code=303)
+    except Exception as exc:
+        return RedirectResponse(url='/ui/password/reset?token=' + quote_plus(token) + '&error=' + quote_plus(str(exc)), status_code=303)
+
+
+@app.post("/ui/system/backup", response_class=HTMLResponse)
+@app.post("/ui/system/backup", response_class=HTMLResponse)
+def ui_system_backup(request: Request, backup_note: str = Form(""), section: str = Form("backup")):
+    try:
+        zip_path, warnings, _backup_name = create_system_backup(backup_note)
+        return render_settings_page(request, section=section, message=build_backup_message(zip_path, warnings))
+    except Exception as exc:
+        return render_settings_page(request, section=section, error=f"Back-Up failed: {exc}")
+
+
+@app.get("/ui/system/backup/open-folder", response_class=HTMLResponse)
+def ui_open_backup_folder(request: Request):
+    try:
+        open_local_path(BACKUP_DIR)
+        return render_settings_page(request, section="backup", message="Back-Up Folder opened.")
+    except Exception as exc:
+        return render_settings_page(request, section="backup", error=f"Could not open Back-Up Folder: {exc}")
+
+
+@app.post("/ui/system/backup/delete", response_class=HTMLResponse)
+def ui_delete_backup_file(request: Request, backup_name: str = Form(...), section: str = Form("backup")):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    if not is_administrator(request):
+        return RedirectResponse(url='/ui/global-settings?section=backup&error=' + quote_plus('Only administrators can delete back-up files.'), status_code=303)
+    clean_name = Path((backup_name or '').strip()).name
+    if not clean_name or clean_name != (backup_name or '').strip() or not clean_name.lower().endswith('.zip'):
+        return RedirectResponse(url='/ui/global-settings?section=backup&error=' + quote_plus('That back-up file name is not valid.'), status_code=303)
+    target = (BACKUP_DIR / clean_name).resolve()
+    try:
+        backup_root = BACKUP_DIR.resolve()
+        if backup_root not in target.parents or not target.exists() or not target.is_file():
+            return RedirectResponse(url='/ui/global-settings?section=backup&error=' + quote_plus('Back-up file not found.'), status_code=303)
+        target.unlink()
+        return RedirectResponse(url='/ui/global-settings?section=backup&message=' + quote_plus(f'Back-Up deleted: {clean_name}'), status_code=303)
+    except Exception as exc:
+        return RedirectResponse(url='/ui/global-settings?section=backup&error=' + quote_plus(f'Could not delete back-up: {exc}'), status_code=303)
+
+
+@app.get("/ui/system/backup/open-latest", response_class=HTMLResponse)
+def ui_open_latest_backup(request: Request):
+    latest = next(iter(sorted(BACKUP_DIR.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)), None)
+    if not latest:
+        return render_settings_page(request, section="backup", error="No saved back-up was found.")
+    try:
+        open_local_path(latest)
+        return render_settings_page(request, section="backup", message=f"Loaded last back-up: {latest.name}")
+    except Exception as exc:
+        return render_settings_page(request, section="backup", error=f"Could not load the last back-up: {exc}")
+
+
+
+
+@app.post('/ui/accounting/save-settings', response_class=HTMLResponse)
+def ui_accounting_save_settings(
+    request: Request,
+    sales_tax_rate: str = Form('0'),
+    invoice_default_message: str = Form(''),
+    selected_section: str = Form('dashboard'),
+    selected_subsection: str = Form(''),
+    selected_client_id: str = Form(''),
+):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            set_accounting_sales_tax_rate(cur, sales_tax_rate)
+            set_accounting_text_setting(cur, 'invoice_default_message', invoice_default_message)
+        url = f'/ui/accounting-dashboard?section={selected_section or "dashboard"}'
+        if selected_subsection:
+            url += f'&subsection={selected_subsection}'
+        if selected_client_id:
+            url += f'&client_id={selected_client_id}'
+        url += f'&message={quote_plus("Accounting settings saved.")}'
+        return RedirectResponse(url=url, status_code=303)
+    except Exception as e:
+        url = f'/ui/accounting-dashboard?section={selected_section or "dashboard"}'
+        if selected_subsection:
+            url += f'&subsection={selected_subsection}'
+        if selected_client_id:
+            url += f'&client_id={selected_client_id}'
+        url += f'&error={quote_plus(str(e))}'
+        return RedirectResponse(url=url, status_code=303)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/settings/save-billing-config', response_class=HTMLResponse)
+def ui_settings_save_billing_config(
+    request: Request,
+    sales_tax_rate: str = Form('0'),
+    invoice_default_message: str = Form(''),
+):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            set_accounting_sales_tax_rate(cur, sales_tax_rate)
+            set_accounting_text_setting(cur, 'invoice_default_message', invoice_default_message)
+        return RedirectResponse(url='/ui/accounting-settings?section=billing_invoice_configuration&message=' + quote_plus('Billing and invoice defaults saved.'), status_code=303)
+    except Exception as e:
+        return RedirectResponse(url='/ui/accounting-settings?section=billing_invoice_configuration&error=' + quote_plus(str(e)), status_code=303)
+    finally:
+        conn.close()
+
+@app.get("/ui/accounting-dashboard", response_class=HTMLResponse)
+@app.get("/ui/accounting", response_class=HTMLResponse)
+def ui_accounting(request: Request, profile_id: str = "", personal_profile_id: str = ""):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    selected_profile_id = (profile_id or personal_profile_id or '').strip()
+    current_profile = get_current_profile_context(request)
+    modal_requested = any((request.query_params.get(key) or '').strip() for key in ('edit_corporate_id', 'edit_personal_id', 'open_editor', 'return_to'))
+    current_profile_id = (current_profile.get('id') or '').strip() if current_profile else ''
+    if selected_profile_id:
+        if selected_profile_id == current_profile_id or modal_requested:
+            return render_module_shell(request, "accounting")
+        corporate = fetch_corporate_profile(selected_profile_id)
+        profile_type = 'corporate' if corporate else 'personal'
+        return RedirectResponse(url='/ui/open-profile?' + urlencode({'profile_type': profile_type, 'profile_id': selected_profile_id, 'target': 'accounting'}), status_code=303)
+    return render_module_shell(request, "accounting")
+
+
+@app.get("/ui/personal-accounting-dashboard", response_class=HTMLResponse)
+def ui_personal_accounting_dashboard(request: Request, personal_profile_id: str = ""):
+    return ui_accounting(request, personal_profile_id=personal_profile_id)
+
+
+@app.get("/ui/global-reports", response_class=HTMLResponse)
+def ui_global_reports(request: Request):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    return render_module_shell(request, "global_reports")
+
+@app.get("/ui/reports", response_class=HTMLResponse)
+def ui_reports(request: Request):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    return render_module_shell(request, "reports")
+
+
+@app.get("/ui/marketing", response_class=HTMLResponse)
+def ui_marketing(request: Request):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    return render_module_shell(request, "marketing")
+
+
+@app.get("/ui/presentations", response_class=HTMLResponse)
+def ui_presentations(request: Request):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    return render_presentations_module(request)
+
+
+
+@app.post("/ui/presentations/upload", response_class=HTMLResponse)
+async def ui_presentations_upload(
+    request: Request,
+    presentation_title: str = Form(""),
+    language: str = Form("english"),
+    audience: str = Form("client education"),
+    category: str = Form("uploaded deck"),
+    deck_file: UploadFile = File(...),
+):
+    current_profile = get_current_profile_context(request)
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    if not current_profile or not current_profile.get("id"):
+        return render_presentations_module(request, error="Open a business workspace first so the presentation can inherit that branding context.")
+    if not deck_file or not deck_file.filename:
+        return render_presentations_module(request, error="Choose a PowerPoint file first.")
+    suffix = Path(deck_file.filename).suffix.lower()
+    if suffix not in {".ppt", ".pptx"}:
+        return render_presentations_module(request, error="Only .ppt and .pptx files are supported.")
+    deck_title = (presentation_title or Path(deck_file.filename).stem or "Uploaded Presentation").strip()
+    deck_id = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{_slugify_presentation(deck_title)[:50]}"
+    deck_dir = _presentation_workspace_dir(current_profile) / deck_id
+    deck_dir.mkdir(parents=True, exist_ok=True)
+
+    saved_name = f"{_slugify_presentation(deck_title) or 'presentation'}{suffix}"
+    pptx_path = deck_dir / saved_name
+    with pptx_path.open("wb") as f:
+        shutil.copyfileobj(deck_file.file, f)
+
+    outline = _presentation_slide_outline_from_pptx(pptx_path) if suffix == ".pptx" else []
+    pdf_path = _presentation_try_convert_pdf(pptx_path, deck_dir)
+    meta = {
+        "title": deck_title,
+        "language": language,
+        "audience": audience,
+        "category": category,
+        "pptx_file": saved_name,
+        "pdf_file": pdf_path.name if pdf_path else "",
+        "outline": outline,
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+        "email_drafts": [],
+        "workspace_name": current_profile.get("business_name") or current_profile.get("full_name") or current_profile.get("name") or "",
+    }
+    _presentation_store_metadata(deck_dir, meta)
+    return render_presentations_module(request, message="Presentation uploaded and indexed.", selected_deck_id=deck_id)
+
+
+@app.post("/ui/presentations/create-draft", response_class=HTMLResponse)
+async def ui_presentations_create_draft(
+    request: Request,
+    presentation_title: str = Form(""),
+    language: str = Form("english"),
+    audience: str = Form("client education"),
+    target_state: str = Form(""),
+    credit_years: str = Form("13"),
+    banking_years: str = Form("8"),
+    consultation_fee: str = Form("175"),
+    monthly_fee: str = Form("125"),
+    program_months: str = Form("12"),
+    billing_note: str = Form("Monthly billing is for work completed the month before. If the client cancels, the final earned payment remains due."),
+    user_prompt: str = Form(""),
+):
+    current_profile = get_current_profile_context(request)
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    if not current_profile or not current_profile.get("id"):
+        return render_presentations_module(request, error="Open a business workspace first so the presentation can inherit that branding context.")
+
+    deck_title = (presentation_title or "Client Education Presentation").strip()
+    deck_id = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{_slugify_presentation(deck_title)[:50]}"
+    deck_dir = _presentation_workspace_dir(current_profile) / deck_id
+    deck_dir.mkdir(parents=True, exist_ok=True)
+    pptx_file = f"{_slugify_presentation(deck_title) or 'presentation'}.pptx"
+    pptx_path = deck_dir / pptx_file
+
+    form_data = {
+        "presentation_title": deck_title,
+        "language": language,
+        "audience": audience,
+        "target_state": target_state,
+        "credit_years": credit_years,
+        "banking_years": banking_years,
+        "consultation_fee": consultation_fee,
+        "monthly_fee": monthly_fee,
+        "program_months": program_months,
+        "billing_note": billing_note,
+        "user_prompt": user_prompt,
+    }
+    sections = _presentation_default_sections(form_data)
+    pptx_file_for_meta = pptx_file
+    pdf_path = None
+    presentation_warning = ""
+    try:
+        _presentation_create_pptx(pptx_path, current_profile, form_data, sections)
+        outline = _presentation_slide_outline_from_pptx(pptx_path)
+        pdf_path = _presentation_try_convert_pdf(pptx_path, deck_dir)
+    except Exception as exc:
+        # Graceful fallback: preserve the generated outline in the software even when python-pptx
+        # or local PowerPoint/PDF conversion dependencies are unavailable.
+        pptx_file_for_meta = ""
+        outline = []
+        for idx, sec in enumerate(sections, start=1):
+            outline.append({
+                "slide": idx,
+                "title": sec.get("title") or f"Section {idx}",
+                "bullets": [b for b in (sec.get("bullets") or []) if b],
+            })
+        presentation_warning = f" Draft saved as outline only because PowerPoint generation was unavailable: {exc}"
+    meta = {
+        "title": deck_title,
+        "language": language,
+        "audience": audience,
+        "category": "ai draft",
+        "pptx_file": pptx_file_for_meta,
+        "pdf_file": pdf_path.name if pdf_path else "",
+        "outline": outline,
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+        "email_drafts": [],
+        "workspace_name": current_profile.get("business_name") or current_profile.get("full_name") or current_profile.get("name") or "",
+        "source_prompt": user_prompt,
+        "generation_status": "pptx_created" if pptx_file_for_meta else "outline_only",
+        "generation_warning": presentation_warning.strip(),
+    }
+    _presentation_store_metadata(deck_dir, meta)
+    message = "Draft presentation created." if pptx_file_for_meta else "Draft presentation outline saved. Install python-pptx to generate PowerPoint files."
+    if presentation_warning:
+        message += presentation_warning
+    return render_presentations_module(request, message=message, selected_deck_id=deck_id)
+
+
+@app.get("/ui/presentations/view/{deck_id}", response_class=HTMLResponse)
+def ui_presentations_view(request: Request, deck_id: str):
+    current_profile = get_current_profile_context(request)
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    deck_dir, deck = _presentation_find_deck(current_profile, deck_id)
+    if not deck_dir or not deck:
+        return RedirectResponse(url='/ui/presentations', status_code=303)
+    return templates.TemplateResponse(
+        "presentation_viewer.html",
+        {
+            "request": request,
+            "deck": deck,
+            "deck_id": deck_id,
+            "pptx_available": bool(deck.get("pptx_file") and (deck_dir / deck.get("pptx_file")).exists()),
+            "pdf_available": bool(deck.get("pdf_file") and (deck_dir / deck.get("pdf_file")).exists()),
+            "message": request.query_params.get("message", ""),
+            "error": request.query_params.get("error", ""),
+            "current_profile": current_profile,
+            "current_theme": active_theme_background_for_request(request, "module", current_profile),
+            "theme_runtime": active_theme_runtime_for_request(request, "module", current_profile),
+            "software_name": SOFTWARE_NAME,
+            "software_tagline": SOFTWARE_TAGLINE,
+        },
+    )
+
+
+@app.get("/ui/presentations/file/{deck_id}/{variant}")
+def ui_presentations_file(request: Request, deck_id: str, variant: str):
+    current_profile = get_current_profile_context(request)
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    deck_dir, deck = _presentation_find_deck(current_profile, deck_id)
+    if not deck_dir or not deck:
+        return RedirectResponse(url='/ui/presentations', status_code=303)
+    variant = (variant or "").lower().strip()
+    if variant == "pdf" and deck.get("pdf_file"):
+        file_path = deck_dir / deck["pdf_file"]
+    else:
+        file_path = deck_dir / (deck.get("pptx_file") or "")
+    if not file_path.exists():
+        return RedirectResponse(url=f'/ui/presentations/view/{deck_id}', status_code=303)
+    media_type = "application/pdf" if file_path.suffix.lower() == ".pdf" else "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    return FileResponse(str(file_path), media_type=media_type, filename=file_path.name)
+
+
+@app.post("/ui/presentations/update/{deck_id}", response_class=HTMLResponse)
+async def ui_presentations_update(
+    request: Request,
+    deck_id: str,
+    title: str = Form(""),
+    audience: str = Form(""),
+    language: str = Form("english"),
+    notes: str = Form(""),
+):
+    current_profile = get_current_profile_context(request)
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    deck_dir, deck = _presentation_find_deck(current_profile, deck_id)
+    if not deck_dir or not deck:
+        return RedirectResponse(url='/ui/presentations?error=' + quote_plus('Presentation not found.'), status_code=303)
+    clean_language = (language or 'english').strip().lower()
+    if clean_language not in {'english', 'spanish'}:
+        clean_language = 'english'
+    deck['title'] = (title or deck.get('title') or 'Presentation').strip() or 'Presentation'
+    deck['audience'] = (audience or '').strip()
+    deck['language'] = clean_language
+    deck['notes'] = (notes or '').strip()
+    deck['updated_at'] = datetime.utcnow().isoformat()
+    _presentation_store_metadata(deck_dir, deck)
+    return RedirectResponse(url=f'/ui/presentations/view/{deck_id}?message=' + quote_plus('Presentation details saved.'), status_code=303)
+
+
+@app.post("/ui/presentations/delete/{deck_id}", response_class=HTMLResponse)
+async def ui_presentations_delete(request: Request, deck_id: str):
+    current_profile = get_current_profile_context(request)
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    deck_dir, deck = _presentation_find_deck(current_profile, deck_id)
+    if not deck_dir or not deck:
+        return render_presentations_module(request, error="Presentation not found.")
+    shutil.rmtree(deck_dir, ignore_errors=True)
+    return render_presentations_module(request, message="Presentation deleted.")
+
+
+@app.post("/ui/presentations/email-draft/{deck_id}", response_class=HTMLResponse)
+async def ui_presentations_email_draft(
+    request: Request,
+    deck_id: str,
+    recipient_name: str = Form(""),
+    recipient_email: str = Form(""),
+    recipient_type: str = Form("client"),
+    attachment_choice: str = Form("pdf"),
+    email_note: str = Form(""),
+):
+    current_profile = get_current_profile_context(request)
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    deck_dir, deck = _presentation_find_deck(current_profile, deck_id)
+    if not deck_dir or not deck:
+        return render_presentations_module(request, error="Presentation not found.")
+    drafts = deck.get("email_drafts") or []
+    note_text = (email_note or '').strip()
+    drafts.append({
+        "created_at": datetime.utcnow().isoformat(),
+        "recipient_name": recipient_name,
+        "recipient_email": recipient_email,
+        "recipient_type": recipient_type,
+        "attachment_choice": attachment_choice,
+        "email_note": note_text,
+        "note": note_text,
+    })
+    deck["email_drafts"] = drafts
+    deck["updated_at"] = datetime.utcnow().isoformat()
+    _presentation_store_metadata(deck_dir, deck)
+    return RedirectResponse(url=f'/ui/presentations/view/{deck_id}?message=' + quote_plus('Email draft saved inside the presentation record.'), status_code=303)
+
+@app.get("/ui/education", response_class=HTMLResponse)
+def ui_education(request: Request):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    return render_module_shell(request, "education")
+
+
+@app.get("/ui/compliance", response_class=HTMLResponse)
+def ui_compliance(request: Request):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    return render_module_shell(request, "compliance")
+
+
+@app.get("/ui/help", response_class=HTMLResponse)
+def ui_help(request: Request):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    return render_module_shell(request, "help")
+
+
+@app.get("/ui/search", response_class=HTMLResponse)
+def ui_search(request: Request, q: str = "", sort_by: str = "name", sort_dir: str = "asc"):
+    if not is_authenticated(request):
+        return RedirectResponse(url='/', status_code=303)
+    return render_credit_repair_dashboard(request, q=(q or '').strip(), sort_by=sort_by, sort_dir=sort_dir, error="Enter a search term." if not (q or '').strip() else '')
+
+
+@app.get("/ui/client-association-search")
+def ui_client_association_search(request: Request, q: str = "", exclude_client_id: str = ""):
+    if not is_authenticated(request):
+        return JSONResponse([])
+    query = (q or "").strip()
+    if len(query) < 2:
+        return JSONResponse([])
+    like = f"%{query}%"
+    digits = re.sub(r"\D+", "", query)
+    results = []
+    try:
+        conn = get_conn()
+        with conn.cursor() as cur:
+            scope_profile_id, scope_profile_type = _get_client_entity_scope(cur, exclude_client_id)
+            scoped_filter = " AND COALESCE(business_profile_id,'') = %s AND COALESCE(NULLIF(business_profile_type,''),'corporate') = %s"
+            scoped_params = (scope_profile_id, scope_profile_type)
+            if digits and len(digits) >= 4:
+                cur.execute(
+                    f"""
+                    SELECT id::text,
+                           COALESCE(first_name,''),
+                           COALESCE(last_name,''),
+                           COALESCE(phone,''),
+                           COALESCE(primary_email,''),
+                           COALESCE(ssn_last4,''),
+                           COALESCE(lifecycle_status,''),
+                           COALESCE(is_active, TRUE)
+                    FROM clients
+                    WHERE id <> COALESCE(NULLIF(%s,''), '00000000-0000-0000-0000-000000000000')::uuid
+                      {scoped_filter}
+                      AND (
+                            COALESCE(first_name,'') ILIKE %s
+                         OR COALESCE(last_name,'') ILIKE %s
+                         OR COALESCE(phone,'') ILIKE %s
+                         OR COALESCE(primary_email,'') ILIKE %s
+                         OR COALESCE(ssn_last4,'') ILIKE %s
+                      )
+                    ORDER BY lower(COALESCE(last_name,'')), lower(COALESCE(first_name,''))
+                    LIMIT 15
+                    """,
+                    (exclude_client_id, *scoped_params, like, like, like, like, f"%{digits[-4:]}%")
+                )
+            else:
+                cur.execute(
+                    f"""
+                    SELECT id::text,
+                           COALESCE(first_name,''),
+                           COALESCE(last_name,''),
+                           COALESCE(phone,''),
+                           COALESCE(primary_email,''),
+                           COALESCE(ssn_last4,''),
+                           COALESCE(lifecycle_status,''),
+                           COALESCE(is_active, TRUE)
+                    FROM clients
+                    WHERE id <> COALESCE(NULLIF(%s,''), '00000000-0000-0000-0000-000000000000')::uuid
+                      {scoped_filter}
+                      AND (
+                            COALESCE(first_name,'') ILIKE %s
+                         OR COALESCE(last_name,'') ILIKE %s
+                         OR COALESCE(phone,'') ILIKE %s
+                         OR COALESCE(primary_email,'') ILIKE %s
+                      )
+                    ORDER BY lower(COALESCE(last_name,'')), lower(COALESCE(first_name,''))
+                    LIMIT 15
+                    """,
+                    (exclude_client_id, *scoped_params, like, like, like, like)
+                )
+            for r in cur.fetchall():
+                full_name = " ".join([p for p in [r[1], r[2]] if p]).strip() or r[0]
+                subtitle_parts = []
+                if r[3]:
+                    subtitle_parts.append(r[3])
+                if r[4]:
+                    subtitle_parts.append(r[4])
+                if r[5]:
+                    subtitle_parts.append(f"SSN • {r[5]}")
+                if r[6]:
+                    subtitle_parts.append(str(r[6]).title())
+                results.append({
+                    "id": r[0],
+                    "name": full_name,
+                    "subtitle": " • ".join([p for p in subtitle_parts if p]),
+                    "is_active": bool(r[7]),
+                })
+        conn.close()
+        return JSONResponse(results)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+def normalize_lifecycle_status_input(value: str, is_active: Optional[bool] = None, start_date_value: object = None, cancelled_date_value: object = None) -> str:
+    raw = re.sub(r"\s+", " ", (value or "").strip().lower())
+    if raw in {"candidate", "prospect", "lead"}:
+        return "prospect"
+    if raw in {"current client", "active client", "client", "current"}:
+        return "client"
+    if raw in {"contract sent", "agreement sent"}:
+        return "contract sent"
+    if raw in {"pending payment", "payment pending"}:
+        return "pending payment"
+    if raw in {"cancelled", "canceled"}:
+        return "cancelled"
+    if raw in {"completed", "complete"}:
+        return "completed"
+    if raw in {"referred out", "referred for bankruptcy", "bankruptcy", "bankruptcy referral"}:
+        return "referred for bankruptcy"
+    if raw in {"consultation", "consultation only", "not a candidate", "not candidate"}:
+        return "not a candidate"
+    if raw == "inactive":
+        if cancelled_date_value:
+            return "cancelled"
+        if start_date_value:
+            return "client"
+        if is_active is False:
+            return "prospect"
+        return "prospect"
+    if raw in CLIENT_STATUS_LABELS:
+        return raw
+    if not raw:
+        if cancelled_date_value:
+            return "cancelled"
+        if start_date_value:
+            return "client"
+        return "prospect"
+    return raw
 
 
 @app.get("/ui/client/new", response_class=HTMLResponse)
 def ui_new_client_form(request: Request, q: str = ""):
     prefill = _prefill_name_from_query(q)
-    return templates.TemplateResponse("new_client.html", {"request": request, "q": q, "prefill": prefill})
+    return templates.TemplateResponse("new_client.html", {"request": request, "q": q, "prefill": prefill, "us_states": US_STATES, "lifecycle_options": CLIENT_STATUS_OPTIONS,
+                    "current_theme": active_theme_background_for_request(request, "module"),
+                    "theme_runtime": active_theme_runtime_for_request(request, "module"),
+                    "software_name": SOFTWARE_NAME,
+                    "software_tagline": SOFTWARE_TAGLINE, "current_theme": active_theme_background_for_request(request, "module"), "theme_runtime": active_theme_runtime_for_request(request, "module"), "software_name": SOFTWARE_NAME, "software_tagline": SOFTWARE_TAGLINE})
+
 
 
 @app.post("/ui/client/create", response_class=HTMLResponse)
 def ui_create_client(
     request: Request,
     first_name: str = Form(...),
+    middle_name: str = Form(""),
     last_name: str = Form(""),
+    suffix: str = Form(""),
     primary_phone: str = Form(""),
+    secondary_phone: str = Form(""),
     primary_email: str = Form(""),
+    secondary_email: str = Form(""),
+    preferred_email_choice: str = Form("primary"),
+    send_to_both_emails: bool = Form(False),
     date_of_birth: str = Form(""),
     ssn_full: str = Form(""),
     address_line1: str = Form(""),
     apt_unit: str = Form(""),
+    address_line2: str = Form(""),
     city: str = Form(""),
     state: str = Form(""),
     zip_code: str = Form(""),
+    client_status: str = Form(""),
+    referred_by_source_type: str = Form(""),
+    referred_by_client_id: str = Form(""),
+    referred_by_partner_id: str = Form(""),
+    referral_reason: str = Form(""),
     is_active: bool = Form(False),
-    lifecycle_status: str = Form("candidate"),
+    lifecycle_status: str = Form("prospect"),
 ):
     try:
         conn = get_conn()
         conn.autocommit = True
         with conn.cursor() as cur:
+            ensure_profile_link_columns(cur)
+            current_profile = get_current_profile_context(request)
+            current_profile_id = (current_profile.get('id') or '').strip()
+            current_profile_type = (current_profile.get('type') or '').strip()
+
             dob_formatted = normalize_dob_input(date_of_birth) if date_of_birth else ""
             dob_iso = parse_date_input(dob_formatted) if dob_formatted else ""
             phone_normalized = normalize_phone_input(primary_phone) if primary_phone else ""
+            secondary_phone_normalized = normalize_phone_input(secondary_phone) if secondary_phone else ""
+            lifecycle_status = normalize_lifecycle_status_input(lifecycle_status or client_status or 'prospect')
             ssn_normalized = normalize_ssn_input(ssn_full) if ssn_full else ""
             ssn_digits = only_digits(ssn_normalized)
             ssn_last4 = ssn_digits[-4:] if len(ssn_digits) >= 4 else None
             ssn_full_enc = enc_text(ssn_normalized)
+
+            referred_by_source_type = (referred_by_source_type or '').strip().lower()
+            referred_by_client_id = (referred_by_client_id or '').strip()
+            referred_by_partner_id = ''
+            if referred_by_source_type != 'client' or not referred_by_client_id:
+                referred_by_client_id = ''
+
+            primary_email = (primary_email or '').strip().lower()
+            secondary_email = (secondary_email or '').strip().lower()
+            email_pattern = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+            if primary_email and not email_pattern.match(primary_email):
+                return templates.TemplateResponse("new_client.html", {
+                    "request": request,
+                    "error": "Primary email must be a valid email address.",
+                    "us_states": US_STATES,
+                    "lifecycle_options": CLIENT_STATUS_OPTIONS,
+                    "current_theme": active_theme_background_for_request(request, "module"),
+                    "theme_runtime": active_theme_runtime_for_request(request, "module"),
+                    "software_name": SOFTWARE_NAME,
+                    "software_tagline": SOFTWARE_TAGLINE,
+                    "prefill": {
+                        "first_name": first_name, "middle_name": middle_name, "last_name": last_name, "suffix": suffix,
+                        "primary_phone": primary_phone, "secondary_phone": secondary_phone,
+                        "primary_email": primary_email, "secondary_email": secondary_email,
+                        "preferred_email_choice": preferred_email_choice, "send_to_both_emails": send_to_both_emails,
+                        "date_of_birth": date_of_birth, "ssn_full": ssn_full, "address_line1": address_line1,
+                        "apt_unit": apt_unit, "address_line2": address_line2, "city": city, "state": state,
+                        "zip_code": zip_code, "referred_by_source_type": referred_by_source_type,
+                        "referred_by_client_id": referred_by_client_id, "referred_by_partner_id": referred_by_partner_id,
+                        "referral_reason": referral_reason, "lifecycle_status": lifecycle_status, "is_active": is_active,
+                    }
+                })
+            if secondary_email and not email_pattern.match(secondary_email):
+                return templates.TemplateResponse("new_client.html", {
+                    "request": request,
+                    "error": "Secondary email must be a valid email address.",
+                    "us_states": US_STATES,
+                    "lifecycle_options": CLIENT_STATUS_OPTIONS,
+                    "current_theme": active_theme_background_for_request(request, "module"),
+                    "theme_runtime": active_theme_runtime_for_request(request, "module"),
+                    "software_name": SOFTWARE_NAME,
+                    "software_tagline": SOFTWARE_TAGLINE,
+                    "prefill": {
+                        "first_name": first_name, "middle_name": middle_name, "last_name": last_name, "suffix": suffix,
+                        "primary_phone": primary_phone, "secondary_phone": secondary_phone,
+                        "primary_email": primary_email, "secondary_email": secondary_email,
+                        "preferred_email_choice": preferred_email_choice, "send_to_both_emails": send_to_both_emails,
+                        "date_of_birth": date_of_birth, "ssn_full": ssn_full, "address_line1": address_line1,
+                        "apt_unit": apt_unit, "address_line2": address_line2, "city": city, "state": state,
+                        "zip_code": zip_code, "referred_by_source_type": referred_by_source_type,
+                        "referred_by_client_id": referred_by_client_id, "referred_by_partner_id": referred_by_partner_id,
+                        "referral_reason": referral_reason, "lifecycle_status": lifecycle_status, "is_active": is_active,
+                    }
+                })
+            preferred_email_choice = (preferred_email_choice or 'primary').strip().lower()
+            if preferred_email_choice not in {'primary', 'secondary', 'both'}:
+                preferred_email_choice = 'primary'
+            send_to_both_emails = (preferred_email_choice == 'both')
+            if send_to_both_emails:
+                preferred_email_choice = 'primary'
+            if not secondary_email:
+                preferred_email_choice = 'primary'
+                send_to_both_emails = False
+
             cur.execute("""
                 INSERT INTO clients (
-                    first_name, last_name, phone, primary_email, email, date_of_birth,
-                    ssn_last4, ssn_full_enc, is_active, lifecycle_status,
+                    first_name, middle_name, last_name, suffix,
+                    phone, primary_phone_type, secondary_phone, secondary_phone_type,
+                    primary_email, email, secondary_email, preferred_email_choice, send_to_both_emails,
+                    date_of_birth, ssn_last4, ssn_full_enc, is_active, lifecycle_status,
                     consultation_fee, initial_fee, monthly_fee, pricing_plan,
-                    billing_group, preferred_payment_method, preferred_email_choice
+                    billing_group, preferred_payment_method,
+                    referred_by_client_id, referred_by_partner_id, referral_reason,
+                    business_profile_id, business_profile_type
                 )
                 VALUES (
-                    %s, %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,'')::date,
+                    %s, NULLIF(%s,''), %s, NULLIF(%s,''),
+                    NULLIF(%s,''), %s, NULLIF(%s,''), %s,
+                    NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), %s, %s,
+                    NULLIF(%s,'')::date, %s, %s, %s, %s,
                     %s, %s, %s, %s,
-                    %s, %s, %s, %s,
-                    %s, %s, %s
+                    %s, %s,
+                    NULLIF(%s,'')::uuid, NULLIF(%s,'')::uuid, NULLIF(%s,''),
+                    NULLIF(%s,''), NULLIF(%s,'')
                 )
                 RETURNING id::text
             """, (
-                first_name, last_name, phone_normalized, primary_email, primary_email, dob_iso,
-                ssn_last4, ssn_full_enc, is_active, lifecycle_status,
-                100.0, 199.0, 125.0, "standard program",
-                "15th", "zelle", "primary"
+                first_name, middle_name, last_name, suffix,
+                phone_normalized, 'cell', secondary_phone_normalized, 'other',
+                primary_email, primary_email, secondary_email, preferred_email_choice, send_to_both_emails,
+                dob_iso, ssn_last4, ssn_full_enc, is_active, lifecycle_status,
+                100.0, 175.0, 125.0, "standard_12",
+                "15th", "zelle",
+                referred_by_client_id, referred_by_partner_id, referral_reason,
+                current_profile_id, current_profile_type
             ))
             client_id = cur.fetchone()[0]
-            if any([address_line1, apt_unit, city, state, zip_code]):
+            if any([address_line1, apt_unit, address_line2, city, state, zip_code]):
                 cur.execute("""
                     INSERT INTO client_addresses
-                      (client_id, is_current, line1, apt_unit, city, state, zip)
+                      (client_id, is_current, line1, apt_unit, line2, city, state, zip)
                     VALUES
-                      (%s, TRUE, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''))
-                """, (client_id, address_line1, apt_unit, city, state, zip_code))
+                      (%s, TRUE, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''))
+                """, (client_id, address_line1, apt_unit, address_line2, city, state, zip_code))
         conn.close()
         return render_client_workspace(request, client_id, message="New client profile created.")
     except Exception as e:
-        return templates.TemplateResponse("new_client.html", {"request": request, "error": str(e), "prefill": {"first_name": first_name, "last_name": last_name}})
+        return templates.TemplateResponse("new_client.html", {
+            "request": request,
+            "error": str(e),
+            "us_states": US_STATES,
+            "lifecycle_options": CLIENT_STATUS_OPTIONS,
+                    "current_theme": active_theme_background_for_request(request, "module"),
+                    "theme_runtime": active_theme_runtime_for_request(request, "module"),
+                    "software_name": SOFTWARE_NAME,
+                    "software_tagline": SOFTWARE_TAGLINE,
+            "prefill": {
+                "first_name": first_name,
+                "middle_name": middle_name,
+                "last_name": last_name,
+                "suffix": suffix,
+                "primary_phone": primary_phone,
+                "secondary_phone": secondary_phone,
+                "primary_email": primary_email,
+                "secondary_email": secondary_email,
+                "preferred_email_choice": preferred_email_choice,
+                "send_to_both_emails": send_to_both_emails,
+                "date_of_birth": date_of_birth,
+                "ssn_full": ssn_full,
+                "address_line1": address_line1,
+                "apt_unit": apt_unit,
+                "address_line2": address_line2,
+                "city": city,
+                "state": state,
+                "zip_code": zip_code,
+                "referred_by_source_type": referred_by_source_type,
+                "referred_by_client_id": referred_by_client_id,
+                "referred_by_partner_id": referred_by_partner_id,
+                "referral_reason": referral_reason,
+                "lifecycle_status": normalize_lifecycle_status_input(lifecycle_status),
+                "is_active": is_active,
+            }
+        })
 
-
-@app.get("/ui/client/{client_id}/merge", response_class=HTMLResponse)
-def ui_client_merge_form(request: Request, client_id: str, q: str = ""):
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            source = fetch_client_profile(cur, client_id, include_sensitive=True)
-            results = []
-            if q:
-                like = f"%{q.strip()}%"
-                cur.execute("""
-                    SELECT id::text, first_name, last_name, phone, primary_email
-                    FROM clients
-                    WHERE id <> %s
-                      AND (
-                        COALESCE(first_name,'') ILIKE %s OR
-                        COALESCE(last_name,'') ILIKE %s OR
-                        COALESCE(phone,'') ILIKE %s OR
-                        COALESCE(primary_email,'') ILIKE %s OR
-                        COALESCE(email,'') ILIKE %s
-                      )
-                    ORDER BY last_name NULLS LAST, first_name NULLS LAST
-                    LIMIT 25
-                """, (client_id, like, like, like, like, like))
-                results = [{"id":r[0], "first_name":r[1], "last_name":r[2], "phone":r[3], "email":r[4]} for r in cur.fetchall()]
-        if not source:
-            return templates.TemplateResponse("index.html", {"request": request, "error": "Client not found."})
-        return templates.TemplateResponse("client_merge.html", {"request": request, "client_id": client_id, "source": source, "q": q, "results": results})
     finally:
         conn.close()
 
-
-@app.post("/ui/client/{client_id}/merge", response_class=HTMLResponse)
-def ui_client_merge_execute(request: Request, client_id: str, target_client_id: str = Form(...)):
-    conn = get_conn()
-    try:
-        conn.autocommit = False
-        with conn.cursor() as cur:
-            _safe_merge_client_records(cur, client_id, target_client_id)
-        conn.commit()
-        return render_client_workspace(request, target_client_id, message="Duplicate profile merged successfully.")
-    except Exception as e:
-        conn.rollback()
-        return templates.TemplateResponse("index.html", {"request": request, "error": f"Merge failed: {e}"})
-    finally:
-        conn.close()
-
-
-@app.post("/ui/client/{client_id}/delete", response_class=HTMLResponse)
-def ui_client_delete(request: Request, client_id: str):
-    conn = get_conn()
-    try:
-        conn.autocommit = False
-        with conn.cursor() as cur:
-            _safe_delete_client_record(cur, client_id)
-        conn.commit()
-        return templates.TemplateResponse("index.html", {"request": request, "message": "Client profile deleted."})
-    except Exception as e:
-        conn.rollback()
-        return render_client_workspace(request, client_id, error=f"Delete failed: {e}")
-    finally:
-        conn.close()
-
-
-@app.post("/ui/client", response_class=HTMLResponse)
-def ui_client_post(request: Request, client_id: str = Form(...)):
-    return render_client_workspace(request, client_id, active_tab="disputes")
 
 
 @app.get("/ui/client/{client_id}", response_class=HTMLResponse)
-def ui_client_get(request: Request, client_id: str, active_tab: str = Query(''), edit_credit_product_id: str = Query('')):
-    return render_client_workspace(request, client_id, active_tab=active_tab or None, edit_credit_product_id=edit_credit_product_id or None)
-
-
-@app.get("/ui/client/{client_id}/edit", response_class=HTMLResponse)
-def ui_client_edit(request: Request, client_id: str):
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            profile = fetch_client_profile(cur, client_id, include_sensitive=True)
-            referral_partners = fetch_referral_partners(cur)
-        if not profile:
-            return templates.TemplateResponse("index.html", {"request": request, "error": "Client not found."})
-
-        return templates.TemplateResponse(
-            "client_edit.html",
-            {
-                "request": request,
-                "client_id": client_id,
-                "profile": profile,
-                "referral_partners": referral_partners,
-                "phone_types": PHONE_TYPES,
-                "suffixes": SUFFIXES,
-                "statuses": STATUSES,
-                "payment_methods": PAYMENT_METHODS,
-                "billing_groups": BILLING_GROUPS,
-                "pricing_plans": PRICING_PLANS,
-            }
-        )
-    finally:
-        conn.close()
-
+def ui_client_get(request: Request, client_id: str, active_tab: str = Query(''), edit_credit_product_id: str = Query(''), tab: str = Query(''), dispute_bureau: str = Query('')):
+    resolved_active_tab = active_tab or tab or None
+    return render_client_workspace(request, client_id, active_tab=resolved_active_tab, dispute_bureau=dispute_bureau or None, edit_credit_product_id=edit_credit_product_id or None)
 
 @app.get("/ui/client/{client_id}/signature")
 def ui_open_client_signature(client_id: str):
@@ -3747,6 +15244,993 @@ def ui_open_client_signature(client_id: str):
         conn.close()
 
 
+@app.post("/ui/client/{client_id}/signature/delete", response_class=HTMLResponse)
+def ui_delete_client_signature(request: Request, client_id: str):
+    try:
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(signature_file_path, '') FROM clients WHERE id = %s", (client_id,))
+            row = cur.fetchone()
+            existing_path = row[0] if row else ''
+            cur.execute("""
+                UPDATE clients
+                SET signature_file_name = NULL,
+                    signature_file_path = NULL,
+                    signature_uploaded_at = NULL,
+                    use_signature_on_letters = FALSE,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (client_id,))
+        if existing_path and os.path.exists(existing_path):
+            try:
+                os.remove(existing_path)
+            except Exception:
+                pass
+        conn.close()
+        return render_client_workspace(request, client_id, message='Client signature deleted.', active_tab='documents')
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab='profile')
+
+
+@app.get("/ui/referral-source-search")
+def ui_referral_source_search(request: Request, q: str = Query(""), client_id: str = Query("")):
+    if not is_authenticated(request):
+        return JSONResponse([])
+    raw_query = (q or "").strip()
+    query = re.sub(r"\s+", " ", raw_query).strip()
+    query_for_like = query.replace("\\", " ").strip()
+    if len(query_for_like) < 1:
+        return JSONResponse([])
+
+    like = f"%{query_for_like}%"
+    query_lc = query_for_like.lower()
+    digits = re.sub(r"\D+", "", query_for_like)
+    digits_like = f"%{digits}%" if digits else like
+    empty_uuid = "00000000-0000-0000-0000-000000000000"
+    results: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def append_result(kind: str, item_id: str, name: str, label: str, rank: int = 99):
+        item_id = (item_id or "").strip()
+        if not item_id:
+            return
+        key = (kind, item_id)
+        if key in seen:
+            return
+        seen.add(key)
+        results.append({
+            "id": item_id,
+            "source_type": kind,
+            "name": name or label or "Referral Source",
+            "label": label or name or "Referral Source",
+            "_rank": int(rank or 99),
+        })
+
+    def sort_results(items: list[dict]) -> list[dict]:
+        def rank_value(item: dict) -> tuple[int, str]:
+            label = str(item.get("label") or item.get("name") or "").lower()
+            name = str(item.get("name") or "").lower()
+            if query_lc and (label.startswith(query_lc) or name.startswith(query_lc)):
+                base = 0
+            elif query_lc and f" {query_lc}" in f" {label}":
+                base = 1
+            else:
+                base = int(item.get("_rank") or 99)
+            return (base, label)
+
+        ordered = sorted(items, key=rank_value)
+        for item in ordered:
+            item.pop("_rank", None)
+        return ordered
+
+    conn = None
+    try:
+        conn = get_conn()
+        with conn.cursor() as cur:
+            for ensure_fn in (
+                ensure_referral_sources_table,
+                ensure_referral_partners_table,
+                ensure_lender_directory_table,
+                ensure_client_contact_columns,
+            ):
+                try:
+                    ensure_fn(cur)
+                except Exception:
+                    pass
+
+            client_scope_id, client_scope_type = _get_client_entity_scope(cur, client_id)
+
+            try:
+                cur.execute(
+                    """
+                    SELECT rs.id::text,
+                           COALESCE(rs.name, ''),
+                           COALESCE(rs.company_name, ''),
+                           COALESCE(rs.source_type, 'other'),
+                           COALESCE(rs.phone, ''),
+                           COALESCE(rs.email, '')
+                    FROM referral_sources rs
+                    WHERE COALESCE(rs.is_active, TRUE) = TRUE
+                      AND (
+                           COALESCE(rs.name, '') ILIKE %s OR
+                           COALESCE(rs.company_name, '') ILIKE %s OR
+                           TRIM(CONCAT_WS(' ', COALESCE(rs.name, ''), COALESCE(rs.company_name, ''))) ILIKE %s OR
+                           COALESCE(rs.source_type, '') ILIKE %s OR
+                           COALESCE(rs.phone, '') ILIKE %s OR
+                           regexp_replace(COALESCE(rs.phone, ''), '[^0-9]', '', 'g') ILIKE %s OR
+                           COALESCE(rs.email, '') ILIKE %s
+                      )
+                    ORDER BY lower(COALESCE(rs.name, '')), lower(COALESCE(rs.company_name, ''))
+                    LIMIT 20
+                    """,
+                    (like, like, like, like, like, digits_like, like),
+                )
+                for row in cur.fetchall() or []:
+                    source_id, name, company_name, source_type, phone, email = row
+                    display_name = name or company_name or "Referral Source"
+                    extras = [bit for bit in [source_type, company_name, phone, email] if bit]
+                    append_result(
+                        "source",
+                        source_id,
+                        display_name,
+                        f"{display_name} — Referred By" + (f" • {' • '.join(extras)}" if extras else ""),
+                        rank=3,
+                    )
+            except Exception:
+                if conn is not None:
+                    conn.rollback()
+
+            try:
+                scoped_filter = ""
+                scoped_params: tuple = tuple()
+                if client_id:
+                    scoped_filter = " AND COALESCE(c.business_profile_id,'') = %s AND COALESCE(NULLIF(c.business_profile_type,''),'corporate') = %s"
+                    scoped_params = (client_scope_id, client_scope_type)
+                cur.execute(
+                    f"""
+                    SELECT c.id::text,
+                           COALESCE(NULLIF(TRIM(CONCAT_WS(' ', c.first_name, NULLIF(c.middle_name,''), c.last_name, NULLIF(c.suffix,''))), ''), 'Client') AS display_name,
+                           COALESCE(c.first_name, ''),
+                           COALESCE(c.middle_name, ''),
+                           COALESCE(c.last_name, ''),
+                           COALESCE(c.suffix, ''),
+                           COALESCE(c.phone, ''),
+                           COALESCE(c.primary_email, ''),
+                           COALESCE(c.secondary_phone, ''),
+                           COALESCE(c.secondary_email, '')
+                    FROM clients c
+                    WHERE c.id <> COALESCE(NULLIF(%s,''), %s)::uuid
+                      {scoped_filter}
+                      AND (
+                           COALESCE(c.first_name, '') ILIKE %s OR
+                           COALESCE(c.middle_name, '') ILIKE %s OR
+                           COALESCE(c.last_name, '') ILIKE %s OR
+                           COALESCE(c.suffix, '') ILIKE %s OR
+                           TRIM(CONCAT_WS(' ', COALESCE(c.first_name, ''), NULLIF(c.middle_name,''), COALESCE(c.last_name, ''), NULLIF(c.suffix,''))) ILIKE %s OR
+                           CONCAT_WS(' ', COALESCE(c.last_name, ''), COALESCE(c.first_name, '')) ILIKE %s OR
+                           COALESCE(c.phone, '') ILIKE %s OR
+                           regexp_replace(COALESCE(c.phone, ''), '[^0-9]', '', 'g') ILIKE %s OR
+                           COALESCE(c.secondary_phone, '') ILIKE %s OR
+                           regexp_replace(COALESCE(c.secondary_phone, ''), '[^0-9]', '', 'g') ILIKE %s OR
+                           COALESCE(c.primary_email, '') ILIKE %s OR
+                           COALESCE(c.secondary_email, '') ILIKE %s
+                      )
+                    ORDER BY lower(COALESCE(c.last_name, '')), lower(COALESCE(c.first_name, ''))
+                    LIMIT 25
+                    """,
+                    (
+                        client_id or "",
+                        empty_uuid,
+                        *scoped_params,
+                        like, like, like, like, like, like,
+                        like, digits_like, like, digits_like, like, like,
+                    ),
+                )
+                for row in cur.fetchall() or []:
+                    client_ref_id, display_name, first_name, middle_name, last_name, suffix, phone, primary_email, secondary_phone, secondary_email = row
+                    full_name = display_name or "Client"
+                    extras = [bit for bit in [phone, primary_email, secondary_phone, secondary_email] if bit]
+                    label = f"{full_name} — Client" + (f" • {' • '.join(extras)}" if extras else "")
+                    rank = 0 if full_name.lower().startswith(query_lc) else 2
+                    append_result("client", client_ref_id, full_name, label, rank=rank)
+            except Exception:
+                if conn is not None:
+                    conn.rollback()
+
+            try:
+                cur.execute(
+                    """
+                    SELECT rp.id::text,
+                           COALESCE(rp.name, ''),
+                           COALESCE(rp.company_name, ''),
+                           COALESCE(rp.partner_type, ''),
+                           COALESCE(rp.phone, ''),
+                           COALESCE(rp.email, '')
+                    FROM referral_partners rp
+                    WHERE COALESCE(rp.is_active, TRUE) = TRUE
+                      AND (
+                           COALESCE(rp.name, '') ILIKE %s OR
+                           COALESCE(rp.company_name, '') ILIKE %s OR
+                           TRIM(CONCAT_WS(' ', COALESCE(rp.name, ''), COALESCE(rp.company_name, ''))) ILIKE %s OR
+                           COALESCE(rp.partner_type, '') ILIKE %s OR
+                           COALESCE(rp.phone, '') ILIKE %s OR
+                           regexp_replace(COALESCE(rp.phone, ''), '[^0-9]', '', 'g') ILIKE %s OR
+                           COALESCE(rp.email, '') ILIKE %s
+                      )
+                    ORDER BY lower(COALESCE(rp.name, '')), lower(COALESCE(rp.company_name, ''))
+                    LIMIT 20
+                    """,
+                    (like, like, like, like, like, digits_like, like),
+                )
+                for row in cur.fetchall() or []:
+                    partner_id, name, company_name, partner_type, phone, email = row
+                    display_name = name or company_name or "Referral Partner"
+                    extras = [bit for bit in [partner_type, company_name, phone, email] if bit]
+                    rank = 1 if display_name.lower().startswith(query_lc) else 4
+                    append_result(
+                        "partner",
+                        partner_id,
+                        display_name,
+                        f"{display_name} — Referral Partner" + (f" • {' • '.join(extras)}" if extras else ""),
+                        rank=rank,
+                    )
+            except Exception:
+                if conn is not None:
+                    conn.rollback()
+
+            try:
+                cur.execute(
+                    """
+                    SELECT id::text,
+                           COALESCE(name, ''),
+                           COALESCE(category, 'lender'),
+                           COALESCE(phone, ''),
+                           COALESCE(website, '')
+                    FROM lender_directory
+                    WHERE COALESCE(is_active, TRUE) = TRUE
+                      AND (
+                           COALESCE(name, '') ILIKE %s OR
+                           COALESCE(category, '') ILIKE %s OR
+                           TRIM(CONCAT_WS(' ', COALESCE(category, ''), COALESCE(name, ''))) ILIKE %s OR
+                           COALESCE(phone, '') ILIKE %s OR
+                           regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') ILIKE %s OR
+                           COALESCE(website, '') ILIKE %s
+                      )
+                    ORDER BY lower(COALESCE(category, '')), lower(COALESCE(name, ''))
+                    LIMIT 20
+                    """,
+                    (like, like, like, like, digits_like, like),
+                )
+                for row in cur.fetchall() or []:
+                    lender_id, lender_name, category, phone, website = row
+                    display_name = lender_name or "Lender"
+                    extras = [bit for bit in [category, phone, website] if bit]
+                    append_result(
+                        "lender",
+                        lender_id,
+                        display_name,
+                        f"{display_name} — Lender" + (f" • {' • '.join(extras)}" if extras else ""),
+                        rank=5,
+                    )
+            except Exception:
+                if conn is not None:
+                    conn.rollback()
+
+        return JSONResponse(sort_results(results)[:40])
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        return JSONResponse([])
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+def ensure_referral_partner_from_lender(cur, lender_id: str) -> str:
+    ensure_lender_directory_table(cur)
+    cur.execute(
+        """
+        SELECT id::text, COALESCE(name,''), COALESCE(category,'lender'), COALESCE(phone,''), COALESCE(website,'')
+        FROM lender_directory
+        WHERE id = %s::uuid
+        LIMIT 1
+        """,
+        (lender_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise ValueError("Selected lender could not be found.")
+    lender_name = row[1] or 'Lender'
+    partner_type = row[2] or 'lender'
+    cur.execute(
+        """
+        SELECT id::text
+        FROM referral_partners
+        WHERE lower(COALESCE(name,'')) = lower(%s)
+          AND lower(COALESCE(partner_type,'')) = lower(%s)
+        ORDER BY created_at DESC NULLS LAST, name
+        LIMIT 1
+        """,
+        (lender_name, partner_type),
+    )
+    existing = cur.fetchone()
+    if existing and existing[0]:
+        return existing[0]
+    partner_id = str(uuid4())
+    cur.execute(
+        """
+        INSERT INTO referral_partners
+            (id, name, company_name, partner_type, phone, email, notes, website, is_active)
+        VALUES
+            (%s::uuid, %s, %s, %s, NULLIF(%s,''), NULL, 'Auto-created from lender directory for Referred By.', NULLIF(%s,''), TRUE)
+        """,
+        (partner_id, lender_name, lender_name, partner_type, row[3] or '', row[4] or ''),
+    )
+    return partner_id
+
+
+@app.post("/ui/client/clear-referral-source", response_class=HTMLResponse)
+def ui_clear_referral_source(
+    request: Request,
+    client_id: str = Form(...),
+    active_tab: str = Form("overview"),
+):
+    try:
+        conn = get_conn()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    ensure_client_referred_by_source_column(cur)
+                    cur.execute(
+                        """
+                        UPDATE clients
+                        SET referred_by_source_id = NULL,
+                            referred_by_client_id = NULL,
+                            referred_by_partner_id = NULL
+                        WHERE id = %s::uuid
+                        """,
+                        (client_id,),
+                    )
+            return RedirectResponse(url=f"/ui/client/{client_id}?tab={active_tab}", status_code=303)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception as exc:
+        return RedirectResponse(url=f"/ui/client/{client_id}?tab={active_tab}&error={quote_plus(str(exc))}", status_code=303)
+
+
+@app.post("/ui/client/save-referral-source", response_class=HTMLResponse)
+def ui_save_client_referral_source(
+    request: Request,
+    client_id: str = Form(...),
+    referral_source_type: str = Form(""),
+    referral_source_id: str = Form(""),
+    active_tab: str = Form("overview"),
+):
+    try:
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_referral_sources_table(cur)
+            ensure_referral_partners_table(cur)
+            ensure_lender_directory_table(cur)
+            referral_source_type = (referral_source_type or '').strip().lower()
+            referral_source_id = (referral_source_id or '').strip()
+            referred_by_client_id = ''
+            referred_by_partner_id = ''
+            referred_by_source_id = ''
+            if referral_source_type == 'client' and referral_source_id:
+                if referral_source_id == client_id:
+                    raise ValueError('A client cannot be marked as referring themselves.')
+                if not _client_ids_share_entity_scope(cur, client_id, referral_source_id):
+                    raise ValueError('The selected client is outside this business workspace and cannot be used for Referred By.')
+                referred_by_client_id = referral_source_id
+            elif referral_source_type == 'source' and referral_source_id:
+                cur.execute("SELECT 1 FROM referral_sources WHERE id = %s::uuid LIMIT 1", (referral_source_id,))
+                if not cur.fetchone():
+                    raise ValueError('The selected referral source could not be found.')
+                referred_by_source_id = referral_source_id
+            elif referral_source_type == 'partner' and referral_source_id:
+                referred_by_source_id = ensure_referral_source_from_partner(cur, referral_source_id)
+            elif referral_source_type == 'lender' and referral_source_id:
+                referred_by_source_id = ensure_referral_source_from_lender(cur, referral_source_id)
+            cur.execute(
+                """
+                UPDATE clients
+                SET referred_by_source_id = NULLIF(%s,'')::uuid,
+                    referred_by_client_id = NULLIF(%s,'')::uuid,
+                    referred_by_partner_id = NULLIF(%s,'')::uuid,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s::uuid
+                """,
+                (referred_by_source_id, referred_by_client_id, referred_by_partner_id, client_id),
+            )
+        conn.close()
+        return render_client_workspace(request, client_id, message='Referred By updated.', active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
+def _referral_source_form_state(source_name: str = '', company_name: str = '', source_type: str = 'other', phone: str = '', email: str = '', notes: str = '') -> dict:
+    return {
+        'source_name': (source_name or '').strip(),
+        'company_name': (company_name or '').strip(),
+        'source_type': ((source_type or 'other').strip().lower() or 'other'),
+        'phone': (phone or '').strip(),
+        'email': (email or '').strip(),
+        'notes': (notes or '').strip(),
+    }
+
+
+@app.post("/ui/client/create-referral-source", response_class=HTMLResponse)
+def ui_create_referral_source(
+    request: Request,
+    client_id: str = Form(...),
+    source_name: str = Form(""),
+    company_name: str = Form(""),
+    source_type: str = Form("other"),
+    phone: str = Form(""),
+    email: str = Form(""),
+    notes: str = Form(""),
+    assign_to_client: str = Form("1"),
+    active_tab: str = Form("overview"),
+):
+    form_state = _referral_source_form_state(source_name, company_name, source_type, phone, email, notes)
+    panel_tab = 'referrals' if (active_tab or '').strip().lower() == 'referrals' else 'overview'
+    try:
+        source_name = form_state['source_name']
+        if not source_name:
+            return render_client_workspace(request, client_id, error='Referral source name is required.', active_tab=active_tab, extra_context={'referral_source_form_state': form_state, 'open_referral_source_create_panel': panel_tab})
+        email_clean = form_state['email'].lower()
+        if email_clean:
+            email_pattern = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+            if not email_pattern.match(email_clean):
+                return render_client_workspace(request, client_id, error='Referral source email must be valid.', active_tab=active_tab, extra_context={'referral_source_form_state': {**form_state, 'email': email_clean}, 'open_referral_source_create_panel': panel_tab})
+        phone_digits_only = re.sub(r'\D', '', form_state['phone'] or '')[:10]
+        phone_form_value = normalize_phone_input(phone_digits_only) if phone_digits_only else ''
+        if form_state['phone'] and len(phone_digits_only) < 10:
+            return render_client_workspace(request, client_id, error='Phone must be 10 digits.', active_tab=active_tab, extra_context={'referral_source_form_state': {**form_state, 'phone': phone_form_value}, 'open_referral_source_create_panel': panel_tab})
+        phone_normalized = phone_form_value
+        source_type_clean = (form_state['source_type'] or 'other').strip().lower()
+        if source_type_clean not in {'friend', 'family', 'client', 'lender', 'partner', 'realtor', 'attorney', 'other'}:
+            source_type_clean = 'other'
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_referral_sources_table(cur)
+            source_id = str(uuid4())
+            cur.execute(
+                """
+                INSERT INTO referral_sources
+                    (id, name, company_name, source_type, phone, email, notes, is_active)
+                VALUES
+                    (%s::uuid, %s, NULLIF(%s,''), %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), TRUE)
+                """,
+                (source_id, source_name, form_state['company_name'], source_type_clean, phone_normalized, email_clean, form_state['notes']),
+            )
+            if _truthy(assign_to_client):
+                cur.execute(
+                    """
+                    UPDATE clients
+                    SET referred_by_source_id = %s::uuid,
+                        referred_by_client_id = NULL,
+                        referred_by_partner_id = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s::uuid
+                    """,
+                    (source_id, client_id),
+                )
+        conn.close()
+        return render_client_workspace(request, client_id, message='New Referred By source saved.', active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab, extra_context={'referral_source_form_state': form_state, 'open_referral_source_create_panel': panel_tab})
+
+
+@app.post("/ui/settings/referral-source/save", response_class=HTMLResponse)
+def ui_settings_save_referral_source(
+    request: Request,
+    source_id: str = Form(""),
+    source_name: str = Form(""),
+    company_name: str = Form(""),
+    source_type: str = Form("other"),
+    phone: str = Form(""),
+    email: str = Form(""),
+    notes: str = Form(""),
+    is_active: str = Form("1"),
+    section: str = Form("credit_repair_tables_records"),
+):
+    form_state = {
+        'source_id': (source_id or '').strip(),
+        **_referral_source_form_state(source_name, company_name, source_type, phone, email, notes),
+        'is_active': _truthy(is_active),
+    }
+    try:
+        source_name = form_state['source_name']
+        if not source_name:
+            return render_settings_page(request, section=section, error='Referral record name is required.', extra_context={'referral_source_editor_state': form_state, 'show_referral_source_editor': True})
+        email_clean = form_state['email'].lower()
+        if email_clean:
+            email_pattern = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+            if not email_pattern.match(email_clean):
+                form_state['email'] = email_clean
+                return render_settings_page(request, section=section, error='Referral record email must be valid.', extra_context={'referral_source_editor_state': form_state, 'show_referral_source_editor': True})
+        phone_digits_only = re.sub(r'\D', '', form_state['phone'] or '')[:10]
+        phone_form_value = normalize_phone_input(phone_digits_only) if phone_digits_only else ''
+        if form_state['phone'] and len(phone_digits_only) < 10:
+            form_state['phone'] = phone_form_value
+            return render_settings_page(request, section=section, error='Phone must be 10 digits.', extra_context={'referral_source_editor_state': form_state, 'show_referral_source_editor': True})
+        phone_normalized = phone_form_value
+        source_type_clean = (form_state['source_type'] or 'other').strip().lower()
+        if source_type_clean not in {'friend', 'family', 'client', 'lender', 'partner', 'realtor', 'attorney', 'other'}:
+            source_type_clean = 'other'
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_referral_sources_table(cur)
+            if form_state['source_id']:
+                cur.execute(
+                    """
+                    UPDATE referral_sources
+                    SET name = %s,
+                        company_name = NULLIF(%s,''),
+                        source_type = %s,
+                        phone = NULLIF(%s,''),
+                        email = NULLIF(%s,''),
+                        notes = NULLIF(%s,''),
+                        is_active = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s::uuid
+                    """,
+                    (source_name, form_state['company_name'], source_type_clean, phone_normalized, email_clean, form_state['notes'], form_state['is_active'], form_state['source_id']),
+                )
+                msg = 'Referral record updated.'
+            else:
+                new_id = str(uuid4())
+                cur.execute(
+                    """
+                    INSERT INTO referral_sources
+                        (id, name, company_name, source_type, phone, email, notes, is_active)
+                    VALUES
+                        (%s::uuid, %s, NULLIF(%s,''), %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), %s)
+                    """,
+                    (new_id, source_name, form_state['company_name'], source_type_clean, phone_normalized, email_clean, form_state['notes'], form_state['is_active']),
+                )
+                msg = 'Referral record created.'
+        try:
+            conn.close()
+        except Exception:
+            pass
+        cleared_state = {'source_id': '', 'source_name': '', 'company_name': '', 'source_type': 'other', 'phone': '', 'email': '', 'notes': '', 'is_active': True}
+        return render_settings_page(request, section=section, message=msg, extra_context={'referral_source_editor_state': cleared_state, 'show_referral_source_editor': True})
+    except Exception as exc:
+        return render_settings_page(request, section=section, error=str(exc), extra_context={'referral_source_editor_state': form_state, 'show_referral_source_editor': True})
+
+
+@app.post("/ui/settings/referral-source/{source_id}/delete", response_class=HTMLResponse)
+def ui_settings_delete_referral_source(request: Request, source_id: str, section: str = Form("credit_repair_tables_records")):
+    try:
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_referral_sources_table(cur)
+            cur.execute(
+                """
+                UPDATE clients
+                SET referred_by_source_id = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE referred_by_source_id = %s::uuid
+                """,
+                (source_id,),
+            )
+            cur.execute("DELETE FROM referral_sources WHERE id = %s::uuid", (source_id,))
+        try:
+            conn.close()
+        except Exception:
+            pass
+        cleared_state = {'source_id': '', 'source_name': '', 'company_name': '', 'source_type': 'other', 'phone': '', 'email': '', 'notes': '', 'is_active': True}
+        return render_settings_page(request, section=section, message='Referral record deleted.', extra_context={'referral_source_editor_state': cleared_state, 'show_referral_source_editor': True})
+    except Exception as exc:
+        return render_settings_page(request, section=section, error=f'Could not delete referral record: {exc}', extra_context={'show_referral_source_editor': True})
+
+
+@app.post("/ui/client/save-program-fees", response_class=HTMLResponse)
+def ui_save_program_fees(
+    request: Request,
+    client_id: str = Form(...),
+    program: str = Form("standard_12"),
+    initial_fee: float = Form(175.0),
+    monthly_fee: float = Form(125.0),
+    signup_date: str = Form(""),
+    first_payment_date: str = Form(""),
+    billing_group: str = Form("15th"),
+    custom_billing_day: str = Form(""),
+    active_tab: str = Form("billing"),
+):
+    """Save the client's selected Program & Fees without requiring or changing a payment method."""
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            raw_program = (program or 'standard_12').strip()
+            if billing_program_exists(cur, raw_program):
+                normalized_program = raw_program
+            else:
+                normalized_program = _normalize_pricing_plan(raw_program)
+
+            normalized_billing_group = str(billing_group or '15th').strip().lower()
+            custom_day_value = None
+            if normalized_billing_group == 'custom':
+                try:
+                    custom_day_value = max(1, min(28, int(str(custom_billing_day or '').strip() or '15')))
+                except Exception:
+                    custom_day_value = 15
+            elif normalized_billing_group not in {'1st', '15th', 'custom'}:
+                normalized_billing_group = '15th'
+
+            cur.execute(
+                """
+                UPDATE clients
+                SET consultation_fee = %s,
+                    initial_fee = %s,
+                    monthly_fee = %s,
+                    pricing_plan = %s,
+                    signup_date = NULLIF(%s, '')::date,
+                    start_date = COALESCE(NULLIF(%s, '')::date, start_date),
+                    first_payment_date = NULLIF(%s, '')::date,
+                    billing_group = %s,
+                    custom_billing_day = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s::uuid
+                """,
+                (initial_fee, initial_fee, monthly_fee, normalized_program, signup_date, signup_date, first_payment_date, normalized_billing_group, custom_day_value, client_id)
+            )
+        return _client_tab_success_response(request, client_id, 'Program & Fees saved.', active_tab=active_tab)
+    except Exception as e:
+        return _client_tab_error_response(request, client_id, str(e), active_tab=active_tab)
+    finally:
+        conn.close()
+
+
+@app.post("/ui/client/add-billing-program", response_class=HTMLResponse)
+def ui_client_add_billing_program(
+    request: Request,
+    client_id: str = Form(...),
+    program_name: str = Form(...),
+    description: str = Form(""),
+    consultation_fee: float = Form(175.0),
+    monthly_fee: float = Form(125.0),
+    active_tab: str = Form("billing"),
+):
+    """Create a reusable billing program and assign it to this client.
+
+    Program records are stored in billing_programs because a program carries both
+    the separate consultation / credit education fee and the recurring monthly
+    credit-repair fee.
+    """
+    conn = get_conn(); conn.autocommit = True
+    try:
+        cleaned_name = (program_name or '').strip()
+        if not cleaned_name:
+            return _client_tab_error_response(request, client_id, 'Program Name is required.', active_tab=active_tab)
+        program_key_base = 'custom_' + _billing_program_slug(cleaned_name)
+        program_key = program_key_base
+        with conn.cursor() as cur:
+            ensure_billing_programs_table(cur)
+            suffix = 2
+            while billing_program_exists(cur, program_key):
+                program_key = f'{program_key_base}_{suffix}'[:64]
+                suffix += 1
+            cur.execute(
+                """
+                INSERT INTO billing_programs
+                    (id, program_key, program_name, description, consultation_fee, monthly_fee, source_type, is_active)
+                VALUES (%s::uuid, %s, %s, NULLIF(%s, ''), %s, %s, 'custom', TRUE)
+                """,
+                (str(uuid4()), program_key, cleaned_name, (description or '').strip(), consultation_fee, monthly_fee)
+            )
+            cur.execute(
+                """
+                UPDATE clients
+                SET pricing_plan = %s,
+                    consultation_fee = %s,
+                    initial_fee = %s,
+                    monthly_fee = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s::uuid
+                """,
+                (program_key, consultation_fee, consultation_fee, monthly_fee, client_id)
+            )
+        return _client_tab_success_response(request, client_id, f'Program added and selected: {cleaned_name}.', active_tab=active_tab)
+    except Exception as e:
+        return _client_tab_error_response(request, client_id, str(e), active_tab=active_tab)
+    finally:
+        conn.close()
+
+
+@app.post("/ui/client/save-billing-settings", response_class=HTMLResponse)
+def ui_save_billing_settings(
+    request: Request,
+    client_id: str = Form(...),
+    initial_fee: float = Form(175.0), monthly_fee: float = Form(125.0), pricing_plan: str = Form("standard_12"),
+    signup_date: str = Form(""), first_payment_date: str = Form(""), billing_group: str = Form("15th"),
+    preferred_payment_method: str = Form("zelle"), payment_profile_id: str = Form(""), set_as_preferred: str = Form("0"),
+    cardholder_name: str = Form(""), card_brand: str = Form(""), card_number_full: str = Form(""),
+    card_exp_month: str = Form(""), card_exp_year: str = Form(""), card_cvv: str = Form(""),
+    same_as_mailing_address: str = Form(""), card_billing_line1: str = Form(""), card_billing_apt_unit: str = Form(""),
+    card_billing_line2: str = Form(""), card_billing_city: str = Form(""), card_billing_state: str = Form(""), card_billing_zip: str = Form(""),
+    venmo_handle: str = Form(""), cashapp_handle: str = Form(""), zelle_contact: str = Form(""), zelle_email: str = Form(""), zelle_phone: str = Form(""), paypal_handle: str = Form(""), other_payment_detail: str = Form(""),
+    active_tab: str = Form("billing"),
+):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            ensure_client_payment_methods_table(cur)
+            normalized_plan = _normalize_pricing_plan(pricing_plan)
+            normalized_billing_group = str(billing_group or '15th').strip().lower()
+            if normalized_billing_group not in {'1st', '15th', 'custom'}:
+                normalized_billing_group = '15th'
+
+            raw_method = (preferred_payment_method or '').strip().lower()
+            if not raw_method:
+                return _client_tab_error_response(request, client_id, 'Choose a payment method.', active_tab=active_tab)
+            preferred_payment_method = _normalize_payment_method(raw_method)
+
+            cur.execute(
+                """
+                UPDATE clients
+                SET consultation_fee = %s, initial_fee = %s, monthly_fee = %s, pricing_plan = %s,
+                    signup_date = NULLIF(%s, '')::date, start_date = COALESCE(NULLIF(%s, '')::date, start_date), first_payment_date = NULLIF(%s, '')::date,
+                    billing_group = %s, custom_billing_day = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s::uuid
+                """,
+                (initial_fee, initial_fee, monthly_fee, normalized_plan, signup_date, signup_date, first_payment_date, normalized_billing_group, client_id)
+            )
+
+            selected_id = (payment_profile_id or '').strip()
+            saved_methods = fetch_saved_payment_methods(cur, client_id)
+            current_row = next((m for m in saved_methods if m.get('id') == selected_id), None) if selected_id else None
+            set_preferred = _truthy(set_as_preferred)
+            saved_row_id = ''
+
+            if preferred_payment_method == 'credit card':
+                card_brand = (card_brand or current_row.get('card_brand') if current_row else card_brand or '').strip().lower()
+                if card_brand and card_brand not in CARD_BRAND_LABELS:
+                    card_brand = ''
+                full_digits = only_digits(card_number_full or '') or (only_digits(current_row.get('card_number_full')) if current_row else '')
+                if not full_digits:
+                    return _client_tab_error_response(request, client_id, 'Enter a full credit card number.', active_tab=active_tab)
+                ok, err = validate_card_brand_and_number(card_brand, full_digits)
+                if not ok:
+                    return _client_tab_error_response(request, client_id, err, active_tab=active_tab)
+                cvv_digits = only_digits(card_cvv or '') or (only_digits(current_row.get('card_cvv')) if current_row else '')
+                ok, err = validate_cvv_for_brand(card_brand, cvv_digits)
+                if not ok:
+                    return _client_tab_error_response(request, client_id, err, active_tab=active_tab)
+                if same_as_mailing_address:
+                    cur.execute("SELECT COALESCE(line1,''), COALESCE(apt_unit,''), COALESCE(line2,''), COALESCE(city,''), COALESCE(state,''), COALESCE(zip,'') FROM client_addresses WHERE client_id = %s::uuid AND is_current = TRUE ORDER BY created_at DESC LIMIT 1", (client_id,))
+                    addr = cur.fetchone() or ('','','','','','')
+                    card_billing_line1, card_billing_apt_unit, card_billing_line2, card_billing_city, card_billing_state, card_billing_zip = addr
+                holder = (cardholder_name or '').strip() or ((current_row or {}).get('cardholder_name') or '')
+                exp_m = only_digits(card_exp_month or '')[:2] or ((current_row or {}).get('card_exp_month') or '')
+                exp_y = only_digits(card_exp_year or '')[:4] or ((current_row or {}).get('card_exp_year') or '')
+                line1 = (card_billing_line1 or '').strip() or ((current_row or {}).get('card_billing_line1') or '')
+                aptu = (card_billing_apt_unit or '').strip() or ((current_row or {}).get('card_billing_apt_unit') or '')
+                extra = (card_billing_line2 or '').strip() or ((current_row or {}).get('card_billing_line2') or '')
+                city = (card_billing_city or '').strip() or ((current_row or {}).get('card_billing_city') or '')
+                state = (card_billing_state or '').strip() or ((current_row or {}).get('card_billing_state') or '')
+                zip_code = (card_billing_zip or '').strip() or ((current_row or {}).get('card_billing_zip') or '')
+                label_brand = CARD_BRAND_LABELS.get((card_brand or '').lower(), '')
+                label = f"{label_brand + ' ' if label_brand else ''}•••• {full_digits[-4:]}"
+                if selected_id and current_row and (current_row.get('payment_method') or '').lower() == 'credit card':
+                    cur.execute(
+                        """
+                        UPDATE client_payment_methods
+                        SET payment_method = 'credit card', label = %s, cardholder_name = NULLIF(%s,''), card_brand = NULLIF(%s,''),
+                            card_number_enc = %s, card_last4 = %s, card_exp_month = NULLIF(%s,''), card_exp_year = NULLIF(%s,''),
+                            card_cvv_enc = %s, billing_line1 = NULLIF(%s,''), billing_line2 = NULLIF(%s,''), billing_city = NULLIF(%s,''),
+                            billing_state = NULLIF(%s,''), billing_zip = NULLIF(%s,''), zelle_email = NULL, zelle_phone = NULL, other_description = NULL,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = %s::uuid AND client_id = %s::uuid
+                        """,
+                        (label, holder, card_brand, enc_text(full_digits), full_digits[-4:], exp_m, exp_y, enc_text(cvv_digits), line1, _combine_billing_line2(aptu, extra), city, state, zip_code, selected_id, client_id)
+                    )
+                    saved_row_id = selected_id
+                else:
+                    saved_row_id = str(uuid4())
+                    cur.execute(
+                        """
+                        INSERT INTO client_payment_methods (
+                            id, client_id, payment_method, label, cardholder_name, card_brand, card_number_enc, card_last4,
+                            card_exp_month, card_exp_year, card_cvv_enc, billing_line1, billing_line2, billing_city, billing_state, billing_zip,
+                            is_default, is_active
+                        ) VALUES (
+                            %s::uuid, %s::uuid, 'credit card', %s, NULLIF(%s,''), NULLIF(%s,''), %s, %s,
+                            NULLIF(%s,''), NULLIF(%s,''), %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''),
+                            FALSE, TRUE
+                        )
+                        """,
+                        (saved_row_id, client_id, label, holder, card_brand, enc_text(full_digits), full_digits[-4:], exp_m, exp_y, enc_text(cvv_digits), line1, _combine_billing_line2(aptu, extra), city, state, zip_code)
+                    )
+            else:
+                method = preferred_payment_method
+                label = ''
+                z_email = ''
+                z_phone = ''
+                other_desc = ''
+                if method == 'zelle':
+                    z_email = (zelle_email or '').strip()
+                    z_phone = _normalize_phone_for_storage(zelle_phone or '')
+                    if not z_email and not z_phone:
+                        legacy_email, legacy_phone = _split_legacy_zelle_contact(zelle_contact or '')
+                        z_email = z_email or legacy_email
+                        z_phone = z_phone or legacy_phone
+                    if not z_email and not z_phone:
+                        return _client_tab_error_response(request, client_id, 'Enter a Zelle email, phone number, or both.', active_tab=active_tab)
+                    if z_email and not _is_valid_email(z_email):
+                        return _client_tab_error_response(request, client_id, 'Enter a valid Zelle email address.', active_tab=active_tab)
+                    if z_phone and not _is_valid_phone(z_phone):
+                        return _client_tab_error_response(request, client_id, 'Enter a valid Zelle phone number.', active_tab=active_tab)
+                    label = _simple_method_label(method, '', z_email, z_phone)
+                elif method == 'venmo':
+                    label = (venmo_handle or '').strip()
+                    if not label:
+                        return _client_tab_error_response(request, client_id, 'Enter the Venmo handle.', active_tab=active_tab)
+                elif method == 'cashapp':
+                    label = (cashapp_handle or '').strip()
+                    if not label:
+                        return _client_tab_error_response(request, client_id, 'Enter the Cash App $cashtag.', active_tab=active_tab)
+                elif method == 'paypal':
+                    label = (paypal_handle or '').strip()
+                    if not label:
+                        return _client_tab_error_response(request, client_id, 'Enter the PayPal handle or email.', active_tab=active_tab)
+                elif method == 'other':
+                    other_desc = (other_payment_detail or '').strip()
+                    if not other_desc:
+                        return _client_tab_error_response(request, client_id, 'Enter a description for Other payment method.', active_tab=active_tab)
+                    label = other_desc
+                else:
+                    label = PAYMENT_METHOD_LABELS.get(method, method.title())
+                saved_row_id = _upsert_noncard_payment_method(cur, client_id, method, label, payment_profile_id=selected_id, zelle_email=z_email, zelle_phone=z_phone, other_description=other_desc)
+
+            cur.execute("SELECT id::text FROM client_payment_methods WHERE client_id = %s::uuid AND is_active = TRUE AND is_default = TRUE ORDER BY created_at DESC LIMIT 1", (client_id,))
+            current_default_row = cur.fetchone()
+            current_default_id = current_default_row[0] if current_default_row and current_default_row[0] else ''
+            if saved_row_id and (set_preferred or not current_default_id or current_default_id == saved_row_id):
+                cur.execute("UPDATE client_payment_methods SET is_default = CASE WHEN id = %s::uuid THEN TRUE ELSE FALSE END, updated_at = CURRENT_TIMESTAMP WHERE client_id = %s::uuid AND is_active = TRUE", (saved_row_id, client_id))
+            # Keep only the preferred payment method mirrored on the client row.
+            _sync_legacy_client_payment_method_fields(cur, client_id)
+
+        msg = 'Payment method saved.' if preferred_payment_method != 'credit card' else 'Credit card saved.'
+        return _client_tab_success_response(request, client_id, msg, active_tab=active_tab)
+    except Exception as e:
+        return _client_tab_error_response(request, client_id, str(e), active_tab=active_tab)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/set-default-payment-method', response_class=HTMLResponse)
+def ui_set_default_payment_method(request: Request, client_id: str = Form(...), payment_profile_id: str = Form(...), active_tab: str = Form('billing')):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            ensure_client_payment_methods_table(cur)
+            cur.execute("SELECT COALESCE(payment_method,'') FROM client_payment_methods WHERE id = %s::uuid AND client_id = %s::uuid AND is_active = TRUE LIMIT 1", (payment_profile_id, client_id))
+            row = cur.fetchone()
+            if not row:
+                return render_client_workspace(request, client_id, error='Payment method not found.', active_tab=active_tab)
+            chosen_method = (row[0] or '').strip().lower() or 'zelle'
+            cur.execute("UPDATE client_payment_methods SET is_default = CASE WHEN id = %s::uuid THEN TRUE ELSE FALSE END, updated_at = CURRENT_TIMESTAMP WHERE client_id = %s::uuid AND is_active = TRUE", (payment_profile_id, client_id))
+            cur.execute("UPDATE clients SET preferred_payment_method = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s::uuid", (chosen_method, client_id))
+            _sync_legacy_client_payment_method_fields(cur, client_id)
+        return render_client_workspace(request, client_id, message='Default payment method updated.', active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+    finally:
+        conn.close()
+
+
+@app.post('/ui/delete-payment-method', response_class=HTMLResponse)
+def ui_delete_payment_method(request: Request, client_id: str = Form(...), payment_profile_id: str = Form(...), active_tab: str = Form('billing')):
+    conn = get_conn(); conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            ensure_client_payment_methods_table(cur)
+            cur.execute("SELECT COALESCE(payment_method,''), COALESCE(label,''), COALESCE(is_default,FALSE) FROM client_payment_methods WHERE id = %s::uuid AND client_id = %s::uuid AND is_active = TRUE LIMIT 1", (payment_profile_id, client_id))
+            row = cur.fetchone()
+            if not row:
+                return render_client_workspace(request, client_id, error='Payment method not found.', active_tab=active_tab)
+            method_name = (row[0] or '').strip().lower()
+            label = (row[1] or '').strip() or PAYMENT_METHOD_LABELS.get(method_name, method_name.title())
+            was_default = bool(row[2])
+            cur.execute("UPDATE client_payment_methods SET is_active = FALSE, is_default = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s::uuid AND client_id = %s::uuid", (payment_profile_id, client_id))
+            if was_default:
+                cur.execute("SELECT id::text FROM client_payment_methods WHERE client_id = %s::uuid AND is_active = TRUE ORDER BY created_at DESC LIMIT 1", (client_id,))
+                replacement = cur.fetchone()
+                if replacement and replacement[0]:
+                    cur.execute("UPDATE client_payment_methods SET is_default = CASE WHEN id = %s::uuid THEN TRUE ELSE FALSE END, updated_at = CURRENT_TIMESTAMP WHERE client_id = %s::uuid AND is_active = TRUE", (replacement[0], client_id))
+            _sync_legacy_client_payment_method_fields(cur, client_id)
+        return render_client_workspace(request, client_id, message=f'{label} deleted.', active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+    finally:
+        conn.close()
+
+
+@app.post("/ui/client/save-status", response_class=HTMLResponse)
+def ui_save_client_status(
+    request: Request,
+    client_id: str = Form(...),
+    lifecycle_status: str = Form("prospect"),
+    is_active_hidden: str = Form("true"),
+    active_tab: str = Form("overview"),
+):
+    try:
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            profile = fetch_client_profile(cur, client_id, include_sensitive=False)
+            if not profile:
+                return render_client_workspace(request, client_id, error="Client not found.", active_tab=active_tab)
+            prior_status = str(profile.get("lifecycle_status") or "").strip().lower()
+            lifecycle_status = normalize_lifecycle_status_input(
+                lifecycle_status,
+                is_active=_truthy(is_active_hidden),
+                start_date_value=profile.get("start_date"),
+                cancelled_date_value=profile.get("cancelled_date"),
+            )
+            start_date = profile.get("start_date") or ""
+            cancelled_date = profile.get("cancelled_date") or ""
+            today_iso = str(date.today())
+            if lifecycle_status == "client":
+                is_active = True
+                start_date = start_date or today_iso
+                cancelled_date = ""
+            elif lifecycle_status == "cancelled":
+                is_active = False
+                cancelled_date = cancelled_date or today_iso
+            else:
+                is_active = False
+                if prior_status == "cancelled":
+                    cancelled_date = ""
+            cur.execute(
+                """
+                UPDATE clients
+                SET is_active = %s,
+                    lifecycle_status = %s,
+                    start_date = NULLIF(%s, '')::date,
+                    cancelled_date = NULLIF(%s, '')::date,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (is_active, lifecycle_status, start_date, cancelled_date, client_id),
+            )
+            if lifecycle_status == "contract sent" and prior_status != "contract sent":
+                due_date = (date.today() + timedelta(days=3)).isoformat()
+                note_text = "Follow up on signed contract if it has not been returned."
+                cur.execute("""
+                    SELECT id FROM client_followups
+                    WHERE client_id = %s::uuid AND followup_type = 'document reminder' AND due_date = %s::date AND COALESCE(note_text,'') = %s
+                    LIMIT 1
+                """, (client_id, due_date, note_text))
+                if not cur.fetchone():
+                    cur.execute("""
+                        INSERT INTO client_followups (client_id, followup_type, due_date, status, note_text)
+                        VALUES (%s::uuid, 'document reminder', %s::date, 'open', %s)
+                    """, (client_id, due_date, note_text))
+        conn.close()
+        return render_client_workspace(request, client_id, message="Client status updated.", active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
 @app.post("/ui/client/save-profile", response_class=HTMLResponse)
 def ui_save_client_profile(
     request: Request,
@@ -3765,20 +16249,23 @@ def ui_save_client_profile(
     send_to_both_emails: bool = Form(False),
     date_of_birth: str = Form(""),
     ssn_full: str = Form(""),
-    is_active: bool = Form(False),
-    lifecycle_status: str = Form("candidate"),
+    is_active_hidden: str = Form("true"),
+    cancel_client: bool = Form(False),
+    lifecycle_status: str = Form("prospect"),
     pending_payment: bool = Form(False),
     start_date: str = Form(""),
     cancelled_date: str = Form(""),
     consultation_fee: float = Form(100.0),
-    initial_fee: float = Form(175.0),
+    initial_fee: float = Form(199.0),
     monthly_fee: float = Form(125.0),
-    pricing_plan: str = Form("standard program"),
+    pricing_plan: str = Form("standard_12"),
     signup_date: str = Form(""),
     first_payment_date: str = Form(""),
     billing_group: str = Form("15th"),
     custom_billing_day: str = Form(""),
     preferred_payment_method: str = Form("zelle"),
+    referred_by_source_type: str = Form(""),
+    referred_by_client_id: str = Form(""),
     referred_by_partner_id: str = Form(""),
     referral_reason: str = Form(""),
     address_line1: str = Form(""),
@@ -3788,20 +16275,65 @@ def ui_save_client_profile(
     state: str = Form(""),
     zip_code: str = Form(""),
     use_signature_on_letters: bool = Form(False),
-    remove_signature: bool = Form(False),
     signature_file: UploadFile = File(None),
 ):
     try:
         conn = get_conn()
         conn.autocommit = True
         with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(signature_file_path, ''), COALESCE(is_active, TRUE), COALESCE(lifecycle_status, ''), COALESCE(start_date::text, ''), COALESCE(cancelled_date::text, '') FROM clients WHERE id = %s", (client_id,))
+            row = cur.fetchone()
+            existing_signature_path = (row[0] if row else '') or ''
+            was_active = bool(row[1]) if row else True
+            prior_lifecycle_status = (row[2] if row else '') or ''
+            prior_start_date = (row[3] if row else '') or ''
+            prior_cancelled_date = (row[4] if row else '') or ''
+
             dob_formatted = normalize_dob_input(date_of_birth) if date_of_birth else ""
             dob_iso = parse_date_input(dob_formatted) if dob_formatted else ""
             primary_phone_normalized = normalize_phone_input(primary_phone) if primary_phone else ""
             secondary_phone_normalized = normalize_phone_input(secondary_phone) if secondary_phone else ""
             ssn_normalized = normalize_ssn_input(ssn_full) if ssn_full else ""
             ssn_last4 = only_digits(ssn_normalized)[-4:] if ssn_normalized else None
+            send_to_both_emails = str(preferred_email_choice or '').lower() == 'both'
             ssn_full_enc = enc_text(ssn_normalized) if ssn_normalized else None
+            is_active = _truthy(is_active_hidden)
+            remove_signature_flag = False
+            has_new_signature = signature_file is not None and bool(getattr(signature_file, 'filename', ''))
+            final_has_signature = bool(has_new_signature or (existing_signature_path and not remove_signature_flag))
+            if use_signature_on_letters and not final_has_signature:
+                raise ValueError('No client signature is on file. Upload a signature first or turn off "Prefer client signature".')
+
+            referred_by_source_type = (referred_by_source_type or '').strip().lower()
+            if referred_by_source_type == 'client':
+                referred_by_partner_id = ''
+            elif referred_by_source_type == 'partner':
+                referred_by_client_id = ''
+            else:
+                referred_by_client_id = ''
+                referred_by_partner_id = ''
+
+            today_iso = str(date.today())
+            lifecycle_status = normalize_lifecycle_status_input(
+                lifecycle_status,
+                is_active=is_active,
+                start_date_value=start_date or prior_start_date,
+                cancelled_date_value=cancelled_date or prior_cancelled_date,
+            )
+            if cancel_client:
+                is_active = False
+                lifecycle_status = 'cancelled'
+                cancelled_date = cancelled_date or today_iso
+            elif lifecycle_status == 'cancelled':
+                is_active = False
+                cancelled_date = cancelled_date or prior_cancelled_date or today_iso
+            else:
+                if lifecycle_status == 'client':
+                    start_date = start_date or prior_start_date or today_iso
+                else:
+                    start_date = start_date or prior_start_date
+                if prior_lifecycle_status == 'cancelled' and not cancelled_date:
+                    cancelled_date = ''
 
             cur.execute("""
                 UPDATE clients
@@ -3835,6 +16367,7 @@ def ui_save_client_profile(
                     billing_group = %s,
                     custom_billing_day = NULLIF(%s, '')::smallint,
                     preferred_payment_method = %s,
+                    referred_by_client_id = NULLIF(%s, '')::uuid,
                     referred_by_partner_id = NULLIF(%s, '')::uuid,
                     referral_reason = NULLIF(%s, ''),
                     use_signature_on_letters = %s,
@@ -3852,7 +16385,7 @@ def ui_save_client_profile(
                 consultation_fee, initial_fee, monthly_fee, pricing_plan,
                 signup_date, first_payment_date,
                 billing_group, custom_billing_day, preferred_payment_method,
-                referred_by_partner_id, referral_reason, use_signature_on_letters, client_id
+                referred_by_client_id, referred_by_partner_id, referral_reason, use_signature_on_letters, client_id
             ))
 
             cur.execute("""
@@ -3883,39 +16416,52 @@ def ui_save_client_profile(
                       (%s, TRUE, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''))
                 """, (client_id, address_line1, apt_unit, address_line2, city, state, zip_code))
 
-            if remove_signature:
+            if remove_signature_flag:
                 cur.execute("""
                     UPDATE clients
                     SET signature_file_name = NULL,
                         signature_file_path = NULL,
-                        signature_uploaded_at = NULL
+                        signature_uploaded_at = NULL,
+                        use_signature_on_letters = FALSE,
+                        updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s
                 """, (client_id,))
+                if existing_signature_path and os.path.exists(existing_signature_path):
+                    try:
+                        os.remove(existing_signature_path)
+                    except Exception:
+                        pass
 
-            if signature_file is not None and getattr(signature_file, "filename", ""):
+            if has_new_signature:
                 ext = os.path.splitext(signature_file.filename)[1].lower()
-                if ext not in {".png", ".jpg", ".jpeg"}:
-                    raise ValueError("Signature file must be PNG or JPG.")
+                if ext not in {'.png', '.jpg', '.jpeg'}:
+                    raise ValueError('Signature file must be PNG or JPG.')
                 target_dir = os.path.join(SIGNATURE_DIR, client_id)
                 os.makedirs(target_dir, exist_ok=True)
                 safe_name = f"signature_{uuid4().hex}{ext}"
                 save_path = os.path.join(target_dir, safe_name)
                 content = signature_file.file.read()
-                with open(save_path, "wb") as fh:
+                with open(save_path, 'wb') as fh:
                     fh.write(content)
                 cur.execute("""
                     UPDATE clients
                     SET signature_file_name = %s,
                         signature_file_path = %s,
-                        signature_uploaded_at = CURRENT_TIMESTAMP
+                        signature_uploaded_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s
                 """, (signature_file.filename, save_path, client_id))
 
+            if cancel_client:
+                subject = 'Your file has been cancelled'
+                client_name = ' '.join([p for p in [first_name, middle_name, last_name] if p]).strip() or 'Client'
+                body = f"Thank you, {client_name}. Your file has been cancelled as of {format_short_date(cancelled_date) or cancelled_date}. Thank you for your business, and please remember to refer us clients in the future."
+                _queue_client_email_log(cur, client_id, {'primary_email': primary_email, 'email': primary_email}, subject, body, f'client_cancelled:{cancelled_date}', email_type='account_status')
+
         conn.close()
-        return render_client_workspace(request, client_id, message="Client profile saved.")
+        return render_client_workspace(request, client_id, message='Client profile saved.')
     except Exception as e:
         return render_client_workspace(request, client_id, error=str(e))
-
 
 @app.post("/ui/add-note", response_class=HTMLResponse)
 def ui_add_note(
@@ -3923,20 +16469,40 @@ def ui_add_note(
     client_id: str = Form(...),
     note_text: str = Form(...),
     note_type: str = Form("general"),
+    note_date: str = Form(""),
+    note_time: str = Form(""),
+    note_id: str = Form(""),
     active_tab: str = Form("notes"),
 ):
     try:
+        effective_date = (note_date or "").strip() or date.today().isoformat()
+        effective_time = (note_time or "").strip() or datetime.now().strftime("%H:%M")
+        clean_note_id = (note_id or "").strip()
         conn = get_conn()
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO client_notes (client_id, note_text, note_type, created_by)
-                VALUES (%s, %s, %s, %s)
-            """, (client_id, note_text, note_type, "Carlos G Suarez"))
+            ensure_client_note_columns(cur)
+            if clean_note_id:
+                cur.execute("""
+                    UPDATE client_notes
+                    SET note_text = %s,
+                        note_type = %s,
+                        note_date = %s::date,
+                        note_time = %s::time
+                    WHERE id = %s AND client_id = %s
+                """, (note_text, note_type or "general", effective_date, effective_time, clean_note_id, client_id))
+                msg = "Note updated."
+            else:
+                cur.execute("""
+                    INSERT INTO client_notes (client_id, note_text, note_type, note_date, note_time, created_by)
+                    VALUES (%s, %s, %s, %s::date, %s::time, %s)
+                """, (client_id, note_text, note_type or "general", effective_date, effective_time, "Carlos G Suarez"))
+                msg = "Note saved."
         conn.close()
-        return render_client_workspace(request, client_id, message="Note added.", active_tab=active_tab)
+        return render_client_workspace(request, client_id, message=msg, active_tab=active_tab)
     except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e))
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
 
 
 @app.post("/ui/delete-note", response_class=HTMLResponse)
@@ -3956,10 +16522,19 @@ def ui_delete_note(request: Request, client_id: str = Form(...), note_id: str = 
 def ui_add_appointment(
     request: Request,
     client_id: str = Form(...),
+    appointment_id: str = Form(""),
     appointment_mode: str = Form("phone"),
+    appointment_purpose: str = Form("Credit Review"),
+    appointment_fee_status: str = Form("Not Charged"),
     appointment_date: str = Form(...),
     appointment_time: str = Form(...),
-    consultation_fee: float = Form(100.0),
+    consultation_fee: str = Form("175.00"),
+    consultation_fee_choice: str = Form(""),
+    consultation_fee_custom: str = Form(""),
+    consultant_name: str = Form("Carlos G Suarez"),
+    new_consultant_name: str = Form(""),
+    attendee_name: str = Form(""),
+    appointment_location_choice: str = Form("office"),
     location_name: str = Form("Carlos G Suarez"),
     address_line1: str = Form("8345 SW 41st Ter"),
     apt_unit: str = Form(""),
@@ -3968,47 +16543,166 @@ def ui_add_appointment(
     state: str = Form("FL"),
     zip_code: str = Form("33155"),
     phone_to_call: str = Form(""),
+    phone_to_call_custom: str = Form(""),
+    consultant_phone: str = Form(""),
+    video_platform: str = Form(""),
     meeting_link: str = Form(""),
     email_enabled: bool = Form(True),
     sms_enabled: bool = Form(False),
     sms_opt_in: bool = Form(False),
     notes: str = Form(""),
+    appointment_reschedule_action: str = Form(""),
     active_tab: str = Form("calendar"),
 ):
     try:
+        clean_appointment_id = (appointment_id or "").strip()
+        action_word = "updated" if clean_appointment_id else "saved"
+        appointment_time_db = _normalize_appointment_time(appointment_time)
+        selected_fee = (consultation_fee_custom if (consultation_fee_choice == "__custom__" and str(consultation_fee_custom or '').strip()) else (consultation_fee or consultation_fee_choice or "175.00"))
+        try:
+            selected_fee_decimal = Decimal(str(selected_fee).replace('$','').replace(',','').strip() or '0')
+        except Exception:
+            selected_fee_decimal = Decimal('0.00')
+        clean_consultant = (new_consultant_name or '').strip() if str(consultant_name or '') == '__new__' else (consultant_name or '').strip()
+        if not clean_consultant:
+            clean_consultant = 'Carlos G Suarez'
+        clean_attendee = (attendee_name or '').strip()
+        clean_phone = (phone_to_call_custom or '').strip() if str(phone_to_call or '') == '__custom__' else (phone_to_call or '').strip()
         conn = get_conn()
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO client_appointments
-                  (client_id, appointment_mode, appointment_with, appointment_date, appointment_time,
-                   consultation_fee, location_name, address_line1, apt_unit, address_line2, city, state, zip,
-                   phone_to_call, meeting_link, email_enabled, sms_enabled, sms_opt_in, notes)
-                VALUES
-                  (%s, %s, %s, %s::date, %s::time, %s, %s, %s, NULLIF(%s,''), NULLIF(%s,''), %s, %s, %s,
-                   NULLIF(%s,''), NULLIF(%s,''), %s, %s, %s, NULLIF(%s,''))
-            """, (
-                client_id, appointment_mode, "Carlos G Suarez", appointment_date, appointment_time,
-                consultation_fee, location_name, address_line1, apt_unit, address_line2, city, state, zip_code,
-                phone_to_call, meeting_link, email_enabled, sms_enabled, sms_opt_in, notes
-            ))
+            ensure_client_appointment_enhancement_columns(cur)
+            if not clean_attendee:
+                try:
+                    p = fetch_client_profile(cur, client_id, include_sensitive=False) or {}
+                    clean_attendee = p.get('client_name') or ' '.join([x for x in [p.get('first_name'), p.get('last_name')] if x]).strip()
+                except Exception:
+                    clean_attendee = ''
+            old_appt = None
+            if clean_appointment_id:
+                cur.execute("""
+                    SELECT appointment_date, appointment_time, COALESCE(notes,''), COALESCE(status,'scheduled')
+                    FROM client_appointments
+                    WHERE id = %s AND client_id = %s
+                    LIMIT 1
+                """, (clean_appointment_id, client_id))
+                old_appt = cur.fetchone()
+            reschedule_line = ""
+            if old_appt:
+                old_date = str(old_appt[0]) if old_appt[0] else ""
+                old_time = _normalize_appointment_time(old_appt[1]) if old_appt[1] else ""
+                if old_date != str(appointment_date or '') or old_time != appointment_time_db:
+                    reschedule_line = f"Rescheduled from {old_date} {_format_time_12(old_time)} to {appointment_date} {_format_time_12(appointment_time_db)} on {date.today().isoformat()}."
+            appointment_status = 'rescheduled' if (clean_appointment_id and (reschedule_line or str(appointment_reschedule_action or '').strip() == '1')) else 'scheduled'
+            final_notes = (notes or '').strip()
+            if reschedule_line and reschedule_line not in final_notes:
+                final_notes = (final_notes + "\n" if final_notes else "") + reschedule_line
+            if clean_appointment_id:
+                cur.execute("""
+                    UPDATE client_appointments
+                    SET appointment_mode = %s,
+                        appointment_with = %s,
+                        consultant_name = %s,
+                        attendee_name = NULLIF(%s,''),
+                        appointment_purpose = NULLIF(%s,''),
+                        appointment_fee_status = NULLIF(%s,''),
+                        appointment_date = %s::date,
+                        appointment_time = %s::time,
+                        consultation_fee = %s,
+                        location_name = %s,
+                        appointment_location_choice = NULLIF(%s,''),
+                        address_line1 = %s,
+                        apt_unit = NULLIF(%s,''),
+                        address_line2 = NULLIF(%s,''),
+                        city = %s,
+                        state = %s,
+                        zip = %s,
+                        phone_to_call = NULLIF(%s,''),
+                        consultant_phone = NULLIF(%s,''),
+                        video_platform = NULLIF(%s,''),
+                        meeting_link = NULLIF(%s,''),
+                        email_enabled = %s,
+                        sms_enabled = %s,
+                        sms_opt_in = %s,
+                        status = %s,
+                        notes = NULLIF(%s,'')
+                    WHERE id = %s AND client_id = %s
+                """, (
+                    appointment_mode, clean_consultant, clean_consultant, clean_attendee, appointment_purpose, appointment_fee_status,
+                    appointment_date, appointment_time_db, selected_fee_decimal,
+                    location_name, appointment_location_choice, address_line1, apt_unit, address_line2, city, state, zip_code,
+                    clean_phone, consultant_phone, video_platform, meeting_link, email_enabled, sms_enabled, sms_opt_in,
+                    appointment_status, final_notes, clean_appointment_id, client_id
+                ))
+            else:
+                cur.execute("""
+                    INSERT INTO client_appointments
+                      (client_id, appointment_mode, appointment_with, consultant_name, attendee_name, appointment_purpose, appointment_fee_status, appointment_date, appointment_time,
+                       consultation_fee, location_name, appointment_location_choice, address_line1, apt_unit, address_line2, city, state, zip,
+                       phone_to_call, consultant_phone, video_platform, meeting_link, email_enabled, sms_enabled, sms_opt_in, status, notes)
+                    VALUES
+                      (%s, %s, %s, %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), %s::date, %s::time, %s, %s, NULLIF(%s,''), %s, NULLIF(%s,''), NULLIF(%s,''), %s, %s, %s,
+                       NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), %s, %s, %s, 'scheduled', NULLIF(%s,''))
+                """, (
+                    client_id, appointment_mode, clean_consultant, clean_consultant, clean_attendee, appointment_purpose, appointment_fee_status, appointment_date, appointment_time_db,
+                    selected_fee_decimal, location_name, appointment_location_choice, address_line1, apt_unit, address_line2, city, state, zip_code,
+                    clean_phone, consultant_phone, video_platform, meeting_link, email_enabled, sms_enabled, sms_opt_in, final_notes
+                ))
+            try:
+                clean_purpose = (appointment_purpose or 'Appointment').replace('_', ' ').title()
+                note_text = f"Appointment {action_word}: {clean_purpose} ({appointment_mode.replace('_', ' ').title()}) on {appointment_date} at {_format_time_12(appointment_time_db)}."
+                if clean_attendee:
+                    note_text += f" Attendee: {clean_attendee}."
+                if clean_consultant:
+                    note_text += f" Consultant: {clean_consultant}."
+                if reschedule_line:
+                    note_text += " " + reschedule_line
+                cur.execute("""
+                    INSERT INTO client_notes (client_id, note_text, note_type, note_date, note_time, created_by)
+                    VALUES (%s, %s, %s, %s::date, %s::time, %s)
+                """, (client_id, note_text, "appointment", appointment_date, appointment_time_db, "Carlos G Suarez"))
+            except Exception:
+                pass
         conn.close()
-        return render_client_workspace(request, client_id, message="Appointment saved. Email/SMS automation hooks are ready for the next step.", active_tab=active_tab)
+        return render_client_workspace(request, client_id, message=f"Appointment {action_word}.", active_tab=active_tab)
     except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e))
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
+@app.post("/ui/complete-appointment", response_class=HTMLResponse)
+def ui_complete_appointment(request: Request, client_id: str = Form(...), appointment_id: str = Form(...), active_tab: str = Form("calendar"), return_to: str = Form("")):
+    try:
+        conn = get_conn(); conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("UPDATE client_appointments SET status = 'completed' WHERE id = %s AND client_id = %s", (appointment_id, client_id))
+            cur.execute("""
+                INSERT INTO client_notes (client_id, note_text, note_type, note_date, note_time, created_by)
+                VALUES (%s, %s, 'appointment', CURRENT_DATE, CURRENT_TIME, 'Carlos G Suarez')
+            """, (client_id, "Appointment marked completed / cleared from active calendar."))
+        conn.close()
+        if return_to:
+            return RedirectResponse(url=_safe_ui_return_target(return_to, '/ui/credit-repair-dashboard'), status_code=303)
+        return render_client_workspace(request, client_id, message="Appointment marked completed and cleared from active calendar.", active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
 
 
 @app.post("/ui/delete-appointment", response_class=HTMLResponse)
-def ui_delete_appointment(request: Request, client_id: str = Form(...), appointment_id: str = Form(...), active_tab: str = Form("appointments")):
+def ui_delete_appointment(request: Request, client_id: str = Form(...), appointment_id: str = Form(...), active_tab: str = Form("calendar"), return_to: str = Form("")):
     try:
-        conn = get_conn()
-        conn.autocommit = True
+        conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM client_appointments WHERE id = %s AND client_id = %s", (appointment_id, client_id))
+            cur.execute("UPDATE client_appointments SET status = 'cancelled' WHERE id = %s AND client_id = %s", (appointment_id, client_id))
+            cur.execute("""
+                INSERT INTO client_notes (client_id, note_text, note_type, note_date, note_time, created_by)
+                VALUES (%s, %s, 'appointment', CURRENT_DATE, CURRENT_TIME, 'Carlos G Suarez')
+            """, (client_id, "Appointment cancelled/deleted from active calendar; record preserved."))
         conn.close()
-        return render_client_workspace(request, client_id, message="Appointment deleted.", active_tab=active_tab)
+        if return_to:
+            return RedirectResponse(url=_safe_ui_return_target(return_to, '/ui/credit-repair-dashboard'), status_code=303)
+        return render_client_workspace(request, client_id, message="Appointment cancelled/deleted from active calendar. Record preserved.", active_tab=active_tab)
     except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e))
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
 
 
 @app.post("/ui/reveal-credential", response_class=HTMLResponse)
@@ -4195,8 +16889,8 @@ async def ui_add_account_dispute(request: Request):
                       (client_id, creditor_name, account_number_last4, dispute_reason, requested_action, notes,
                        is_active, bureau, status, first_seen_date, removed_date, is_negative, round_added, last_included_round)
                     VALUES
-                      (%s, %s, NULLIF(%s,''), %s, %s, NULLIF(%s,''), TRUE, %s, 'open', NULL, NULL, TRUE, %s, %s)
-                """, (client_id, creditor_name, account_number, dispute_reason, requested_action, notes, bureau, round_added, round_added))
+                      (%s, %s, NULLIF(%s,''), %s, %s, NULLIF(%s,''), TRUE, %s, 'open', NULL, NULL, TRUE, %s, NULL)
+                """, (client_id, creditor_name, account_number, dispute_reason, requested_action, notes, bureau, round_added))
                 inserted += 1
         conn.close()
         if inserted == 0:
@@ -4304,8 +16998,8 @@ async def ui_add_personal_info_dispute(request: Request):
                       (client_id, bureau, info_type, reported_value, correct_value, requested_action,
                        notes, is_active, round_added, last_included_round, removed_date, removed_round)
                     VALUES
-                      (%s, NULLIF(%s,''), %s, %s, NULLIF(%s,''), %s, NULLIF(%s,''), TRUE, %s, %s, NULL, NULL)
-                """, (client_id, bureau, info_type, reported_value, correct_value, requested_action, notes, round_added, round_added))
+                      (%s, NULLIF(%s,''), %s, %s, NULLIF(%s,''), %s, NULLIF(%s,''), TRUE, %s, NULL, NULL, NULL)
+                """, (client_id, bureau, info_type, reported_value, correct_value, requested_action, notes, round_added))
                 inserted += 1
         conn.close()
         if inserted == 0:
@@ -4410,8 +17104,8 @@ async def ui_add_inquiry_dispute(request: Request):
                       (client_id, bureau, furnisher_name, inquiry_date, dispute_reason, requested_action,
                        notes, is_active, round_added, last_included_round, removed_date, removed_round)
                     VALUES
-                      (%s, NULLIF(%s,''), %s, NULLIF(%s,'')::date, %s, %s, NULLIF(%s,''), TRUE, %s, %s, NULL, NULL)
-                """, (client_id, bureau, furnisher_name, inquiry_date, dispute_reason, requested_action, notes, round_added, round_added))
+                      (%s, NULLIF(%s,''), %s, NULLIF(%s,'')::date, %s, %s, NULLIF(%s,''), TRUE, %s, NULL, NULL, NULL)
+                """, (client_id, bureau, furnisher_name, inquiry_date, dispute_reason, requested_action, notes, round_added))
                 inserted += 1
         conn.close()
         if inserted == 0:
@@ -4470,6 +17164,34 @@ def ui_reactivate_inquiry_dispute(
         return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
 
 
+
+
+@app.post("/ui/delete-removed-dispute-history", response_class=HTMLResponse)
+def ui_delete_removed_dispute_history(
+    request: Request,
+    client_id: str = Form(...),
+    item_id: str = Form(...),
+    item_type: str = Form(...),
+    active_tab: str = Form("disputes"),
+    dispute_bureau: str = Form("equifax"),
+):
+    table_map = {
+        'account': 'client_account_disputes',
+        'personal_info': 'client_personal_info_disputes',
+        'inquiry': 'client_inquiry_disputes',
+    }
+    table_name = table_map.get((item_type or '').strip().lower())
+    if not table_name:
+        return render_client_workspace(request, client_id, error='Unknown removed-history item type.', active_tab=active_tab, dispute_bureau=dispute_bureau)
+    try:
+        conn = get_conn(); conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(sql.SQL("DELETE FROM {} WHERE id = %s AND client_id = %s AND COALESCE(is_active, FALSE) = FALSE").format(sql.Identifier(table_name)), (item_id, client_id))
+        conn.close()
+        return render_client_workspace(request, client_id, message='Removed-history item deleted.', active_tab=active_tab, dispute_bureau=dispute_bureau)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab, dispute_bureau=dispute_bureau)
+
 @app.post("/ui/delete-inquiry-dispute", response_class=HTMLResponse)
 def ui_delete_inquiry_dispute(request: Request, client_id: str = Form(...), item_id: str = Form(...), active_tab: str = Form("disputes")):
     try:
@@ -4482,6 +17204,48 @@ def ui_delete_inquiry_dispute(request: Request, client_id: str = Form(...), item
         return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
 
 
+def build_credit_product_note_text(payload: dict) -> str:
+    credit_type = (payload.get('credit_type') or '').strip().lower()
+    lender_name = (payload.get('lender_name') or '').strip() or 'Unknown lender'
+    amount_display = format_currency(payload.get('credit_limit')) if payload.get('credit_limit') not in (None, '') else ''
+    secured_text = 'secured' if payload.get('is_secured') else 'unsecured'
+    open_date = payload.get('open_date') or ''
+    due_text = str(payload.get('due_date') or '').strip()
+    statement_text = str(payload.get('statement_date') or '').strip()
+    notes_text = (payload.get('notes') or '').strip()
+    collateral = (payload.get('collateral_description') or '').strip()
+    if credit_type == 'credit card':
+        parts = [f"Opened New {lender_name} Card"]
+        if amount_display: parts.append(f"with a limit of {amount_display}")
+        parts.append(f"it was {secured_text}")
+        if payload.get('is_secured') and payload.get('secured_deposit_amount') not in (None, ''): parts.append(f"deposit amount {format_currency(payload.get('secured_deposit_amount'))}")
+        if due_text: parts.append(f"the due date is on day {due_text}")
+        if statement_text: parts.append(f"the statement date is on day {statement_text}")
+        if open_date: parts.append(f"it was opened on {open_date}")
+        if notes_text: parts.append(f"Notes: {notes_text}")
+        return '. '.join(parts) + '.'
+    if credit_type == 'personal loan':
+        parts = [f"Opened New {lender_name} Personal Loan"]
+        if amount_display: parts.append(f"loan amount {amount_display}")
+        parts.append(f"it was {secured_text}")
+        if collateral: parts.append(f"collateral: {collateral}")
+        if due_text: parts.append(f"payment date is on day {due_text}")
+        if open_date: parts.append(f"it was opened on {open_date}")
+        if notes_text: parts.append(f"Notes: {notes_text}")
+        return '. '.join(parts) + '.'
+    if credit_type == 'auto loan':
+        vehicle = ' '.join([str(payload.get('vehicle_year') or '').strip(), str(payload.get('vehicle_make') or '').strip(), str(payload.get('vehicle_model') or '').strip()]).strip()
+        parts = [f"Opened New {lender_name} Auto Loan"]
+        if amount_display: parts.append(f"loan amount {amount_display}")
+        parts.append(f"it was {secured_text}")
+        if vehicle: parts.append(f"vehicle: {vehicle}")
+        if due_text: parts.append(f"payment date is on day {due_text}")
+        if open_date: parts.append(f"it was opened on {open_date}")
+        if notes_text: parts.append(f"Notes: {notes_text}")
+        return '. '.join(parts) + '.'
+    return f"Saved credit re-establishment entry for {lender_name}."
+
+
 @app.post("/ui/add-credit-product", response_class=HTMLResponse)
 def ui_add_credit_product(
     request: Request,
@@ -4492,37 +17256,59 @@ def ui_add_credit_product(
     due_date: str = Form(''),
     statement_date: str = Form(''),
     secured_deposit_amount: str = Form(''),
+    is_secured: str = Form('0'),
     origination_date: str = Form(''),
     notes: str = Form(''),
+    collateral_description: str = Form(''),
+    vehicle_year: str = Form(''),
+    vehicle_make: str = Form(''),
+    vehicle_model: str = Form(''),
     edit_item_id: str = Form(''),
     active_tab: str = Form('credit_products'),
 ):
     try:
+        credit_type_clean = (credit_type or '').strip().lower()
+        lender_name_clean = (lender_name or '').strip()
+        if credit_type_clean not in CREDIT_TYPES:
+            raise ValueError('Select a valid credit type.')
+        if not lender_name_clean:
+            raise ValueError('Select a lender.')
+        is_secured_bool = str(is_secured or '').strip().lower() in ('1', 'true', 'yes', 'on')
+        credit_limit_value = Decimal(str(credit_limit)) if str(credit_limit or '').strip() else None
+        due_day_value = int(due_date) if str(due_date or '').strip() else None
+        statement_day_value = int(statement_date) if str(statement_date or '').strip() else None
+        deposit_value = Decimal(str(secured_deposit_amount)) if str(secured_deposit_amount or '').strip() else None
         conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
+            ensure_credit_reestablishment_tables(cur)
             if edit_item_id:
                 cur.execute("""
                     UPDATE client_credit_products
-                    SET lender_name = %s, credit_type = %s, credit_limit = NULLIF(%s,'')::numeric,
-                        due_date = NULLIF(%s,'')::smallint, cutoff_date = NULLIF(%s,'')::smallint,
-                        secured_deposit_amount = NULLIF(%s,'')::numeric, origination_date = NULLIF(%s,'')::date,
-                        notes = NULLIF(%s,''), updated_at = CURRENT_TIMESTAMP
+                    SET lender_name = %s, credit_type = %s, credit_limit = %s, due_date = %s, cutoff_date = %s, secured_deposit_amount = %s,
+                        origination_date = %s, notes = NULLIF(%s,''), updated_at = CURRENT_TIMESTAMP, is_secured = %s,
+                        collateral_description = NULLIF(%s,''), vehicle_year = NULLIF(%s,''), vehicle_make = NULLIF(%s,''), vehicle_model = NULLIF(%s,'')
                     WHERE id = %s::uuid AND client_id = %s::uuid
-                """, (lender_name, credit_type, credit_limit, due_date, statement_date, secured_deposit_amount, origination_date, notes, edit_item_id, client_id))
-                msg = 'Credit product updated.'
+                """, (lender_name_clean, credit_type_clean, credit_limit_value, due_day_value, statement_day_value if credit_type_clean == 'credit card' else None, deposit_value if is_secured_bool else None, origination_date or None, notes, is_secured_bool, collateral_description, vehicle_year, vehicle_make, vehicle_model, edit_item_id, client_id))
+                msg='Credit product updated.'
             else:
                 cur.execute("""
                     INSERT INTO client_credit_products
-                      (client_id, lender_name, credit_type, credit_limit, due_date, cutoff_date, secured_deposit_amount, origination_date, notes)
+                      (id, client_id, lender_name, credit_type, credit_limit, due_date, cutoff_date, secured_deposit_amount, origination_date, notes, is_secured, collateral_description, vehicle_year, vehicle_make, vehicle_model)
                     VALUES
-                      (%s, %s, %s, NULLIF(%s,'')::numeric, NULLIF(%s,'')::smallint, NULLIF(%s,'')::smallint,
-                       NULLIF(%s,'')::numeric, NULLIF(%s,'')::date, NULLIF(%s,''))
-                """, (client_id, lender_name, credit_type, credit_limit, due_date, statement_date, secured_deposit_amount, origination_date, notes))
-                msg = 'Credit product saved.'
+                      (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, NULLIF(%s,''), %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''))
+                """, (str(uuid4()), client_id, lender_name_clean, credit_type_clean, credit_limit_value, due_day_value, statement_day_value if credit_type_clean == 'credit card' else None, deposit_value if is_secured_bool else None, origination_date or None, notes, is_secured_bool, collateral_description, vehicle_year, vehicle_make, vehicle_model))
+                msg='Credit product saved.'
+            note_text = build_credit_product_note_text({
+                'credit_type': credit_type_clean, 'lender_name': lender_name_clean, 'credit_limit': credit_limit_value, 'due_date': due_day_value,
+                'statement_date': statement_day_value if credit_type_clean == 'credit card' else None, 'secured_deposit_amount': deposit_value if is_secured_bool else None,
+                'is_secured': is_secured_bool, 'open_date': origination_date or '', 'notes': notes, 'collateral_description': collateral_description,
+                'vehicle_year': vehicle_year, 'vehicle_make': vehicle_make, 'vehicle_model': vehicle_model,
+            })
+            cur.execute("INSERT INTO client_notes (client_id, note_text, note_type, created_by) VALUES (%s::uuid, %s, 'credit_reestablishment', 'system')", (client_id, note_text))
         conn.close()
-        return render_client_workspace(request, client_id, message=msg, active_tab=active_tab)
+        return _client_tab_success_response(request, client_id, msg, active_tab=active_tab)
     except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+        return _client_tab_error_response(request, client_id, str(e), active_tab=active_tab)
 
 
 @app.post('/ui/delete-credit-product', response_class=HTMLResponse)
@@ -4537,29 +17323,188 @@ def ui_delete_credit_product(request: Request, client_id: str = Form(...), item_
         return render_client_workspace(request, client_id, error=str(e))
 
 
+
+@app.post('/ui/save-lender-directory', response_class=HTMLResponse)
+def ui_save_lender_directory(
+    request: Request,
+    client_id: str = Form(...),
+    name: str = Form(...),
+    lender_category: str = Form('personal loan'),
+    address_line1: str = Form(''),
+    address_line2: str = Form(''),
+    city: str = Form(''),
+    state: str = Form(''),
+    zip_code: str = Form(''),
+    phone: str = Form(''),
+    website: str = Form(''),
+    edit_lender_id: str = Form(''),
+    active_tab: str = Form('credit_products'),
+):
+    try:
+        lender_name = (name or '').strip()
+        lender_category = (lender_category or 'personal loan').strip().lower()
+        if lender_category not in [item[0] for item in LENDER_CATEGORIES]:
+            lender_category = 'personal loan'
+        if not lender_name:
+            raise ValueError('Lender name is required.')
+        conn = get_conn(); conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_lender_directory_table(cur)
+            if edit_lender_id:
+                cur.execute("""
+                    UPDATE lender_directory
+                    SET name = %s, category = %s, address_line1 = NULLIF(%s,''), address_line2 = NULLIF(%s,''), city = NULLIF(%s,''),
+                        state = NULLIF(%s,''), zip_code = NULLIF(%s,''), phone = NULLIF(%s,''), website = NULLIF(%s,''),
+                        is_active = TRUE, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s::uuid
+                """, (lender_name, lender_category, address_line1, address_line2, city, state, zip_code, phone, website, edit_lender_id))
+                msg='Lender updated.'
+            else:
+                cur.execute("""
+                    INSERT INTO lender_directory (id, name, category, address_line1, address_line2, city, state, zip_code, phone, website, is_active)
+                    VALUES (%s::uuid, %s, %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), TRUE)
+                """, (str(uuid4()), lender_name, lender_category, address_line1, address_line2, city, state, zip_code, phone, website))
+                msg='Lender added.'
+        conn.close()
+        return _client_tab_success_response(request, client_id, msg, active_tab=active_tab)
+    except Exception as e:
+        return _client_tab_error_response(request, client_id, str(e), active_tab=active_tab)
+
+
+@app.post('/ui/delete-lender-directory', response_class=HTMLResponse)
+def ui_delete_lender_directory(request: Request, client_id: str = Form(...), lender_id: str = Form(...), active_tab: str = Form('credit_products')):
+    try:
+        conn = get_conn(); conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_lender_directory_table(cur)
+            cur.execute("DELETE FROM lender_directory WHERE id = %s::uuid", (lender_id,))
+        conn.close()
+        return render_client_workspace(request, client_id, message='Lender deleted.', active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
+@app.post('/ui/save-prequal-link', response_class=HTMLResponse)
+def ui_save_prequal_link(
+    request: Request,
+    client_id: str = Form(...),
+    name: str = Form(...),
+    url: str = Form(...),
+    credit_type: str = Form('credit card'),
+    edit_prequal_id: str = Form(''),
+    active_tab: str = Form('credit_products'),
+):
+    try:
+        link_name=(name or '').strip()
+        link_url=(url or '').strip()
+        credit_type=(credit_type or 'credit card').strip().lower()
+        if credit_type not in CREDIT_TYPES:
+            credit_type='credit card'
+        if not link_name or not link_url:
+            raise ValueError('Link name and URL are required.')
+        conn = get_conn(); conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_prequal_links_table(cur)
+            if edit_prequal_id:
+                cur.execute("UPDATE prequal_links SET name=%s, url=%s, credit_type=%s, updated_at=CURRENT_TIMESTAMP, is_active=TRUE WHERE id=%s::uuid", (link_name, link_url, credit_type, edit_prequal_id))
+                msg='Pre-qualification link updated.'
+            else:
+                cur.execute("INSERT INTO prequal_links (id, name, url, credit_type, is_active) VALUES (%s::uuid, %s, %s, %s, TRUE)", (str(uuid4()), link_name, link_url, credit_type))
+                msg='Pre-qualification link added.'
+        conn.close()
+        return _client_tab_success_response(request, client_id, msg, active_tab=active_tab)
+    except Exception as e:
+        return _client_tab_error_response(request, client_id, str(e), active_tab=active_tab)
+
+
+@app.post('/ui/delete-prequal-link', response_class=HTMLResponse)
+def ui_delete_prequal_link(request: Request, client_id: str = Form(...), prequal_id: str = Form(...), active_tab: str = Form('credit_products')):
+    try:
+        conn = get_conn(); conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_prequal_links_table(cur)
+            cur.execute("DELETE FROM prequal_links WHERE id = %s::uuid", (prequal_id,))
+        conn.close()
+        return render_client_workspace(request, client_id, message='Pre-qualification link deleted.', active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
 @app.post("/ui/save-referral-partner", response_class=HTMLResponse)
 def ui_save_referral_partner(
     request: Request,
     client_id: str = Form(...),
+    partner_id: str = Form(""),
     name: str = Form(...),
     company_name: str = Form(""),
     partner_type: str = Form("other"),
     phone: str = Form(""),
     email: str = Form(""),
+    address_line1: str = Form(""),
+    address_line2: str = Form(""),
+    city: str = Form(""),
+    state: str = Form(""),
+    zip_code: str = Form(""),
+    website: str = Form(""),
     notes: str = Form(""),
+    is_active: bool = Form(True),
     active_tab: str = Form("referrals"),
 ):
     try:
         conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO referral_partners (name, company_name, partner_type, phone, email, notes)
-                VALUES (%s, NULLIF(%s,''), %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''))
-            """, (name, company_name, partner_type, phone, email, notes))
+            ensure_referral_partners_table(cur)
+            phone_normalized = normalize_phone_input(phone) if phone else ''
+            if partner_id:
+                cur.execute("""
+                    UPDATE referral_partners
+                    SET name = %s,
+                        company_name = NULLIF(%s,''),
+                        partner_type = %s,
+                        phone = NULLIF(%s,''),
+                        email = NULLIF(%s,''),
+                        address_line1 = NULLIF(%s,''),
+                        address_line2 = NULLIF(%s,''),
+                        city = NULLIF(%s,''),
+                        state = NULLIF(%s,''),
+                        zip = NULLIF(%s,''),
+                        website = NULLIF(%s,''),
+                        notes = NULLIF(%s,''),
+                        is_active = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s::uuid
+                """, (name, company_name, partner_type, phone_normalized, email, address_line1, address_line2, city, state, zip_code, website, notes, is_active, partner_id))
+                msg = 'Referral partner updated.'
+            else:
+                cur.execute("""
+                    INSERT INTO referral_partners
+                      (id, name, company_name, partner_type, phone, email, address_line1, address_line2, city, state, zip, website, notes, is_active)
+                    VALUES
+                      (%s::uuid, %s, NULLIF(%s,''), %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), %s)
+                """, (str(uuid4()), name, company_name, partner_type, phone_normalized, email, address_line1, address_line2, city, state, zip_code, website, notes, is_active))
+                msg = 'Referral partner saved.'
         conn.close()
-        return render_client_workspace(request, client_id, message="Referral partner saved.", active_tab=active_tab)
+        return _client_tab_success_response(request, client_id, msg, active_tab=active_tab)
     except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e))
+        return _client_tab_error_response(request, client_id, str(e), active_tab=active_tab)
+
+
+@app.post("/ui/delete-referral-partner", response_class=HTMLResponse)
+def ui_delete_referral_partner(request: Request, client_id: str = Form(...), partner_id: str = Form(...), active_tab: str = Form("referrals")):
+    try:
+        conn = get_conn(); conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_referral_partners_table(cur)
+            cur.execute("""
+                UPDATE referral_partners
+                SET is_active = FALSE,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s::uuid
+            """, (partner_id,))
+        conn.close()
+        return render_client_workspace(request, client_id, message="Referral partner deleted.", active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
 
 
 @app.post("/ui/add-outbound-referral", response_class=HTMLResponse)
@@ -4576,6 +17521,7 @@ def ui_add_outbound_referral(
     try:
         conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
+            ensure_referral_partners_table(cur)
             cur.execute("""
                 INSERT INTO client_outbound_referrals
                   (client_id, referral_partner_id, referral_date, referral_reason, status, notes)
@@ -4583,9 +17529,9 @@ def ui_add_outbound_referral(
                   (%s, %s, %s::date, NULLIF(%s,''), %s, NULLIF(%s,''))
             """, (client_id, referral_partner_id, referral_date, referral_reason, status, notes))
         conn.close()
-        return render_client_workspace(request, client_id, message="Outbound referral saved.", active_tab=active_tab)
+        return render_client_workspace(request, client_id, message="Referral added.", active_tab=active_tab)
     except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e))
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
 
 
 @app.post("/ui/delete-outbound-referral", response_class=HTMLResponse)
@@ -4595,15 +17541,38 @@ def ui_delete_outbound_referral(request: Request, client_id: str = Form(...), it
         with conn.cursor() as cur:
             cur.execute("DELETE FROM client_outbound_referrals WHERE id = %s AND client_id = %s", (item_id, client_id))
         conn.close()
-        return render_client_workspace(request, client_id, message="Outbound referral deleted.", active_tab=active_tab)
+        return render_client_workspace(request, client_id, message="Referral deleted.", active_tab=active_tab)
     except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e))
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
 
+
+@app.get("/ui/client/{client_id}/referrals/print", response_class=HTMLResponse)
+def ui_print_referral_list(request: Request, client_id: str):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            profile = fetch_client_profile(cur, client_id, include_sensitive=False)
+            outbound_referrals = fetch_outbound_referrals(cur, client_id, 500)
+        if not profile:
+            return templates.TemplateResponse("index.html", {"request": request, "error": "Client not found."})
+        return templates.TemplateResponse(
+            "referral_print.html",
+            {
+                "request": request,
+                "client_id": client_id,
+                "profile": profile,
+                "outbound_referrals": outbound_referrals,
+                "today_display": datetime.now().strftime('%B %d, %Y'),
+            }
+        )
+    finally:
+        conn.close()
 
 @app.post("/ui/add-followup", response_class=HTMLResponse)
 def ui_add_followup(
     request: Request,
     client_id: str = Form(...),
+    followup_id: str = Form(""),
     followup_type: str = Form("general"),
     due_date: str = Form(""),
     status: str = Form("open"),
@@ -4611,26 +17580,57 @@ def ui_add_followup(
     active_tab: str = Form("calendar"),
 ):
     try:
+        clean_id = (followup_id or '').strip()
         conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO client_followups (client_id, followup_type, due_date, status, note_text)
-                VALUES (%s, %s, NULLIF(%s,'')::date, %s, NULLIF(%s,''))
-            """, (client_id, followup_type, due_date, status, note_text))
+            if clean_id:
+                cur.execute("""
+                    UPDATE client_followups
+                    SET followup_type = %s,
+                        due_date = NULLIF(%s,'')::date,
+                        status = %s,
+                        note_text = NULLIF(%s,'')
+                    WHERE id = %s AND client_id = %s
+                """, (followup_type, due_date, status, note_text, clean_id, client_id))
+            else:
+                cur.execute("""
+                    INSERT INTO client_followups (client_id, followup_type, due_date, status, note_text)
+                    VALUES (%s, %s, NULLIF(%s,'')::date, %s, NULLIF(%s,''))
+                """, (client_id, followup_type, due_date, status, note_text))
         conn.close()
-        return render_client_workspace(request, client_id, message="Follow-up saved.", active_tab=active_tab)
+        return render_client_workspace(request, client_id, message=f"Follow-up {'updated' if clean_id else 'saved'}.", active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
+@app.post("/ui/complete-followup", response_class=HTMLResponse)
+def ui_complete_followup(request: Request, client_id: str = Form(...), followup_id: str = Form(...), active_tab: str = Form("calendar"), return_to: str = Form("")):
+    try:
+        conn = get_conn(); conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("UPDATE client_followups SET status = 'done' WHERE id = %s AND client_id = %s", (followup_id, client_id))
+            cur.execute("""
+                INSERT INTO client_notes (client_id, note_text, note_type, note_date, note_time, created_by)
+                VALUES (%s, %s, 'follow-up', CURRENT_DATE, CURRENT_TIME, 'Carlos G Suarez')
+            """, (client_id, "Follow-up / tickler marked done and cleared from active calendar."))
+        conn.close()
+        if return_to:
+            return RedirectResponse(url=_safe_ui_return_target(return_to, '/ui/credit-repair-dashboard'), status_code=303)
+        return render_client_workspace(request, client_id, message="Follow-up marked done and cleared from active calendar.", active_tab=active_tab)
     except Exception as e:
         return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
 
 
 @app.post("/ui/delete-followup", response_class=HTMLResponse)
-def ui_delete_followup(request: Request, client_id: str = Form(...), followup_id: str = Form(...), active_tab: str = Form("calendar")):
+def ui_delete_followup(request: Request, client_id: str = Form(...), followup_id: str = Form(...), active_tab: str = Form("calendar"), return_to: str = Form("")):
     try:
         conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM client_followups WHERE id = %s AND client_id = %s", (followup_id, client_id))
+            cur.execute("UPDATE client_followups SET status = 'cancelled' WHERE id = %s AND client_id = %s", (followup_id, client_id))
         conn.close()
-        return render_client_workspace(request, client_id, message="Follow-up deleted.", active_tab=active_tab)
+        if return_to:
+            return RedirectResponse(url=_safe_ui_return_target(return_to, '/ui/credit-repair-dashboard'), status_code=303)
+        return render_client_workspace(request, client_id, message="Follow-up cancelled/deleted from active calendar. Record preserved.", active_tab=active_tab)
     except Exception as e:
         return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
 
@@ -4639,6 +17639,7 @@ def ui_delete_followup(request: Request, client_id: str = Form(...), followup_id
 def ui_add_redispute_event(
     request: Request,
     client_id: str = Form(...),
+    event_id: str = Form(""),
     bureau: str = Form(""),
     event_date: str = Form(...),
     round_number: int = Form(1),
@@ -4647,26 +17648,58 @@ def ui_add_redispute_event(
     active_tab: str = Form("calendar"),
 ):
     try:
+        clean_id = (event_id or '').strip()
         conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO client_redispute_events (client_id, bureau, event_date, round_number, status, notes)
-                VALUES (%s, NULLIF(%s,''), %s::date, %s, %s, NULLIF(%s,''))
-            """, (client_id, bureau, event_date, round_number, status, notes))
+            if clean_id:
+                cur.execute("""
+                    UPDATE client_redispute_events
+                    SET bureau = NULLIF(%s,''),
+                        event_date = %s::date,
+                        round_number = %s,
+                        status = %s,
+                        notes = NULLIF(%s,'')
+                    WHERE id = %s AND client_id = %s
+                """, (bureau, event_date, round_number, status, notes, clean_id, client_id))
+            else:
+                cur.execute("""
+                    INSERT INTO client_redispute_events (client_id, bureau, event_date, round_number, status, notes)
+                    VALUES (%s, NULLIF(%s,''), %s::date, %s, %s, NULLIF(%s,''))
+                """, (client_id, bureau, event_date, round_number, status, notes))
         conn.close()
-        return render_client_workspace(request, client_id, message="Redispute event saved.", active_tab=active_tab)
+        return render_client_workspace(request, client_id, message=f"Redispute reminder {'updated' if clean_id else 'saved'}.", active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
+@app.post("/ui/complete-redispute-event", response_class=HTMLResponse)
+def ui_complete_redispute_event(request: Request, client_id: str = Form(...), event_id: str = Form(...), active_tab: str = Form("calendar"), return_to: str = Form("")):
+    try:
+        conn = get_conn(); conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("UPDATE client_redispute_events SET status = 'completed' WHERE id = %s AND client_id = %s", (event_id, client_id))
+            cur.execute("""
+                INSERT INTO client_notes (client_id, note_text, note_type, note_date, note_time, created_by)
+                VALUES (%s, %s, 'redispute', CURRENT_DATE, CURRENT_TIME, 'Carlos G Suarez')
+            """, (client_id, "Redispute reminder marked completed and cleared from active calendar."))
+        conn.close()
+        if return_to:
+            return RedirectResponse(url=_safe_ui_return_target(return_to, '/ui/credit-repair-dashboard'), status_code=303)
+        return render_client_workspace(request, client_id, message="Redispute reminder completed and cleared from active calendar.", active_tab=active_tab)
     except Exception as e:
         return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
 
 
 @app.post("/ui/delete-redispute-event", response_class=HTMLResponse)
-def ui_delete_redispute_event(request: Request, client_id: str = Form(...), event_id: str = Form(...), active_tab: str = Form("calendar")):
+def ui_delete_redispute_event(request: Request, client_id: str = Form(...), event_id: str = Form(...), active_tab: str = Form("calendar"), return_to: str = Form("")):
     try:
         conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM client_redispute_events WHERE id = %s AND client_id = %s", (event_id, client_id))
+            cur.execute("UPDATE client_redispute_events SET status = 'cancelled' WHERE id = %s AND client_id = %s", (event_id, client_id))
         conn.close()
-        return render_client_workspace(request, client_id, message="Redispute event deleted.", active_tab=active_tab)
+        if return_to:
+            return RedirectResponse(url=_safe_ui_return_target(return_to, '/ui/credit-repair-dashboard'), status_code=303)
+        return render_client_workspace(request, client_id, message="Redispute reminder cancelled/deleted from active calendar. Record preserved.", active_tab=active_tab)
     except Exception as e:
         return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
 
@@ -4680,16 +17713,18 @@ def ui_create_upload_request(
     active_tab: str = Form("documents"),
 ):
     try:
+        request_id = str(uuid4())
         token = str(uuid4())
         allowed_doc_types = ""
         if request_type == "id_proof_intake":
             allowed_doc_types = ",".join([opt[0] for opt in DOCUMENT_SECTION_CATEGORY_OPTIONS.get("ids_proof_of_address", [])])
         conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
+            ensure_client_upload_requests_table(cur)
             cur.execute("""
-                INSERT INTO client_upload_requests (client_id, token, request_type, allowed_doc_types, expires_at, status)
-                VALUES (%s, %s::uuid, %s, NULLIF(%s,''), CURRENT_TIMESTAMP + (%s || ' days')::interval, 'open')
-            """, (client_id, token, request_type, allowed_doc_types, expires_days))
+                INSERT INTO client_upload_requests (id, client_id, token, request_type, allowed_doc_types, expires_at, status, created_at)
+                VALUES (%s::uuid, %s, %s::uuid, %s, NULLIF(%s,''), CURRENT_TIMESTAMP + (%s || ' days')::interval, 'open', CURRENT_TIMESTAMP)
+            """, (request_id, client_id, token, request_type, allowed_doc_types, expires_days))
         conn.close()
         upload_link = str(request.base_url).rstrip('/') + f"/upload/{token}"
         return render_client_workspace(request, client_id, message=f"Upload request created: {upload_link}", active_tab=active_tab)
@@ -4701,29 +17736,55 @@ def ui_create_upload_request(
 def ui_save_client_association(
     request: Request,
     client_id: str = Form(...),
-    associated_client_id: str = Form(...),
+    associated_client_id: str = Form(""), 
     relationship_label: str = Form("associated"),
+    relationship_label_custom: str = Form(""),
+    reciprocal_relationship_label: str = Form(""),
+    reciprocal_relationship_label_custom: str = Form(""),
     active_tab: str = Form("profile"),
 ):
     try:
+        client_id = (client_id or "").strip()
+        associated_client_id = (associated_client_id or "").strip()
+        relationship_label = (relationship_label or '').strip()
+        reciprocal_relationship_label = (reciprocal_relationship_label or '').strip()
+        if relationship_label.lower() in {'(add)', '__add__', 'add'}:
+            relationship_label = (relationship_label_custom or '').strip()
+        relationship_label = normalize_relationship_label(relationship_label)
+        if reciprocal_relationship_label.lower() in {'(add)', '__add__', 'add'}:
+            reciprocal_relationship_label = (reciprocal_relationship_label_custom or '').strip()
+        reciprocal_relationship_label = normalize_relationship_label(reciprocal_relationship_label) if reciprocal_relationship_label else infer_reciprocal_relationship_label(relationship_label)
+        if not associated_client_id:
+            raise ValueError("Choose an associated client from the search results first.")
         if client_id == associated_client_id:
             raise ValueError("A client cannot be associated to the same record.")
         conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
+            if not _client_associations_table_ready(cur):
+                raise ValueError("The client_associations table does not exist yet. Run the SQL file for this update first.")
+            cur.execute("SELECT 1 FROM clients WHERE id = %s::uuid LIMIT 1", (associated_client_id,))
+            if not cur.fetchone():
+                raise ValueError("The selected associated client could not be found.")
+            if not _client_ids_share_entity_scope(cur, client_id, associated_client_id):
+                raise ValueError("Associated clients must belong to the same business workspace.")
+            cur.execute("SELECT 1 FROM client_associations WHERE client_id = %s::uuid AND associated_client_id = %s::uuid LIMIT 1", (client_id, associated_client_id))
+            association_already_exists = bool(cur.fetchone())
             cur.execute("""
                 INSERT INTO client_associations (client_id, associated_client_id, relationship_label)
                 VALUES (%s::uuid, %s::uuid, NULLIF(%s,''))
                 ON CONFLICT (client_id, associated_client_id)
-                DO UPDATE SET relationship_label = EXCLUDED.relationship_label
+                DO UPDATE SET relationship_label = EXCLUDED.relationship_label,
+                              updated_at = CURRENT_TIMESTAMP
             """, (client_id, associated_client_id, relationship_label))
             cur.execute("""
                 INSERT INTO client_associations (client_id, associated_client_id, relationship_label)
                 VALUES (%s::uuid, %s::uuid, NULLIF(%s,''))
                 ON CONFLICT (client_id, associated_client_id)
-                DO NOTHING
-            """, (associated_client_id, client_id, relationship_label))
+                DO UPDATE SET relationship_label = EXCLUDED.relationship_label,
+                              updated_at = CURRENT_TIMESTAMP
+            """, (associated_client_id, client_id, reciprocal_relationship_label))
         conn.close()
-        return render_client_workspace(request, client_id, message="Associated client saved.", active_tab=active_tab)
+        return render_client_workspace(request, client_id, message=("Relationship edits saved." if association_already_exists else "Associated person saved."), active_tab=active_tab)
     except Exception as e:
         return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
 
@@ -4738,12 +17799,57 @@ def ui_delete_client_association(
     try:
         conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM client_associations WHERE client_id = %s::uuid AND associated_client_id = %s::uuid", (client_id, associated_client_id))
-            cur.execute("DELETE FROM client_associations WHERE client_id = %s::uuid AND associated_client_id = %s::uuid", (associated_client_id, client_id))
+            if _client_associations_table_ready(cur):
+                cur.execute("DELETE FROM client_associations WHERE client_id = %s::uuid AND associated_client_id = %s::uuid", (client_id, associated_client_id))
+                cur.execute("DELETE FROM client_associations WHERE client_id = %s::uuid AND associated_client_id = %s::uuid", (associated_client_id, client_id))
         conn.close()
-        return render_client_workspace(request, client_id, message="Associated client removed.", active_tab=active_tab)
+        return render_client_workspace(request, client_id, message="Associated person removed.", active_tab=active_tab)
     except Exception as e:
         return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
+@app.post("/ui/client/{client_id}/signature/save", response_class=HTMLResponse)
+def ui_save_client_signature(
+    request: Request,
+    client_id: str,
+    active_tab: str = Form("documents"),
+    use_signature_on_letters: bool = Form(False),
+    signature_file: UploadFile = File(None),
+):
+    try:
+        conn = get_conn(); conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(signature_file_path, ''), COALESCE(use_signature_on_letters, FALSE) FROM clients WHERE id = %s", (client_id,))
+            row = cur.fetchone()
+            existing_signature_path = ((row[0] if row else '') or '').strip()
+            has_new_signature = signature_file is not None and bool(getattr(signature_file, 'filename', ''))
+            final_has_signature = bool(has_new_signature or existing_signature_path)
+            if use_signature_on_letters and not final_has_signature:
+                raise ValueError('No client signature is on file. Upload a signature first or turn off "Prefer client signature".')
+            if has_new_signature:
+                ext = os.path.splitext(signature_file.filename)[1].lower()
+                if ext not in {'.png', '.jpg', '.jpeg'}:
+                    raise ValueError('Client signature must be a PNG or JPG file.')
+                os.makedirs(SIGNATURE_DIR, exist_ok=True)
+                safe_name = f"signature_{uuid4().hex}{ext}"
+                save_path = os.path.join(SIGNATURE_DIR, safe_name)
+                content = signature_file.file.read()
+                with open(save_path, 'wb') as f:
+                    f.write(content)
+                cur.execute("""
+                    UPDATE clients
+                    SET signature_file_name = %s,
+                        signature_file_path = %s,
+                        signature_uploaded_at = CURRENT_TIMESTAMP,
+                        use_signature_on_letters = %s
+                    WHERE id = %s
+                """, (signature_file.filename, save_path, bool(use_signature_on_letters), client_id))
+            else:
+                cur.execute("UPDATE clients SET use_signature_on_letters = %s WHERE id = %s", (bool(use_signature_on_letters), client_id))
+        conn.close()
+        return render_client_workspace(request, client_id, message='Client signature saved.', active_tab=active_tab or 'documents')
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab or 'documents')
 
 
 @app.get("/upload/{token}", response_class=HTMLResponse)
@@ -4751,6 +17857,7 @@ def upload_page(request: Request, token: str):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            ensure_client_upload_requests_table(cur)
             cur.execute("""
                 SELECT ur.id::text, ur.client_id::text, COALESCE(ur.request_type,'general_upload'), COALESCE(ur.allowed_doc_types,''),
                        ur.expires_at, COALESCE(ur.status,'open')
@@ -4780,7 +17887,7 @@ def upload_page(request: Request, token: str):
             section_options = DOCUMENT_SECTION_CATEGORY_OPTIONS
             sections = DOCUMENT_SECTIONS
             defaults = DEFAULT_DOCUMENT_CATEGORY_BY_SECTION
-        return templates.TemplateResponse("upload.html", {"request": request, "token": token, "upload_request": req, "document_categories": DOCUMENT_CATEGORIES, "document_sections": sections, "document_section_category_options": section_options, "default_document_category_by_section": defaults, "document_source_options": source_options, "bureaus": BUREAUS})
+        return templates.TemplateResponse("upload.html", {"request": request, "token": token, "upload_request": req, "document_categories": DOCUMENT_CATEGORIES, "document_sections": sections, "document_section_category_options": section_options, "default_document_category_by_section": defaults, "document_source_options": source_options, "bureaus": BUREAUS, "current_theme": get_active_theme_key(), "theme_runtime": active_theme_runtime_for_request(request, "module"), "software_name": SOFTWARE_NAME, "software_tagline": SOFTWARE_TAGLINE})
     finally:
         conn.close()
 
@@ -4813,6 +17920,7 @@ def upload_submit(
     conn = get_conn(); conn.autocommit = True
     try:
         with conn.cursor() as cur:
+            ensure_client_upload_requests_table(cur)
             cur.execute("""
                 SELECT id::text, client_id::text, COALESCE(status,'open'), COALESCE(request_type,'general_upload')
                 FROM client_upload_requests
@@ -5069,7 +18177,7 @@ async def ui_analyze_selected_documents(request: Request):
                     messages.append(result['error'])
                 else:
                     counts = result.get('counts', {})
-                    msg = f"{bureau.title()}: staged {counts.get('accounts',0)} account item(s), {counts.get('personal_info',0)} personal-info item(s), and {counts.get('inquiries',0)} inquiry item(s)."
+                    msg = f"{bureau.title()}: staged {counts.get('accounts',0)} negative account item(s), {counts.get('personal_info',0)} address / remark item(s), and {counts.get('inquiries',0)} hard inquiry item(s)."
                     if result.get('client_match_status') in {'partial_match', 'possible_mismatch'} and result.get('client_match_summary'):
                         msg += ' ' + result.get('client_match_summary')
                     messages.append(msg)
@@ -5080,34 +18188,38 @@ async def ui_analyze_selected_documents(request: Request):
 
 
 
-@app.post("/ui/import-analysis-items", response_class=HTMLResponse)
-def ui_import_analysis_items(
-    request: Request,
-    client_id: str = Form(...),
-    analysis_run_id: str = Form(...),
-    bureau: str = Form(...),
-    active_tab: str = Form("disputes"),
-    selected_account_ids: Optional[List[str]] = Form(None),
-    selected_personal_ids: Optional[List[str]] = Form(None),
-    selected_inquiry_ids: Optional[List[str]] = Form(None),
-):
-    try:
-        account_ids = selected_account_ids or []
-        personal_ids = selected_personal_ids or []
-        inquiry_ids = selected_inquiry_ids or []
-        if not account_ids and not personal_ids and not inquiry_ids:
-            raise ValueError("Choose at least one staged item to import.")
 
-        conn = get_conn(); conn.autocommit = True
+@app.post("/ui/import-analysis-items", response_class=HTMLResponse)
+async def ui_import_analysis_items(request: Request):
+    form = await request.form()
+    client_id = str(form.get('client_id', '')).strip()
+    analysis_run_id = str(form.get('analysis_run_id', '')).strip()
+    bureau = str(form.get('bureau', '')).strip().lower()
+    active_tab = str(form.get('active_tab', 'disputes')).strip() or 'disputes'
+    account_ids = [str(v).strip() for v in form.getlist('selected_account_ids') if str(v).strip()]
+    personal_ids = [str(v).strip() for v in form.getlist('selected_personal_ids') if str(v).strip()]
+    inquiry_ids = [str(v).strip() for v in form.getlist('selected_inquiry_ids') if str(v).strip()]
+
+    try:
+        if not client_id or not analysis_run_id or bureau not in BUREAUS:
+            raise ValueError('Analysis import request is missing required values.')
+        if not account_ids and not personal_ids and not inquiry_ids:
+            raise ValueError('Choose at least one staged item to import.')
+
+        conn = get_conn()
+        conn.autocommit = True
         imported_counts = {'accounts': 0, 'personal_info': 0, 'inquiries': 0, 'duplicates': 0}
         with conn.cursor() as cur:
             round_added = get_current_round_number_for_bureau(cur, client_id, bureau)
+            profile = fetch_client_profile(cur, client_id, include_sensitive=False) or {}
+            current_correct_address = str(form.get('current_correct_address', '')).strip() or _format_profile_current_address(profile)
 
             for item_id in account_ids:
                 cur.execute("""
                     SELECT COALESCE(creditor_name,''), COALESCE(account_number_fragment,''), COALESCE(suggested_reason,'other'), COALESCE(suggested_action,'investigate'),
                            COALESCE(strategy_note,''), COALESCE(imported_dispute_id::text,''), COALESCE(matched_dispute_id::text,'')
-                    FROM dispute_analysis_accounts WHERE id = %s::uuid AND run_id = %s::uuid
+                    FROM dispute_analysis_accounts
+                    WHERE id = %s::uuid AND run_id = %s::uuid
                 """, (item_id, analysis_run_id))
                 row = cur.fetchone()
                 if not row:
@@ -5115,6 +18227,9 @@ def ui_import_analysis_items(
                 if row[5]:
                     imported_counts['duplicates'] += 1
                     continue
+                selected_reason = str(form.get(f'account_reason_{item_id}', '')).strip() or row[2] or 'other'
+                selected_action = 'delete' if selected_reason == 'duplicate' else ('correct' if selected_reason in {'late payment history inaccurate', 'missing / inaccurate date of first delinquency'} else row[3] or 'investigate')
+                selected_note = str(form.get(f'account_note_{item_id}', '')).strip() or row[4]
                 existing_id = row[6]
                 if existing_id:
                     cur.execute("""
@@ -5125,11 +18240,10 @@ def ui_import_analysis_items(
                             removed_round = NULL,
                             dispute_reason = COALESCE(NULLIF(%s,''), dispute_reason),
                             requested_action = COALESCE(NULLIF(%s,''), requested_action),
-                            notes = CASE WHEN COALESCE(notes,'') = '' THEN NULLIF(%s,'') ELSE notes || E'
-' || NULLIF(%s,'') END,
+                            notes = CASE WHEN COALESCE(notes,'') = '' THEN NULLIF(%s,'') ELSE notes || E'\n' || NULLIF(%s,'') END,
                             round_added = COALESCE(round_added, %s)
                         WHERE id = %s::uuid
-                    """, (row[2], row[3], row[4], row[4], round_added, existing_id))
+                    """, (selected_reason, selected_action, selected_note, selected_note, round_added, existing_id))
                     cur.execute("UPDATE dispute_analysis_accounts SET imported_dispute_id = %s::uuid, comparison_status = 'imported' WHERE id = %s::uuid", (existing_id, item_id))
                     imported_counts['duplicates'] += 1
                     continue
@@ -5137,9 +18251,9 @@ def ui_import_analysis_items(
                     INSERT INTO client_account_disputes
                       (client_id, bureau, creditor_name, account_number_last4, dispute_reason, requested_action, notes, is_active, status, round_added, last_included_round)
                     VALUES
-                      (%s::uuid, %s, NULLIF(%s,''), NULLIF(%s,''), COALESCE(NULLIF(%s,''), 'other'), COALESCE(NULLIF(%s,''), 'investigate'), NULLIF(%s,''), TRUE, 'open', %s, %s)
+                      (%s::uuid, %s, NULLIF(%s,''), NULLIF(%s,''), COALESCE(NULLIF(%s,''), 'other'), COALESCE(NULLIF(%s,''), 'investigate'), NULLIF(%s,''), TRUE, 'open', %s, NULL)
                     RETURNING id::text
-                """, (client_id, bureau, row[0], row[1], row[2], row[4], round_added, round_added))
+                """, (client_id, bureau, row[0], row[1], selected_reason, selected_action, selected_note, round_added))
                 new_id = cur.fetchone()[0]
                 cur.execute("UPDATE dispute_analysis_accounts SET imported_dispute_id = %s::uuid, comparison_status = 'imported' WHERE id = %s::uuid", (new_id, item_id))
                 imported_counts['accounts'] += 1
@@ -5148,7 +18262,8 @@ def ui_import_analysis_items(
                 cur.execute("""
                     SELECT COALESCE(info_type,''), COALESCE(reported_value,''), COALESCE(correct_value,''), COALESCE(suggested_action,'correct'),
                            COALESCE(strategy_note,''), COALESCE(imported_dispute_id::text,''), COALESCE(matched_dispute_id::text,'')
-                    FROM dispute_analysis_personal_info WHERE id = %s::uuid AND run_id = %s::uuid
+                    FROM dispute_analysis_personal_info
+                    WHERE id = %s::uuid AND run_id = %s::uuid
                 """, (item_id, analysis_run_id))
                 row = cur.fetchone()
                 if not row:
@@ -5156,6 +18271,17 @@ def ui_import_analysis_items(
                 if row[5]:
                     imported_counts['duplicates'] += 1
                     continue
+                info_type = (row[0] or '').strip().lower() or 'other'
+                selected_action = str(form.get(f'personal_action_{item_id}', '')).strip() or row[3] or ('delete' if info_type == 'remark' else 'correct')
+                selected_note = str(form.get(f'personal_note_{item_id}', '')).strip() or row[4]
+                correct_value = row[2] or ''
+                if info_type == 'address':
+                    correct_value = current_correct_address
+                    if selected_note:
+                        selected_note = f"{selected_note}\nCurrent correct address: {correct_value}"
+                    else:
+                        selected_note = f"Current correct address: {correct_value}"
+                    selected_action = 'correct'
                 existing_id = row[6]
                 if existing_id:
                     cur.execute("""
@@ -5163,12 +18289,12 @@ def ui_import_analysis_items(
                         SET is_active = TRUE,
                             removed_date = NULL,
                             removed_round = NULL,
+                            correct_value = COALESCE(NULLIF(%s,''), correct_value),
                             requested_action = COALESCE(NULLIF(%s,''), requested_action),
-                            notes = CASE WHEN COALESCE(notes,'') = '' THEN NULLIF(%s,'') ELSE notes || E'
-' || NULLIF(%s,'') END,
+                            notes = CASE WHEN COALESCE(notes,'') = '' THEN NULLIF(%s,'') ELSE notes || E'\n' || NULLIF(%s,'') END,
                             round_added = COALESCE(round_added, %s)
                         WHERE id = %s::uuid
-                    """, (row[3], row[4], row[4], round_added, existing_id))
+                    """, (correct_value, selected_action, selected_note, selected_note, round_added, existing_id))
                     cur.execute("UPDATE dispute_analysis_personal_info SET imported_dispute_id = %s::uuid, comparison_status = 'imported' WHERE id = %s::uuid", (existing_id, item_id))
                     imported_counts['duplicates'] += 1
                     continue
@@ -5176,9 +18302,9 @@ def ui_import_analysis_items(
                     INSERT INTO client_personal_info_disputes
                       (client_id, bureau, info_type, reported_value, correct_value, requested_action, notes, is_active, round_added, last_included_round)
                     VALUES
-                      (%s::uuid, %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), COALESCE(NULLIF(%s,''), 'correct'), NULLIF(%s,''), TRUE, %s, %s)
+                      (%s::uuid, %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), COALESCE(NULLIF(%s,''), 'correct'), NULLIF(%s,''), TRUE, %s, NULL)
                     RETURNING id::text
-                """, (client_id, bureau, row[0], row[1], row[2], row[3], row[4], round_added, round_added))
+                """, (client_id, bureau, info_type, row[1], correct_value, selected_action, selected_note, round_added))
                 new_id = cur.fetchone()[0]
                 cur.execute("UPDATE dispute_analysis_personal_info SET imported_dispute_id = %s::uuid, comparison_status = 'imported' WHERE id = %s::uuid", (new_id, item_id))
                 imported_counts['personal_info'] += 1
@@ -5187,7 +18313,8 @@ def ui_import_analysis_items(
                 cur.execute("""
                     SELECT COALESCE(furnisher_name,''), inquiry_date, COALESCE(suggested_reason,'not my inquiry'), COALESCE(suggested_action,'delete'),
                            COALESCE(strategy_note,''), COALESCE(imported_dispute_id::text,''), COALESCE(matched_dispute_id::text,'')
-                    FROM dispute_analysis_inquiries WHERE id = %s::uuid AND run_id = %s::uuid
+                    FROM dispute_analysis_inquiries
+                    WHERE id = %s::uuid AND run_id = %s::uuid
                 """, (item_id, analysis_run_id))
                 row = cur.fetchone()
                 if not row:
@@ -5195,6 +18322,9 @@ def ui_import_analysis_items(
                 if row[5]:
                     imported_counts['duplicates'] += 1
                     continue
+                selected_reason = str(form.get(f'inquiry_reason_{item_id}', '')).strip() or row[2] or 'not my inquiry'
+                selected_action = 'investigate' if selected_reason in {'unauthorized pull', 'other'} else 'delete'
+                selected_note = str(form.get(f'inquiry_note_{item_id}', '')).strip() or row[4]
                 existing_id = row[6]
                 if existing_id:
                     cur.execute("""
@@ -5204,11 +18334,10 @@ def ui_import_analysis_items(
                             removed_round = NULL,
                             dispute_reason = COALESCE(NULLIF(%s,''), dispute_reason),
                             requested_action = COALESCE(NULLIF(%s,''), requested_action),
-                            notes = CASE WHEN COALESCE(notes,'') = '' THEN NULLIF(%s,'') ELSE notes || E'
-' || NULLIF(%s,'') END,
+                            notes = CASE WHEN COALESCE(notes,'') = '' THEN NULLIF(%s,'') ELSE notes || E'\n' || NULLIF(%s,'') END,
                             round_added = COALESCE(round_added, %s)
                         WHERE id = %s::uuid
-                    """, (row[2], row[3], row[4], row[4], round_added, existing_id))
+                    """, (selected_reason, selected_action, selected_note, selected_note, round_added, existing_id))
                     cur.execute("UPDATE dispute_analysis_inquiries SET imported_dispute_id = %s::uuid, comparison_status = 'imported' WHERE id = %s::uuid", (existing_id, item_id))
                     imported_counts['duplicates'] += 1
                     continue
@@ -5216,9 +18345,9 @@ def ui_import_analysis_items(
                     INSERT INTO client_inquiry_disputes
                       (client_id, bureau, furnisher_name, inquiry_date, dispute_reason, requested_action, notes, is_active, round_added, last_included_round)
                     VALUES
-                      (%s::uuid, %s, NULLIF(%s,''), %s, COALESCE(NULLIF(%s,''), 'not my inquiry'), COALESCE(NULLIF(%s,''), 'delete'), NULLIF(%s,''), TRUE, %s, %s)
+                      (%s::uuid, %s, NULLIF(%s,''), %s, COALESCE(NULLIF(%s,''), 'not my inquiry'), COALESCE(NULLIF(%s,''), 'delete'), NULLIF(%s,''), TRUE, %s, NULL)
                     RETURNING id::text
-                """, (client_id, bureau, row[0], row[1], row[2], row[4], round_added, round_added))
+                """, (client_id, bureau, row[0], row[1], selected_reason, selected_action, selected_note, round_added))
                 new_id = cur.fetchone()[0]
                 cur.execute("UPDATE dispute_analysis_inquiries SET imported_dispute_id = %s::uuid, comparison_status = 'imported' WHERE id = %s::uuid", (new_id, item_id))
                 imported_counts['inquiries'] += 1
@@ -5227,28 +18356,143 @@ def ui_import_analysis_items(
             if imported_counts['accounts']:
                 summary.append(f"{imported_counts['accounts']} account item(s)")
             if imported_counts['personal_info']:
-                summary.append(f"{imported_counts['personal_info']} personal-info item(s)")
+                summary.append(f"{imported_counts['personal_info']} address / remark item(s)")
             if imported_counts['inquiries']:
-                summary.append(f"{imported_counts['inquiries']} inquiry item(s)")
+                summary.append(f"{imported_counts['inquiries']} hard inquiry item(s)")
             if imported_counts['duplicates']:
                 summary.append(f"{imported_counts['duplicates']} existing item(s) re-linked or reactivated")
             message = 'Imported staged findings: ' + ', '.join(summary)
+
         conn.close()
         return render_client_workspace(request, client_id, message=message, active_tab=active_tab)
     except Exception as e:
         return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
 
 
+@app.post("/ui/delete-analysis-item", response_class=HTMLResponse)
+def ui_delete_analysis_item(
+    request: Request,
+    client_id: str = Form(...),
+    analysis_run_id: str = Form(...),
+    bureau: str = Form(...),
+    item_type: str = Form(...),
+    item_id: str = Form(...),
+    active_tab: str = Form("disputes"),
+):
+    table_map = {
+        "account": "dispute_analysis_accounts",
+        "personal_info": "dispute_analysis_personal_info",
+        "inquiry": "dispute_analysis_inquiries",
+    }
+    table_name = table_map.get((item_type or "").strip().lower())
+    try:
+        if not table_name:
+            raise ValueError("Unknown staged item type.")
+        conn = get_conn(); conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                f"DELETE FROM {table_name} WHERE id = %s::uuid AND run_id = %s::uuid",
+                (item_id, analysis_run_id),
+            )
+            deleted = cur.rowcount
+        conn.close()
+        if deleted:
+            return render_client_workspace(request, client_id, message="Staged item deleted.", active_tab=active_tab)
+        return render_client_workspace(request, client_id, error="Staged item was not found.", active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
+@app.post("/ui/delete-selected-analysis-items", response_class=HTMLResponse)
+async def ui_delete_selected_analysis_items(request: Request):
+    form = await request.form()
+    client_id = str(form.get("client_id", "")).strip()
+    analysis_run_id = str(form.get("analysis_run_id", "")).strip()
+    item_type = str(form.get("item_type", "")).strip().lower()
+    active_tab = str(form.get("active_tab", "disputes")).strip() or "disputes"
+    item_ids = [str(v).strip() for v in form.getlist("item_ids") if str(v).strip()]
+    table_map = {
+        "account": "dispute_analysis_accounts",
+        "personal_info": "dispute_analysis_personal_info",
+        "inquiry": "dispute_analysis_inquiries",
+    }
+    label_map = {
+        "account": "staged account",
+        "personal_info": "staged personal-info",
+        "inquiry": "staged inquiry",
+    }
+    table_name = table_map.get(item_type)
+    try:
+        if not table_name:
+            raise ValueError("Unknown staged item type.")
+        if not client_id or not analysis_run_id:
+            raise ValueError("Missing staging context for bulk delete.")
+        if not item_ids:
+            raise ValueError("Check at least one staged item to delete.")
+        conn = get_conn(); conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                f"DELETE FROM {table_name} WHERE run_id = %s::uuid AND id = ANY(%s::uuid[])",
+                (analysis_run_id, item_ids),
+            )
+            deleted = cur.rowcount
+        conn.close()
+        return render_client_workspace(request, client_id, message=f"Deleted {deleted} {label_map[item_type]} item(s) from staging.", active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
+@app.post("/ui/delete-selected-active-disputes", response_class=HTMLResponse)
+async def ui_delete_selected_active_disputes(request: Request):
+    form = await request.form()
+    client_id = str(form.get("client_id", "")).strip()
+    item_type = str(form.get("item_type", "")).strip().lower()
+    active_tab = str(form.get("active_tab", "disputes")).strip() or "disputes"
+    item_ids = [str(v).strip() for v in form.getlist("item_ids") if str(v).strip()]
+    table_map = {
+        "account": "client_account_disputes",
+        "personal_info": "client_personal_info_disputes",
+        "inquiry": "client_inquiry_disputes",
+    }
+    label_map = {
+        "account": "active account dispute",
+        "personal_info": "active personal-info dispute",
+        "inquiry": "active inquiry dispute",
+    }
+    table_name = table_map.get(item_type)
+    try:
+        if not table_name:
+            raise ValueError("Unknown active dispute item type.")
+        if not client_id:
+            raise ValueError("Missing client for bulk delete.")
+        if not item_ids:
+            raise ValueError("Check at least one active disputed item to delete.")
+        conn = get_conn(); conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                f"DELETE FROM {table_name} WHERE client_id = %s AND id = ANY(%s::uuid[])",
+                (client_id, item_ids),
+            )
+            deleted = cur.rowcount
+        conn.close()
+        return render_client_workspace(request, client_id, message=f"Deleted {deleted} {label_map[item_type]} item(s).", active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
 @app.post("/ui/generate-dispute-letter", response_class=HTMLResponse)
+
 async def ui_generate_dispute_letter(request: Request):
     form = await request.form()
     client_id = str(form.get('client_id', '')).strip()
     bureau = str(form.get('bureau', '')).strip().lower()
     active_tab = str(form.get('active_tab', 'disputes'))
-    include_personal_info = bool(form.get('include_personal_info'))
-    include_inquiries = bool(form.get('include_inquiries'))
+    include_personal_info = True
+    include_inquiries = True
     include_signature = bool(form.get('include_signature'))
     letter_instructions = str(form.get('letter_instructions', '')).strip()
+    selected_template_id = str(form.get('selected_custom_template_id', '')).strip()
+    manual_confirmation_number = normalize_reference_value(bureau, str(form.get('manual_confirmation_number', '')).strip())
     selected_document_ids = [str(v).strip() for v in form.getlist('selected_document_ids') if str(v).strip()]
     try:
         if bureau not in BUREAUS:
@@ -5258,19 +18502,25 @@ async def ui_generate_dispute_letter(request: Request):
 
         conn = get_conn(); conn.autocommit = True
         with conn.cursor() as cur:
+            profile = fetch_client_profile(cur, client_id, include_sensitive=False) or {}
+            if not profile:
+                raise ValueError('Client not found.')
+            if not bool(profile.get('is_active', True)) or str(profile.get('lifecycle_status') or '').strip().lower() == 'cancelled':
+                raise ValueError('This client is not active. Reactivate the client before processing disputes.')
+            has_signature = bool((profile.get('signature_file_path') or '').strip())
+            if include_signature and not has_signature:
+                raise ValueError('No client signature is on file. Upload a signature first or uncheck "Include client signature".')
+            if not manual_confirmation_number and not selected_document_ids:
+                raise ValueError(f"{_default_reference_label_for_bureau(bureau)} is required or select a source report/response before generating the letter.")
+
             round_number = get_current_round_number_for_bureau(cur, client_id, bureau)
             account_items = [i for i in fetch_account_disputes(cur, client_id, 500) if i.get('is_active') and (i.get('bureau') or '').lower() == bureau]
             personal_items = [i for i in fetch_personal_info_disputes(cur, client_id, 500) if i.get('is_active') and (i.get('bureau') or '').lower() == bureau]
             inquiry_items = [i for i in fetch_inquiry_disputes(cur, client_id, 500) if i.get('is_active') and (i.get('bureau') or '').lower() == bureau]
-            if not include_personal_info:
-                personal_items = []
-            if not include_inquiries:
-                inquiry_items = []
             if not account_items and not personal_items and not inquiry_items:
                 raise ValueError(f'No active disputed items are loaded for {bureau.title()}. Add or import items first.')
 
-            cur.execute("SELECT process_dispute_round_run_json(%s,%s,%s,%s,%s,%s)::text", (client_id, round_number, bool(personal_items), SECRET_KEY, SENDER_NAME, ''))
-            round_json = json.loads(cur.fetchone()[0])
+            round_json, effective_round_number = run_dispute_round_json_with_template_fallback(cur, client_id, round_number, bool(personal_items), '')
             run_id = round_json.get('round_run_id')
             if not run_id:
                 raise RuntimeError('No round_run_id returned')
@@ -5296,8 +18546,7 @@ async def ui_generate_dispute_letter(request: Request):
                     primary_experian_document_id = EXCLUDED.primary_experian_document_id,
                     primary_transunion_document_id = EXCLUDED.primary_transunion_document_id,
                     primary_equifax_document_id = EXCLUDED.primary_equifax_document_id
-            """, (run_id, client_id, round_number, bool(personal_items), bool(inquiry_items), include_signature, letter_instructions,
-                  primary_experian_document_id, primary_transunion_document_id, primary_equifax_document_id))
+            """, (run_id, client_id, round_number, bool(personal_items), bool(inquiry_items), include_signature, letter_instructions, primary_experian_document_id, primary_transunion_document_id, primary_equifax_document_id))
 
             cur.execute("SELECT id::text, bureau::text FROM letters WHERE round_run_id = %s ORDER BY bureau::text", (run_id,))
             letter_rows = cur.fetchall()
@@ -5328,15 +18577,23 @@ async def ui_generate_dispute_letter(request: Request):
                     WHERE client_id = %s AND COALESCE(is_active, TRUE) = TRUE AND lower(COALESCE(bureau, '')) = %s
                 """, (round_number, client_id, bureau))
 
-            smart_letter_text = build_smart_letter_text(cur, client_id, bureau, round_number, bool(personal_items), bool(inquiry_items), letter_instructions=letter_instructions, round_run_id=run_id)
-            final_subject = f"{bureau.title()} Credit Report Dispute"
+            smart_letter_text = build_smart_letter_text(cur, client_id, bureau, round_number, bool(personal_items), bool(inquiry_items), letter_instructions=letter_instructions, round_run_id=run_id, selected_template_id=selected_template_id, manual_confirmation_number=manual_confirmation_number)
+            primary_doc = _fetch_selected_primary_document(cur, run_id, client_id, bureau)
+            ref_label = (primary_doc.get('reference_label') if primary_doc else '') or _default_reference_label_for_bureau(bureau)
+            ref_value = (primary_doc.get('reference_value') if primary_doc else '') or manual_confirmation_number
+            final_subject = f"{bureau.title()} Dispute Round {round_number}"
+            if ref_value:
+                final_subject += f" | {ref_label}: {ref_value}"
             cur.execute("UPDATE letters SET bureau = %s, subject = %s, letter_text = %s, use_client_signature = %s WHERE id = %s", (bureau, final_subject, smart_letter_text, include_signature, target_letter_id))
             generate_and_attach_pdf(cur, target_letter_id)
 
-            client_profile = fetch_client_profile(cur, client_id, include_sensitive=False)
-            client_name = ' '.join([p for p in [client_profile.get('first_name'), client_profile.get('middle_name'), client_profile.get('last_name')] if p]).strip() or 'Client'
-            client_email = (client_profile.get('primary_email') or '').strip()
+            client_name = ' '.join([p for p in [profile.get('first_name'), profile.get('middle_name'), profile.get('last_name')] if p]).strip() or 'Client'
+            client_email = (profile.get('primary_email') or '').strip()
             summary_note = build_bureau_dispute_round_summary(cur, client_id, bureau, round_number, bool(personal_items), bool(inquiry_items))
+            if ref_value:
+                summary_note += f" {ref_label}: {ref_value}."
+            if effective_round_number != round_number:
+                summary_note += f" SQL template fallback used round scaffold {effective_round_number} while saving this as actual round {round_number}."
             if letter_instructions:
                 summary_note += f" Letter instructions: {letter_instructions}"
             cur.execute("INSERT INTO client_notes (client_id, note_text, note_type, created_by) VALUES (%s, %s, 'dispute_round_summary', 'system')", (client_id, summary_note))
@@ -5348,11 +18605,17 @@ async def ui_generate_dispute_letter(request: Request):
             """, (client_id, f"{bureau.title()} dispute update - round {round_number}", summary_note, SENDER_NAME, client_email, round_number))
             due_date = date.today() + timedelta(days=30)
             ensure_bureau_redispute_tickler(cur, client_id, bureau, round_number + 1, client_name, due_date)
+            try:
+                upsert_bureau_round_override(cur, client_id, bureau, round_number + 1)
+            except Exception:
+                pass
         conn.close()
         message = f"{bureau.title()} dispute letter generated for round {round_number}. PDF saved and next redispute tickler added for {format_short_date(due_date)}."
-        return render_client_workspace(request, client_id, message=message, active_tab=active_tab, open_letter_url=f"/ui/letters/{target_letter_id}/open")
+        if effective_round_number != round_number:
+            message += f" SQL template fallback used round scaffold {effective_round_number} because a higher tone template is not installed yet."
+        return render_client_workspace(request, client_id, message=message, active_tab=active_tab, dispute_bureau=bureau, open_letter_url=f"/ui/letters/{target_letter_id}/open")
     except Exception as e:
-        return render_client_workspace(request, client_id, error=str(e), active_tab='disputes')
+        return render_client_workspace(request, client_id, error=str(e), active_tab='disputes', dispute_bureau=bureau or 'equifax')
 
 
 @app.post("/ui/process-round-with-pdfs", response_class=HTMLResponse)
@@ -5375,11 +18638,13 @@ def ui_process_round_with_pdfs(
         conn = get_conn()
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT process_dispute_round_run_json(%s,%s,%s,%s,%s,%s)::text",
-                (client_id, round_number, include_personal_info, SECRET_KEY, SENDER_NAME, '')
+            round_json, effective_round_number = run_dispute_round_json_with_template_fallback(
+                cur,
+                client_id,
+                round_number,
+                include_personal_info,
+                '',
             )
-            round_json = json.loads(cur.fetchone()[0])
             run_id = round_json.get("round_run_id")
             if not run_id:
                 raise RuntimeError("No round_run_id returned")
@@ -5420,6 +18685,8 @@ def ui_process_round_with_pdfs(
             client_profile = fetch_client_profile(cur, client_id, include_sensitive=False)
             client_email = (client_profile.get('primary_email') or '').strip()
             summary_note = build_dispute_round_summary(cur, client_id, round_number, include_personal_info, include_inquiries)
+            if effective_round_number != round_number:
+                summary_note += f" SQL template fallback used round scaffold {effective_round_number} while saving this as actual round {round_number}."
             if include_signature:
                 summary_note += " Client signature included on generated letters."
             selected_refs = []
@@ -5481,7 +18748,11 @@ def ui_process_round_with_pdfs(
                 "round_number": round_number,
                 "round": round_json,
                 "pdfs": pdf_results,
-                "warning": ""
+                "warning": "",
+                "current_theme": active_theme_background_for_request(request, "module"),
+                "theme_runtime": active_theme_runtime_for_request(request, "module"),
+                "software_name": SOFTWARE_NAME,
+                "software_tagline": SOFTWARE_TAGLINE,
             }
         )
 
@@ -5489,26 +18760,947 @@ def ui_process_round_with_pdfs(
         return render_client_workspace(request, client_id, error=str(e), active_tab='disputes')
 
 
+
+
+def _normalize_pricing_plan(value: str) -> str:
+    raw = (value or '').strip().lower()
+    aliases = {
+        'credit repair program': 'standard_12',
+        'credit repair program 12 months': 'standard_12',
+        'credit repair program - 12 months': 'standard_12',
+        'credit repair program — 12 months': 'standard_12',
+        'standard 12 month plan': 'standard_12',
+        'standard 12 months plan': 'standard_12',
+        'standard plan': 'standard_12',
+        'standard program': 'standard_12',
+        'premium 6 month plan': 'premium_6',
+        'premium plan': 'premium_6',
+        'intensive credit repair program': 'premium_6',
+        'intensive credit repair program - 6 months': 'premium_6',
+        'intensive credit repair program — 6 months': 'premium_6',
+        'intensive 6-month program': 'premium_6',
+        'standalone consultation': 'standalone_consultation',
+        'consultation only': 'standalone_consultation',
+        'consultation only / not candidate': 'standalone_consultation',
+        'not candidate': 'standalone_consultation',
+        'fraud': 'fraud_identity_theft',
+        'identity theft': 'fraud_identity_theft',
+        'fraud / identity theft': 'fraud_identity_theft',
+        'fraud identity theft': 'fraud_identity_theft',
+    }
+    if raw in PRICING_PLAN_LABELS:
+        return raw
+    return aliases.get(raw, 'standard_12')
+
+
+
+
+
+
+
+
+def _parse_discount_meta(note_value: str) -> dict:
+    raw = note_value or ''
+    result = {
+        'regular_amount': None,
+        'discount_amount': None,
+        'final_amount': None,
+        'subtotal_amount': None,
+        'user_notes': raw,
+        'has_discount': False,
+        'tax_amount': Decimal('0.00'),
+        'sales_tax_rate': Decimal('0.00'),
+        'line_items': [],
+        'is_invoice_meta': False,
+    }
+    if raw.startswith('INVOICE_META|'):
+        payload_raw = raw.split('|', 1)[1]
+        try:
+            payload = json.loads(payload_raw)
+        except Exception:
+            payload = {}
+        line_items = []
+        for item in payload.get('line_items') or []:
+            try:
+                regular_amount = _safe_decimal(item.get('regular_amount') or item.get('price') or item.get('amount') or '0')
+                discount_amount = _safe_decimal(item.get('discount_amount') or '0')
+                total_amount = _safe_decimal(item.get('total_amount') or (regular_amount - discount_amount))
+                qty = int(item.get('quantity') or 1)
+                unit_amount = _safe_decimal(item.get('unit_amount') or '0')
+                if unit_amount <= 0 and qty > 0:
+                    unit_amount = (regular_amount / Decimal(qty)).quantize(Decimal('0.01'))
+            except Exception:
+                continue
+            line_items.append({
+                'item_id': item.get('item_id') or '',
+                'item_name': item.get('item_name') or 'Invoice Item',
+                'description': item.get('description') or '',
+                'quantity': qty,
+                'unit_amount': unit_amount,
+                'regular_amount': regular_amount,
+                'discount_amount': discount_amount,
+                'total_amount': total_amount,
+                'discount_item_id': item.get('discount_item_id') or '',
+                'discount_name': item.get('discount_name') or '',
+                'discount_mode': item.get('discount_mode') or '',
+                'invoice_type': item.get('invoice_type') or 'service',
+                'is_product': str(item.get('invoice_type') or '').strip().lower() == 'product',
+            })
+        subtotal_amount = _safe_decimal(payload.get('subtotal_amount') or sum((li['regular_amount'] for li in line_items), Decimal('0.00')))
+        discount_amount = _safe_decimal(payload.get('discount_amount') or sum((li['discount_amount'] for li in line_items), Decimal('0.00')))
+        tax_amount = _safe_decimal(payload.get('tax_amount') or '0')
+        sales_tax_rate = _safe_decimal(payload.get('sales_tax_rate') or '0')
+        final_amount = _safe_decimal(payload.get('final_amount') or (sum((li['total_amount'] for li in line_items), Decimal('0.00')) + tax_amount))
+        result.update({
+            'regular_amount': subtotal_amount,
+            'subtotal_amount': subtotal_amount,
+            'discount_amount': discount_amount,
+            'final_amount': final_amount,
+            'user_notes': (payload.get('user_notes') or '').strip(),
+            'has_discount': discount_amount > Decimal('0.00'),
+            'tax_amount': tax_amount,
+            'sales_tax_rate': sales_tax_rate,
+            'line_items': line_items,
+            'is_invoice_meta': True,
+        })
+        return result
+    if not raw.startswith('DISCOUNT_META|'):
+        return result
+    parts = raw.split('|')
+    for part in parts[1:4]:
+        if '=' not in part:
+            continue
+        key, value = part.split('=', 1)
+        try:
+            if key == 'regular':
+                result['regular_amount'] = Decimal(value)
+                result['subtotal_amount'] = Decimal(value)
+            elif key == 'discount':
+                result['discount_amount'] = Decimal(value)
+            elif key == 'final':
+                result['final_amount'] = Decimal(value)
+        except Exception:
+            pass
+    result['user_notes'] = '|'.join(parts[4:]).strip()
+    result['has_discount'] = bool(result.get('discount_amount')) and result.get('discount_amount') > 0
+    return result
+
+
+def _encode_invoice_meta(line_items: list[dict], free_notes: str = '') -> str:
+    cleaned = []
+    subtotal_amount = Decimal('0.00')
+    discount_amount = Decimal('0.00')
+    final_amount = Decimal('0.00')
+    for item in line_items or []:
+        item_name = str(item.get('item_name') or 'Invoice Item').strip() or 'Invoice Item'
+        description = str(item.get('description') or '').strip()
+        try:
+            quantity = int(item.get('quantity') or 1)
+        except Exception:
+            quantity = 1
+        if quantity <= 0:
+            quantity = 1
+        regular_amount = _safe_decimal(item.get('regular_amount') or '0')
+        unit_amount = _safe_decimal(item.get('unit_amount') or '0')
+        if unit_amount <= 0 and quantity > 0:
+            unit_amount = (regular_amount / Decimal(quantity)).quantize(Decimal('0.01'))
+        item_discount = _safe_decimal(item.get('discount_amount') or '0')
+        item_total = regular_amount - item_discount
+        if item_total < Decimal('0.00'):
+            item_total = Decimal('0.00')
+        cleaned.append({
+            'item_id': item.get('item_id') or '',
+            'item_name': item_name,
+            'description': description,
+            'quantity': quantity,
+            'unit_amount': f'{unit_amount:.2f}',
+            'regular_amount': f'{regular_amount:.2f}',
+            'discount_amount': f'{item_discount:.2f}',
+            'total_amount': f'{item_total:.2f}',
+            'discount_item_id': item.get('discount_item_id') or '',
+            'discount_name': item.get('discount_name') or '',
+            'discount_mode': item.get('discount_mode') or '',
+            'invoice_type': item.get('invoice_type') or 'service',
+        })
+        subtotal_amount += regular_amount
+        discount_amount += item_discount
+        final_amount += item_total
+    sales_tax_rate = Decimal('0.00')
+    if cleaned and any(str(item.get('invoice_type') or '').strip().lower() == 'product' for item in cleaned):
+        try:
+            conn = get_conn()
+            try:
+                with conn.cursor() as cur:
+                    sales_tax_rate = get_accounting_sales_tax_rate(cur)
+            finally:
+                conn.close()
+        except Exception:
+            sales_tax_rate = Decimal('0.00')
+    tax_amount, final_amount = _compute_invoice_tax(subtotal_amount, discount_amount, line_items, sales_tax_rate)
+    payload = {
+        'line_items': cleaned,
+        'subtotal_amount': f'{subtotal_amount:.2f}',
+        'discount_amount': f'{discount_amount:.2f}',
+        'tax_amount': f'{tax_amount:.2f}',
+        'sales_tax_rate': f'{sales_tax_rate:.4f}',
+        'final_amount': f'{final_amount:.2f}',
+        'user_notes': (free_notes or '').strip(),
+    }
+    return 'INVOICE_META|' + json.dumps(payload, separators=(',', ':'))
+
+
+def ensure_default_invoice_items(cur):
+    for _plan_key, plan_data in PRICING_PLAN_DEFAULTS.items():
+        for item in plan_data.get('invoice_items', []):
+            cur.execute("SELECT id FROM invoice_service_items WHERE lower(item_name) = lower(%s) LIMIT 1", (item['item_name'],))
+            if cur.fetchone():
+                continue
+            cur.execute(
+                """
+                INSERT INTO invoice_service_items (item_name, default_description, default_amount, invoice_type, is_active)
+                VALUES (%s, %s, %s, %s, TRUE)
+                """,
+                (item['item_name'], item['default_description'], item['default_amount'], item['invoice_type'])
+            )
+
+
+def fetch_invoice_item_by_id(cur, item_id: str):
+    if not item_id:
+        return None
+    cur.execute(
+        """
+        SELECT id::text, item_name, COALESCE(default_description, ''), COALESCE(default_amount, 0)::text,
+               COALESCE(invoice_type, 'other'), is_active
+        FROM invoice_service_items
+        WHERE id = %s::uuid
+        LIMIT 1
+        """,
+        (item_id,)
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        'id': row[0], 'item_name': row[1], 'default_description': row[2],
+        'default_amount': row[3], 'invoice_type': row[4], 'is_active': bool(row[5]),
+        'is_product': row[4] == 'product', 'is_service': row[4] == 'service', 'is_taxable': row[4] == 'product',
+    }
+
+
+def ensure_billing_payment_profile_columns(cur):
+    desired = {
+        'cardholder_name': 'TEXT',
+        'card_brand': 'TEXT',
+        'card_number_enc': 'BYTEA',
+        'card_last4': 'TEXT',
+        'card_exp_month': 'TEXT',
+        'card_exp_year': 'TEXT',
+        'card_cvv_enc': 'BYTEA',
+        'card_billing_line1': 'TEXT',
+        'card_billing_line2': 'TEXT',
+        'card_billing_city': 'TEXT',
+        'card_billing_state': 'TEXT',
+        'card_billing_zip': 'TEXT',
+        'venmo_handle': 'TEXT',
+        'cashapp_handle': 'TEXT',
+        'zelle_contact': 'TEXT',
+        'paypal_handle': 'TEXT',
+        'other_payment_detail': 'TEXT',
+    }
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'clients'
+        """
+    )
+    existing = {r[0] for r in cur.fetchall()}
+    for col, sql_type in desired.items():
+        if col not in existing:
+            cur.execute(f"ALTER TABLE clients ADD COLUMN IF NOT EXISTS {col} {sql_type}")
+
+
+def _billing_payment_profile_columns(cur):
+    wanted = [
+        'cardholder_name', 'card_brand', 'card_number_enc', 'card_last4', 'card_exp_month', 'card_exp_year', 'card_cvv_enc',
+        'card_billing_line1', 'card_billing_line2', 'card_billing_city', 'card_billing_state', 'card_billing_zip',
+        'venmo_handle', 'cashapp_handle', 'zelle_contact', 'paypal_handle', 'other_payment_detail'
+    ]
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'clients' AND column_name = ANY(%s)
+        """,
+        (wanted,)
+    )
+    return {r[0] for r in cur.fetchall()}
+
+
+def _split_billing_line2(value: str) -> tuple[str, str]:
+    raw = (value or '').strip()
+    if not raw:
+        return '', ''
+    if '|' in raw:
+        apt, extra = raw.split('|', 1)
+        return apt.strip(), extra.strip()
+    return '', raw
+
+
+def _combine_billing_line2(apt_unit: str, line2: str) -> str:
+    apt = (apt_unit or '').strip()
+    extra = (line2 or '').strip()
+    if apt and extra:
+        return f"{apt} | {extra}"
+    return apt or extra
+
+
+
+def ensure_client_payment_methods_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS client_payment_methods (
+            id uuid PRIMARY KEY,
+            client_id uuid NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+            payment_method text NOT NULL DEFAULT 'credit card',
+            label text NULL,
+            cardholder_name text NULL,
+            card_brand text NULL,
+            card_number_enc bytea NULL,
+            card_last4 text NULL,
+            card_exp_month text NULL,
+            card_exp_year text NULL,
+            card_cvv_enc bytea NULL,
+            billing_line1 text NULL,
+            billing_line2 text NULL,
+            billing_city text NULL,
+            billing_state text NULL,
+            billing_zip text NULL,
+            zelle_email text NULL,
+            zelle_phone text NULL,
+            other_description text NULL,
+            is_default boolean NOT NULL DEFAULT FALSE,
+            is_active boolean NOT NULL DEFAULT TRUE,
+            created_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    for ddl in [
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS label text",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS cardholder_name text",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS card_brand text",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS card_number_enc bytea",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS card_last4 text",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS card_exp_month text",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS card_exp_year text",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS card_cvv_enc bytea",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS billing_line1 text",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS billing_line2 text",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS billing_city text",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS billing_state text",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS billing_zip text",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS zelle_email text",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS zelle_phone text",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS other_description text",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT FALSE",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT TRUE",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS created_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        "ALTER TABLE client_payment_methods ADD COLUMN IF NOT EXISTS updated_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    ]:
+        cur.execute(ddl)
+    cur.execute("UPDATE client_payment_methods SET label = COALESCE(label, '') WHERE label IS NULL")
+    cur.execute("UPDATE client_payment_methods SET updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP) WHERE updated_at IS NULL")
+def ensure_invoice_payment_columns(cur):
+    desired = {
+        'payment_method': 'TEXT',
+        'payment_detail': 'TEXT',
+        'payment_card_id': 'UUID',
+        'payment_card_snapshot': 'TEXT',
+    }
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'client_invoices'
+        """
+    )
+    existing = {r[0] for r in cur.fetchall()}
+    for col, sql_type in desired.items():
+        if col not in existing:
+            cur.execute(f"ALTER TABLE client_invoices ADD COLUMN IF NOT EXISTS {col} {sql_type}")
+
+
+def ensure_invoice_payments_table(cur):
+    # Stores one or more payment rows for an invoice, including split payments.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS invoice_payments (
+            id uuid PRIMARY KEY,
+            invoice_id uuid NOT NULL REFERENCES client_invoices(id) ON DELETE CASCADE,
+            client_id uuid NOT NULL,
+            paid_at timestamp NOT NULL,
+            amount numeric(12,2) NOT NULL DEFAULT 0,
+            payment_method text,
+            payment_detail text,
+            payment_card_id uuid,
+            payment_card_snapshot text,
+            created_at timestamp DEFAULT CURRENT_TIMESTAMP,
+            updated_at timestamp DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    for ddl in [
+        "ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS payment_detail text",
+        "ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS payment_card_id uuid",
+        "ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS payment_card_snapshot text",
+        "ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS updated_at timestamp DEFAULT CURRENT_TIMESTAMP",
+    ]:
+        cur.execute(ddl)
+
+
+def fetch_invoice_payments_for_invoice(cur, invoice_id: str) -> list[dict]:
+    ensure_invoice_payments_table(cur)
+    cur.execute("""
+        SELECT id::text,
+               paid_at::text,
+               COALESCE(amount,0)::text,
+               COALESCE(payment_method,''),
+               COALESCE(payment_detail,''),
+               COALESCE(payment_card_snapshot,'')
+        FROM invoice_payments
+        WHERE invoice_id = %s::uuid
+        ORDER BY paid_at, created_at
+    """, (invoice_id,))
+    rows = []
+    for r in cur.fetchall() or []:
+        method = (r[3] or '').strip().lower()
+        amount = _safe_decimal(r[2] or '0')
+        detail = r[4] or r[5] or ''
+        label = PAYMENT_METHOD_LABELS.get(method, method.title() if method else 'Payment')
+        rows.append({
+            'id': r[0],
+            'paid_at': r[1] or '',
+            'amount': f'{amount:.2f}',
+            'amount_display': format_currency(amount),
+            'payment_method': method,
+            'payment_method_display': label,
+            'payment_detail': detail,
+            'payment_card_snapshot': r[5] or '',
+            'summary': f"{format_currency(amount)} via {label}" + (f" · {detail}" if detail else ''),
+        })
+    return rows
+
+
+def _payment_detail_for_invoice_payment(cur, client_id: str, chosen_method: str, explicit_detail: str = '', payment_card_id: str = '', profile: dict | None = None, payment_profile: dict | None = None, cards: list[dict] | None = None) -> tuple[str, str, str]:
+    chosen_method = _normalize_payment_method(chosen_method or '')
+    explicit_detail = (explicit_detail or '').strip()
+    profile = profile or {}
+    payment_profile = payment_profile or {}
+    cards = cards or []
+    if chosen_method == 'credit card':
+        selected_id = (payment_card_id or payment_profile.get('id') or '').strip()
+        card = next((c for c in cards if c.get('id') == selected_id), None) if selected_id else None
+        if card is None:
+            card = next((c for c in cards if c.get('is_default') and (c.get('payment_method') or '').lower() == 'credit card'), None) or next((c for c in cards if (c.get('payment_method') or '').lower() == 'credit card'), None)
+            selected_id = card.get('id') if card else ''
+        if not card:
+            raise ValueError('Select a saved credit card for the payment.')
+        snapshot = _active_card_label(card)
+        return snapshot, selected_id, snapshot
+    if explicit_detail:
+        return explicit_detail, '', ''
+    saved_method = _find_saved_payment_method(cur, client_id, chosen_method)
+    detail = (saved_method.get('label') or saved_method.get('detail') or '').strip()
+    if not detail:
+        if chosen_method == 'venmo':
+            detail = payment_profile.get('venmo_handle') or ''
+        elif chosen_method == 'cashapp':
+            detail = payment_profile.get('cashapp_handle') or ''
+        elif chosen_method == 'zelle':
+            detail = payment_profile.get('zelle_contact') or _zelle_label(payment_profile.get('zelle_email'), payment_profile.get('zelle_phone')) or ''
+        elif chosen_method == 'paypal':
+            detail = payment_profile.get('paypal_handle') or ''
+        elif chosen_method == 'other':
+            detail = payment_profile.get('other_payment_detail') or ''
+        else:
+            detail = PAYMENT_METHOD_LABELS.get(chosen_method, chosen_method.title())
+    return detail, '', ''
+
+
+def _active_card_label(card: dict) -> str:
+    brand = CARD_BRAND_LABELS.get((card.get('card_brand') or '').lower(), '')
+    last4 = only_digits(card.get('card_last4') or '')[-4:]
+    masked = f"•••• {last4}" if last4 else (card.get('card_number_masked') or '')
+    exp = ''
+    if card.get('card_exp_month') or card.get('card_exp_year'):
+        exp = f" · Exp {(card.get('card_exp_month') or '')}/{(card.get('card_exp_year') or '')}"
+    return f"{brand + ' ' if brand else ''}{masked}{exp}".strip() or 'Card on file'
+
+
+def _normalize_phone_for_storage(value: str) -> str:
+    return only_digits(value or '')
+
+
+def _format_phone_for_display(value: str) -> str:
+    digits = only_digits(value or '')
+    if len(digits) == 10:
+        return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+    if len(digits) == 11 and digits.startswith('1'):
+        return f"+1 ({digits[1:4]}) {digits[4:7]}-{digits[7:]}"
+    return value or digits
+
+
+def _is_valid_email(value: str) -> bool:
+    s = (value or '').strip()
+    if not s:
+        return False
+    return re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', s) is not None
+
+
+def _is_valid_phone(value: str) -> bool:
+    digits = only_digits(value or '')
+    return 10 <= len(digits) <= 15
+
+
+def _split_legacy_zelle_contact(value: str) -> tuple[str, str]:
+    raw = (value or '').strip()
+    if not raw:
+        return '', ''
+    pieces = [raw]
+    for sep in ['|', ';', ',', '/', '\n']:
+        new_pieces = []
+        for piece in pieces:
+            new_pieces.extend(piece.split(sep))
+        pieces = new_pieces
+    email = ''
+    phone = ''
+    for piece in pieces:
+        part = piece.strip()
+        if not part:
+            continue
+        if not email and _is_valid_email(part):
+            email = part
+            continue
+        if not phone and _is_valid_phone(part):
+            phone = _normalize_phone_for_storage(part)
+    if not email and _is_valid_email(raw):
+        email = raw
+    if not phone and _is_valid_phone(raw):
+        phone = _normalize_phone_for_storage(raw)
+    return email, phone
+
+
+def _zelle_label(email: str = '', phone: str = '') -> str:
+    parts = []
+    clean_email = (email or '').strip()
+    clean_phone = _format_phone_for_display(phone or '') if phone else ''
+    if clean_email:
+        parts.append(clean_email)
+    if clean_phone:
+        parts.append(clean_phone)
+    return ' • '.join(parts)
+
+
+def _simple_method_label(method: str, detail: str = '', zelle_email: str = '', zelle_phone: str = '') -> str:
+    normalized = (method or '').strip().lower()
+    if normalized == 'zelle':
+        return _zelle_label(zelle_email, zelle_phone) or 'Zelle'
+    if normalized in {'cash', 'ach', 'money order'}:
+        return PAYMENT_METHOD_LABELS.get(normalized, normalized.title())
+    if normalized == 'other':
+        return (detail or '').strip() or 'Other'
+    if normalized in ALT_PAYMENT_METHODS:
+        return (detail or '').strip() or PAYMENT_METHOD_LABELS.get(normalized, normalized.title())
+    return (detail or '').strip() or PAYMENT_METHOD_LABELS.get(normalized, normalized.title() if normalized else '—')
+
+
+def _card_expiry_flags(month_value: str, year_value: str) -> dict:
+    result = {'is_expired': False, 'expiring_soon': False, 'expiry_label': ''}
+    month_digits = only_digits(month_value or '')
+    year_digits = only_digits(year_value or '')
+    if not month_digits or not year_digits:
+        return result
+    try:
+        month_num = int(month_digits)
+        year_num = int(year_digits[-4:]) if len(year_digits) >= 4 else int('20' + year_digits[-2:])
+        if month_num < 1 or month_num > 12:
+            return result
+        if month_num == 12:
+            first_next = date(year_num + 1, 1, 1)
+        else:
+            first_next = date(year_num, month_num + 1, 1)
+        last_valid_day = first_next - timedelta(days=1)
+        result['expiry_label'] = f"{month_num:02d}/{year_num}"
+        today = date.today()
+        if last_valid_day < today:
+            result['is_expired'] = True
+        elif (last_valid_day - today).days <= 60:
+            result['expiring_soon'] = True
+    except Exception:
+        return result
+    return result
+
+
+def migrate_legacy_client_card_to_payment_methods(cur, client_id: str):
+    ensure_client_payment_methods_table(cur)
+    cur.execute("SELECT COUNT(*) FROM client_payment_methods WHERE client_id = %s::uuid AND is_active = TRUE AND payment_method = 'credit card'", (client_id,))
+    if int((cur.fetchone() or [0])[0] or 0) > 0:
+        return
+    ensure_billing_payment_profile_columns(cur)
+    cols = _billing_payment_profile_columns(cur)
+    if not cols:
+        return
+    ordered = [
+        'cardholder_name', 'card_brand', 'card_number_enc', 'card_last4', 'card_exp_month', 'card_exp_year', 'card_cvv_enc',
+        'card_billing_line1', 'card_billing_line2', 'card_billing_city', 'card_billing_state', 'card_billing_zip'
+    ]
+    select_cols = []
+    for col in ordered:
+        if col in cols:
+            if col in {'card_number_enc', 'card_cvv_enc'}:
+                select_cols.append(col)
+            else:
+                select_cols.append(f"COALESCE({col}::text, '')")
+        else:
+            select_cols.append("''")
+    cur.execute(f"SELECT {', '.join(select_cols)} FROM clients WHERE id = %s::uuid", (client_id,))
+    row = cur.fetchone()
+    if not row:
+        return
+    legacy = dict(zip(ordered, row))
+    full_card = dec_text(legacy.get('card_number_enc')) if legacy.get('card_number_enc') else ''
+    if not full_card and not (legacy.get('card_last4') or '').strip():
+        return
+    label_brand = CARD_BRAND_LABELS.get((legacy.get('card_brand') or '').lower(), '')
+    last4 = only_digits(full_card)[-4:] if full_card else only_digits(legacy.get('card_last4') or '')[-4:]
+    label = f"{label_brand + ' ' if label_brand else ''}•••• {last4}".strip() if last4 else 'Card on file'
+    cur.execute(
+        """
+        INSERT INTO client_payment_methods (
+            id, client_id, payment_method, label, cardholder_name, card_brand, card_number_enc, card_last4,
+            card_exp_month, card_exp_year, card_cvv_enc, billing_line1, billing_line2, billing_city, billing_state, billing_zip,
+            is_default, is_active
+        ) VALUES (
+            %s::uuid, %s::uuid, 'credit card', %s, NULLIF(%s,''), NULLIF(%s,''), %s, NULLIF(%s,''),
+            NULLIF(%s,''), NULLIF(%s,''), %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''),
+            TRUE, TRUE
+        )
+        """,
+        (
+            str(uuid4()), client_id, label, legacy.get('cardholder_name') or '', legacy.get('card_brand') or '',
+            enc_text(only_digits(full_card)) if full_card else None, last4 or '', legacy.get('card_exp_month') or '',
+            legacy.get('card_exp_year') or '', legacy.get('card_cvv_enc'), legacy.get('card_billing_line1') or '', legacy.get('card_billing_line2') or '',
+            legacy.get('card_billing_city') or '', legacy.get('card_billing_state') or '', legacy.get('card_billing_zip') or ''
+        )
+    )
+
+
+def migrate_legacy_noncard_payment_methods_to_payment_methods(cur, client_id: str):
+    ensure_client_payment_methods_table(cur)
+    ensure_billing_payment_profile_columns(cur)
+    cur.execute(
+        """
+        SELECT COALESCE(venmo_handle,''), COALESCE(cashapp_handle,''), COALESCE(zelle_contact,''),
+               COALESCE(paypal_handle,''), COALESCE(other_payment_detail,''), COALESCE(preferred_payment_method,'')
+        FROM clients
+        WHERE id = %s::uuid
+        """,
+        (client_id,)
+    )
+    row = cur.fetchone() or ('', '', '', '', '', '')
+    zelle_email, zelle_phone = _split_legacy_zelle_contact(row[2] or '')
+    legacy_values = {
+        'venmo': {'label': (row[0] or '').strip()},
+        'cashapp': {'label': (row[1] or '').strip()},
+        'zelle': {'label': _zelle_label(zelle_email, zelle_phone), 'zelle_email': zelle_email, 'zelle_phone': zelle_phone},
+        'paypal': {'label': (row[3] or '').strip()},
+        'other': {'label': (row[4] or '').strip(), 'other_description': (row[4] or '').strip()},
+    }
+    preferred = (row[5] or '').strip().lower()
+    if preferred in {'cash', 'ach', 'money order'}:
+        legacy_values[preferred] = {'label': PAYMENT_METHOD_LABELS.get(preferred, preferred.title())}
+
+    for method, payload in legacy_values.items():
+        label = (payload.get('label') or '').strip()
+        if not label and method != 'zelle':
+            continue
+        cur.execute(
+            "SELECT id::text, COALESCE(label,'') FROM client_payment_methods WHERE client_id = %s::uuid AND payment_method = %s AND is_active = TRUE ORDER BY is_default DESC, created_at DESC LIMIT 1",
+            (client_id, method)
+        )
+        existing = cur.fetchone()
+        if existing:
+            cur.execute(
+                """
+                UPDATE client_payment_methods
+                SET label = %s,
+                    zelle_email = CASE WHEN %s = 'zelle' THEN NULLIF(%s,'') ELSE zelle_email END,
+                    zelle_phone = CASE WHEN %s = 'zelle' THEN NULLIF(%s,'') ELSE zelle_phone END,
+                    other_description = CASE WHEN %s = 'other' THEN NULLIF(%s,'') ELSE other_description END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s::uuid
+                """,
+                (label or _simple_method_label(method, '', payload.get('zelle_email') or '', payload.get('zelle_phone') or ''),
+                 method, payload.get('zelle_email') or '', method, payload.get('zelle_phone') or '', method, payload.get('other_description') or '', existing[0])
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO client_payment_methods (id, client_id, payment_method, label, zelle_email, zelle_phone, other_description, is_default, is_active)
+                VALUES (%s::uuid, %s::uuid, %s, %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), FALSE, TRUE)
+                """,
+                (str(uuid4()), client_id, method, label or _simple_method_label(method, '', payload.get('zelle_email') or '', payload.get('zelle_phone') or ''), payload.get('zelle_email') or '', payload.get('zelle_phone') or '', payload.get('other_description') or '')
+            )
+
+
+def fetch_saved_payment_methods(cur, client_id: str) -> list[dict]:
+    ensure_client_payment_methods_table(cur)
+    cur.execute(
+        """
+        SELECT id::text, COALESCE(payment_method,'credit card'), COALESCE(label,''), COALESCE(cardholder_name,''), COALESCE(card_brand,''), card_number_enc,
+               COALESCE(card_last4,''), COALESCE(card_exp_month,''), COALESCE(card_exp_year,''), card_cvv_enc,
+               COALESCE(billing_line1,''), COALESCE(billing_line2,''), COALESCE(billing_city,''), COALESCE(billing_state,''), COALESCE(billing_zip,''),
+               COALESCE(zelle_email,''), COALESCE(zelle_phone,''), COALESCE(other_description,''),
+               COALESCE(is_default,FALSE), COALESCE(is_active,TRUE), COALESCE(created_at::text,''), COALESCE(updated_at::text,'')
+        FROM client_payment_methods
+        WHERE client_id = %s::uuid AND COALESCE(is_active, TRUE) = TRUE
+        ORDER BY COALESCE(is_default,FALSE) DESC, COALESCE(updated_at, created_at, CURRENT_TIMESTAMP) DESC, COALESCE(created_at, CURRENT_TIMESTAMP) DESC
+        """,
+        (client_id,)
+    )
+    rows = []
+    for r in cur.fetchall() or []:
+        method = (r[1] or 'credit card').strip().lower()
+        full = dec_text(r[5]) if r[5] else ''
+        cvv = dec_text(r[9]) if r[9] else ''
+        apt, extra = _split_billing_line2(r[11] or '')
+        item = {
+            'id': r[0],
+            'payment_method': method,
+            'display_name': PAYMENT_METHOD_LABELS.get(method, method.title()),
+            'label': r[2] or '',
+            'detail': r[2] or '',
+            'cardholder_name': r[3] or '',
+            'card_brand': r[4] or '',
+            'card_number_full': full,
+            'card_number_masked': f"•••• {only_digits(r[6] or full)[-4:]}" if (r[6] or full) else '',
+            'card_last4': r[6] or (only_digits(full)[-4:] if full else ''),
+            'card_exp_month': r[7] or '',
+            'card_exp_year': r[8] or '',
+            'card_cvv': cvv,
+            'card_billing_line1': r[10] or '',
+            'card_billing_apt_unit': apt,
+            'card_billing_line2': extra,
+            'card_billing_city': r[12] or '',
+            'card_billing_state': r[13] or '',
+            'card_billing_zip': r[14] or '',
+            'zelle_email': r[15] or '',
+            'zelle_phone': r[16] or '',
+            'other_description': r[17] or '',
+            'is_default': bool(r[18]),
+            'is_active': bool(r[19]),
+            'created_at': r[20] or '',
+            'updated_at': r[21] or '',
+        }
+        if method == 'credit card':
+            flags = _card_expiry_flags(item['card_exp_month'], item['card_exp_year'])
+            item.update(flags)
+            item['label'] = item['label'] or _active_card_label(item)
+            item['detail'] = item['label']
+        elif method == 'zelle':
+            item['label'] = _zelle_label(item['zelle_email'], item['zelle_phone']) or item['label'] or 'Zelle'
+            item['detail'] = item['label']
+        elif method == 'other':
+            item['label'] = item['other_description'] or item['label'] or 'Other'
+            item['detail'] = item['label']
+        elif method in {'venmo', 'cashapp', 'paypal'}:
+            item['label'] = item['label'] or PAYMENT_METHOD_LABELS.get(method, method.title())
+            item['detail'] = item['label']
+        else:
+            item['label'] = item['label'] or PAYMENT_METHOD_LABELS.get(method, method.title())
+            item['detail'] = item['label']
+        rows.append(item)
+    return rows
+def _sync_legacy_client_card_from_payment_method(cur, client_id: str, payment_method_id: str):
+    ensure_billing_payment_profile_columns(cur)
+    cur.execute(
+        """
+        SELECT COALESCE(cardholder_name,''), COALESCE(card_brand,''), card_number_enc, COALESCE(card_last4,''),
+               COALESCE(card_exp_month,''), COALESCE(card_exp_year,''), card_cvv_enc,
+               COALESCE(billing_line1,''), COALESCE(billing_line2,''), COALESCE(billing_city,''), COALESCE(billing_state,''), COALESCE(billing_zip,'')
+        FROM client_payment_methods
+        WHERE id = %s::uuid AND client_id = %s::uuid AND is_active = TRUE
+        LIMIT 1
+        """,
+        (payment_method_id, client_id)
+    )
+    row = cur.fetchone()
+    if not row:
+        _clear_legacy_client_card_fields(cur, client_id)
+        return
+    cur.execute(
+        """
+        UPDATE clients
+        SET cardholder_name = NULLIF(%s,''), card_brand = NULLIF(%s,''), card_number_enc = %s,
+            card_last4 = NULLIF(%s,''), card_exp_month = NULLIF(%s,''), card_exp_year = NULLIF(%s,''), card_cvv_enc = %s,
+            card_billing_line1 = NULLIF(%s,''), card_billing_line2 = NULLIF(%s,''), card_billing_city = NULLIF(%s,''),
+            card_billing_state = NULLIF(%s,''), card_billing_zip = NULLIF(%s,''), updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s::uuid
+        """,
+        (row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10], row[11], client_id)
+    )
+
+
+def _clear_legacy_client_card_fields(cur, client_id: str):
+    ensure_billing_payment_profile_columns(cur)
+    cur.execute(
+        """
+        UPDATE clients
+        SET cardholder_name = NULL, card_brand = NULL, card_number_enc = NULL, card_last4 = NULL,
+            card_exp_month = NULL, card_exp_year = NULL, card_cvv_enc = NULL,
+            card_billing_line1 = NULL, card_billing_line2 = NULL,
+            card_billing_city = NULL, card_billing_state = NULL, card_billing_zip = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s::uuid
+        """,
+        (client_id,)
+    )
+
+
+def _sync_legacy_client_payment_method_fields(cur, client_id: str):
+    methods = fetch_saved_payment_methods(cur, client_id)
+    preferred = next((m for m in methods if m.get('is_default')), None) or (methods[0] if methods else None)
+    preferred_method = (preferred.get('payment_method') if preferred else '') or 'zelle'
+    cur.execute(
+        """
+        UPDATE clients
+        SET preferred_payment_method = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s::uuid
+        """,
+        (preferred_method, client_id)
+    )
+def fetch_billing_payment_profile(cur, client_id: str) -> dict:
+    ensure_client_payment_methods_table(cur)
+    methods = fetch_saved_payment_methods(cur, client_id)
+    cards = [m for m in methods if (m.get('payment_method') or '').lower() == 'credit card']
+    active_card = next((c for c in cards if c.get('is_default')), None) or (cards[0] if cards else None)
+    preferred = next((m for m in methods if m.get('is_default')), None) or (methods[0] if methods else None)
+    profile = {
+        'id': active_card.get('id') if active_card else '',
+        'cardholder_name': '', 'card_brand': '', 'card_number_full': '', 'card_number_masked': '', 'card_last4': '',
+        'card_exp_month': '', 'card_exp_year': '', 'card_cvv': '', 'card_billing_line1': '', 'card_billing_apt_unit': '',
+        'card_billing_line2': '', 'card_billing_city': '', 'card_billing_state': '', 'card_billing_zip': '',
+        'venmo_handle': '', 'cashapp_handle': '', 'zelle_contact': '', 'zelle_email': '', 'zelle_phone': '', 'paypal_handle': '', 'other_payment_detail': '',
+        'preferred_payment_method': preferred.get('payment_method') if preferred else '', 'enabled': True, 'is_default': bool(active_card.get('is_default')) if active_card else False,
+    }
+    if active_card:
+        profile.update(active_card)
+    venmo = next((m for m in methods if (m.get('payment_method') or '').lower() == 'venmo'), None)
+    cashapp = next((m for m in methods if (m.get('payment_method') or '').lower() == 'cashapp'), None)
+    zelle = next((m for m in methods if (m.get('payment_method') or '').lower() == 'zelle'), None)
+    paypal = next((m for m in methods if (m.get('payment_method') or '').lower() == 'paypal'), None)
+    other = next((m for m in methods if (m.get('payment_method') or '').lower() == 'other'), None)
+    profile['venmo_handle'] = (venmo or {}).get('label', '')
+    profile['cashapp_handle'] = (cashapp or {}).get('label', '')
+    profile['paypal_handle'] = (paypal or {}).get('label', '')
+    profile['zelle_email'] = (zelle or {}).get('zelle_email', '')
+    profile['zelle_phone'] = (zelle or {}).get('zelle_phone', '')
+    profile['zelle_contact'] = _zelle_label(profile['zelle_email'], profile['zelle_phone'])
+    profile['other_payment_detail'] = (other or {}).get('other_description') or (other or {}).get('label', '')
+    return profile
+def _find_saved_payment_method(cur, client_id: str, method: str) -> dict:
+    normalized = _normalize_payment_method(method or '')
+    methods = fetch_saved_payment_methods(cur, client_id)
+    return next((m for m in methods if (m.get('payment_method') or '').lower() == normalized and m.get('is_active', True)), {})
+
+
+def _preferred_saved_method(cur, client_id: str) -> dict:
+    methods = fetch_saved_payment_methods(cur, client_id)
+    return next((m for m in methods if m.get('is_default')), None) or (methods[0] if methods else {})
+
+
+def _choose_replacement_preferred_payment_method(cur, client_id: str) -> str:
+    preferred = _preferred_saved_method(cur, client_id)
+    if preferred:
+        return preferred.get('payment_method') or 'zelle'
+    return 'zelle'
+
+
+def _upsert_noncard_payment_method(cur, client_id: str, method: str, label: str, payment_profile_id: str = '', zelle_email: str = '', zelle_phone: str = '', other_description: str = '') -> str:
+    selected_id = (payment_profile_id or '').strip()
+    if selected_id:
+        cur.execute(
+            """
+            UPDATE client_payment_methods
+            SET payment_method = %s,
+                label = %s,
+                zelle_email = NULLIF(%s,''),
+                zelle_phone = NULLIF(%s,''),
+                other_description = NULLIF(%s,''),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s::uuid AND client_id = %s::uuid AND is_active = TRUE
+            """,
+            (method, label, zelle_email, zelle_phone, other_description, selected_id, client_id)
+        )
+        return selected_id
+    if method != 'other':
+        cur.execute(
+            "SELECT id::text FROM client_payment_methods WHERE client_id = %s::uuid AND payment_method = %s AND is_active = TRUE ORDER BY is_default DESC, created_at DESC LIMIT 1",
+            (client_id, method)
+        )
+        existing = cur.fetchone()
+        if existing and existing[0]:
+            cur.execute(
+                """
+                UPDATE client_payment_methods
+                SET label = %s,
+                    zelle_email = NULLIF(%s,''),
+                    zelle_phone = NULLIF(%s,''),
+                    other_description = NULLIF(%s,''),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s::uuid AND client_id = %s::uuid
+                """,
+                (label, zelle_email, zelle_phone, other_description, existing[0], client_id)
+            )
+            return existing[0]
+    new_id = str(uuid4())
+    cur.execute(
+        """
+        INSERT INTO client_payment_methods (id, client_id, payment_method, label, zelle_email, zelle_phone, other_description, is_default, is_active)
+        VALUES (%s::uuid, %s::uuid, %s, %s, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), FALSE, TRUE)
+        """,
+        (new_id, client_id, method, label, zelle_email, zelle_phone, other_description)
+    )
+    return new_id
+
 def fetch_invoice_items(cur, include_inactive: bool = False):
     sql = """
         SELECT id::text, item_name, COALESCE(default_description, ''), COALESCE(default_amount, 0)::text,
-               COALESCE(invoice_type, 'other'), is_active
+               COALESCE(invoice_type, 'service'), is_active
         FROM invoice_service_items
         {where_clause}
         ORDER BY item_name
     """.format(where_clause='' if include_inactive else 'WHERE is_active = TRUE')
     cur.execute(sql)
-    return [
-        {
+    items = []
+    for r in cur.fetchall():
+        invoice_type = r[4] or 'service'
+        amount = _safe_decimal(r[3] or '0')
+        items.append({
             'id': r[0],
             'item_name': r[1],
             'default_description': r[2],
             'default_amount': r[3],
-            'invoice_type': r[4],
+            'default_amount_display': format_currency(amount),
+            'price_display': format_currency(amount),
+            'invoice_type': invoice_type,
             'is_active': bool(r[5]),
-        }
-        for r in cur.fetchall()
-    ]
+            'is_discount': str(invoice_type).startswith('discount_'),
+            'is_service': invoice_type == 'service',
+            'is_product': invoice_type == 'product',
+            'is_taxable': invoice_type == 'product',
+            'discount_mode': 'percent' if invoice_type == 'discount_percent' else ('fixed' if invoice_type == 'discount_fixed' else ''),
+        })
+    return items
 
 
 def _find_invoice_item(cur, preferred_name: str, fallback_amount: Decimal | None = None, fallback_type: str = 'other'):
@@ -5543,3 +19735,673 @@ def fetch_credit_product(cur, client_id: str, item_id: str):
     }
 
 
+
+@app.post("/ui/client/save-lifecycle-status", response_class=HTMLResponse)
+def ui_client_save_lifecycle_status(
+    request: Request,
+    client_id: str = Form(...),
+    lifecycle_status: str = Form("prospect"),
+    active_tab: str = Form("overview"),
+):
+    try:
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            profile = fetch_client_profile(cur, client_id, include_sensitive=False)
+            if not profile:
+                return render_client_workspace(request, client_id, error="Client not found.", active_tab=active_tab)
+            normalized = normalize_lifecycle_status_input(
+                lifecycle_status,
+                is_active=bool(profile.get("is_active")),
+                start_date_value=profile.get("start_date"),
+                cancelled_date_value=profile.get("cancelled_date"),
+            )
+            start_date = profile.get("start_date") or ""
+            cancelled_date = profile.get("cancelled_date") or ""
+            if normalized == "client" and not start_date:
+                start_date = str(date.today())
+            if normalized == "cancelled" and not cancelled_date:
+                cancelled_date = str(date.today())
+            if normalized != "cancelled":
+                cancelled_date = ""
+            cur.execute(
+                """
+                UPDATE clients
+                SET lifecycle_status = %s,
+                    start_date = NULLIF(%s, '')::date,
+                    cancelled_date = NULLIF(%s, '')::date,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s::uuid
+                """,
+                (normalized, start_date, cancelled_date, client_id),
+            )
+        conn.close()
+        return render_client_workspace(request, client_id, message="Client Status saved.", active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
+@app.post("/ui/client/save-record-indicator", response_class=HTMLResponse)
+def ui_client_save_record_indicator(
+    request: Request,
+    client_id: str = Form(...),
+    record_indicator: str = Form("inactive"),
+    active_tab: str = Form("overview"),
+):
+    try:
+        clean = (record_indicator or "inactive").strip().lower()
+        if clean not in {"active", "inactive", "pending_payment"}:
+            clean = "inactive"
+        is_active = clean == "active"
+        pending_payment = clean == "pending_payment"
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            profile = fetch_client_profile(cur, client_id, include_sensitive=False)
+            if not profile:
+                return render_client_workspace(request, client_id, error="Client not found.", active_tab=active_tab)
+            cur.execute(
+                """
+                UPDATE clients
+                SET is_active = %s,
+                    pending_payment = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s::uuid
+                """,
+                (is_active, pending_payment, client_id),
+            )
+        conn.close()
+        label = "Pending Payment" if pending_payment else ("Active" if is_active else "Inactive")
+        return render_client_workspace(request, client_id, message=f"Client Record Indicator saved as {label}.", active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
+@app.post("/ui/client/toggle-active", response_class=HTMLResponse)
+def ui_toggle_client_active(
+    request: Request,
+    client_id: str = Form(...),
+    active_tab: str = Form("overview"),
+):
+    try:
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            profile = fetch_client_profile(cur, client_id, include_sensitive=False)
+            if not profile:
+                return render_client_workspace(request, client_id, error="Client not found.", active_tab=active_tab)
+            new_is_active = not bool(profile.get("is_active"))
+            lifecycle_status = normalize_lifecycle_status_input(
+                profile.get("lifecycle_status") or "prospect",
+                is_active=new_is_active,
+                start_date_value=profile.get("start_date"),
+                cancelled_date_value=profile.get("cancelled_date"),
+            )
+            cancelled_date = profile.get("cancelled_date") or ""
+            if lifecycle_status == "cancelled":
+                cancelled_date = cancelled_date or str(date.today())
+                new_is_active = False
+            cur.execute(
+                """
+                UPDATE clients
+                SET is_active = %s,
+                    lifecycle_status = %s,
+                    cancelled_date = NULLIF(%s, '')::date,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (new_is_active, lifecycle_status, cancelled_date, client_id),
+            )
+        conn.close()
+        return render_client_workspace(
+            request,
+            client_id,
+            message=("Client activated." if new_is_active else "Client deactivated."),
+            active_tab=active_tab,
+        )
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
+@app.post("/ui/client/move-address", response_class=HTMLResponse)
+def ui_client_move_address(
+    request: Request,
+    client_id: str = Form(...),
+    address_line1: str = Form(""),
+    apt_unit: str = Form(""),
+    address_line2: str = Form(""),
+    city: str = Form(""),
+    state: str = Form(""),
+    zip_code: str = Form(""),
+    proofs_updated: str = Form("no"),
+    active_tab: str = Form("overview"),
+):
+    try:
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_client_address_history_columns(cur)
+            line1 = (address_line1 or '').strip()
+            apt = (apt_unit or '').strip()
+            line2 = (address_line2 or '').strip()
+            city_val = (city or '').strip()
+            state_val = (state or '').strip().upper()
+            zip_val = (zip_code or '').strip()
+            if not line1 or not city_val or not state_val or not zip_val:
+                return render_client_workspace(request, client_id, error="New address must include address line 1, city, state, and zip.", active_tab=active_tab)
+            proofs_flag = str(proofs_updated or 'no').strip().lower() in {'yes', 'true', '1', 'y'}
+            cur.execute("""
+                SELECT id::text, COALESCE(line1,''), COALESCE(apt_unit,''), COALESCE(line2,''), COALESCE(city,''), COALESCE(state,''), COALESCE(zip,'')
+                FROM client_addresses
+                WHERE client_id = %s::uuid AND is_current = TRUE
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            """, (client_id,))
+            old_row = cur.fetchone()
+            old_display = _format_address_display(*(old_row[1:7] if old_row else ('','','','','','')))
+            new_display = _format_address_display(line1, apt, line2, city_val, state_val, zip_val)
+            if old_display == new_display:
+                return render_client_workspace(request, client_id, error="That address is already the current address on file.", active_tab=active_tab)
+            if old_row and old_row[0]:
+                cur.execute("UPDATE client_addresses SET is_current = FALSE WHERE id = %s::uuid", (old_row[0],))
+            cur.execute("""
+                INSERT INTO client_addresses
+                  (client_id, is_current, line1, apt_unit, line2, city, state, zip, proofs_updated)
+                VALUES
+                  (%s::uuid, TRUE, %s, NULLIF(%s,''), NULLIF(%s,''), %s, %s, %s, %s)
+            """, (client_id, line1, apt, line2, city_val, state_val, zip_val, proofs_flag))
+            profile = fetch_client_profile(cur, client_id, include_sensitive=False) or {}
+            if proofs_flag:
+                note_text = f"Client moved from {old_display} to {new_display}. Client provided updated proofs of address. Attach the updated documents to IDs & Proof of Address."
+            else:
+                email_queued = _queue_address_proof_reminder_email(cur, client_id, profile, new_display)
+                _create_address_proof_processor_alerts(cur, client_id, new_display)
+                note_text = (
+                    f"Client moved from {old_display} to {new_display}. Updated proofs of address are still needed. "
+                    f"{'Client email reminder was queued' if email_queued else 'No client email was queued because no primary email is on file'}; "
+                    "processor alert and follow-up ticklers were created."
+                )
+            cur.execute("INSERT INTO client_notes (client_id, note_text, note_type, created_by) VALUES (%s::uuid, %s, 'address_change', 'system')", (client_id, note_text))
+        conn.close()
+        msg = "Client address updated and address history saved."
+        if proofs_flag:
+            msg += " Proofs of address marked as received."
+        else:
+            msg += " Reminder follow-ups were added until updated proofs are received."
+        return _client_tab_success_response(request, client_id, msg, active_tab=active_tab)
+    except Exception as e:
+        return _client_tab_error_response(request, client_id, str(e), active_tab=active_tab)
+
+
+@app.post("/ui/client/address-history/update", response_class=HTMLResponse)
+def ui_client_address_history_update(
+    request: Request,
+    client_id: str = Form(...),
+    address_id: str = Form(...),
+    address_line1: str = Form(""),
+    apt_unit: str = Form(""),
+    city: str = Form(""),
+    state: str = Form(""),
+    zip_code: str = Form(""),
+    proofs_updated: str = Form("no"),
+    active_tab: str = Form("overview"),
+):
+    try:
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_client_address_history_columns(cur)
+            line1 = (address_line1 or '').strip()
+            apt = normalize_apt_unit_input(apt_unit)
+            city_val = (city or '').strip()
+            state_val = (state or '').strip().upper()
+            zip_val = (zip_code or '').strip()
+            proofs_flag = str(proofs_updated or 'no').strip().lower() in {'yes', 'true', '1', 'y'}
+            if not line1 or not city_val or not state_val or not zip_val:
+                return render_client_workspace(request, client_id, error='Address history entries require address line 1, city, state, and zip.', active_tab=active_tab)
+            cur.execute("SELECT id FROM client_addresses WHERE id = %s::uuid AND client_id = %s::uuid LIMIT 1", (address_id, client_id))
+            if not cur.fetchone():
+                return render_client_workspace(request, client_id, error='Address history entry not found.', active_tab=active_tab)
+            cur.execute("""
+                UPDATE client_addresses
+                SET line1 = %s,
+                    apt_unit = NULLIF(%s,''),
+                    line2 = NULL,
+                    city = %s,
+                    state = %s,
+                    zip = %s,
+                    proofs_updated = %s
+                WHERE id = %s::uuid AND client_id = %s::uuid
+            """, (line1, apt, city_val, state_val, zip_val, proofs_flag, address_id, client_id))
+            new_display = _format_address_display(line1, apt, '', city_val, state_val, zip_val)
+            if proofs_flag:
+                cur.execute(
+                    "INSERT INTO client_notes (client_id, note_text, note_type, created_by) VALUES (%s::uuid, %s, 'address_change', 'system')",
+                    (client_id, f"Address history entry updated for {new_display}. Updated proofs of address marked as received.")
+                )
+            else:
+                profile = fetch_client_profile(cur, client_id, include_sensitive=False) or {}
+                email_queued = _queue_address_proof_reminder_email(cur, client_id, profile, new_display)
+                _create_address_proof_processor_alerts(cur, client_id, new_display)
+                cur.execute(
+                    "INSERT INTO client_notes (client_id, note_text, note_type, created_by) VALUES (%s::uuid, %s, 'address_change', 'system')",
+                    (
+                        client_id,
+                        f"Address history entry updated for {new_display}. Updated proofs of address are still needed. "
+                        f"{'Client email reminder was queued' if email_queued else 'No client email was queued because no primary email is on file'}; "
+                        "processor alert and follow-up ticklers were created."
+                    )
+                )
+        conn.close()
+        msg = 'Address history updated.'
+        if proofs_flag:
+            msg += ' Proofs of address marked as received.'
+        else:
+            msg += ' Client email reminder was queued when possible, and processor alerts were added.'
+        return render_client_workspace(request, client_id, message=msg, active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
+@app.post("/ui/client/address-history/delete", response_class=HTMLResponse)
+def ui_client_address_history_delete(
+    request: Request,
+    client_id: str = Form(...),
+    address_id: str = Form(...),
+    active_tab: str = Form("overview"),
+):
+    try:
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_client_address_history_columns(cur)
+            cur.execute("SELECT COALESCE(is_current, FALSE) FROM client_addresses WHERE id = %s::uuid AND client_id = %s::uuid LIMIT 1", (address_id, client_id))
+            row = cur.fetchone()
+            if not row:
+                return render_client_workspace(request, client_id, error='Address history entry not found.', active_tab=active_tab)
+            is_current = bool(row[0])
+            if is_current:
+                cur.execute("""
+                    SELECT id::text
+                    FROM client_addresses
+                    WHERE client_id = %s::uuid AND id <> %s::uuid
+                    ORDER BY COALESCE(created_at, CURRENT_TIMESTAMP) DESC, id DESC
+                    LIMIT 1
+                """, (client_id, address_id))
+                repl = cur.fetchone()
+                if not repl:
+                    return render_client_workspace(request, client_id, error='Cannot delete the only address on file.', active_tab=active_tab)
+                replacement_id = repl[0]
+                cur.execute("UPDATE client_addresses SET is_current = FALSE WHERE client_id = %s::uuid", (client_id,))
+                cur.execute("UPDATE client_addresses SET is_current = TRUE WHERE id = %s::uuid", (replacement_id,))
+            cur.execute("DELETE FROM client_addresses WHERE id = %s::uuid AND client_id = %s::uuid", (address_id, client_id))
+        conn.close()
+        return render_client_workspace(request, client_id, message='Address history entry deleted.', active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
+@app.post("/ui/client/save-header-summary", response_class=HTMLResponse)
+def ui_save_client_header_summary(
+    request: Request,
+    client_id: str = Form(...),
+    first_name: str = Form(...),
+    middle_name: str = Form(""),
+    last_name: str = Form(...),
+    suffix: str = Form(""),
+    date_of_birth: str = Form(""),
+    ssn_full: str = Form(""),
+    primary_phone: str = Form(""),
+    primary_phone_type: str = Form("cell"),
+    secondary_phone: str = Form(""),
+    secondary_phone_type: str = Form("other"),
+    primary_email: str = Form(""),
+    secondary_email: str = Form(""),
+    preferred_email_choice: str = Form("primary"),
+    send_to_both_emails: bool = Form(False),
+    address_line1: str = Form(""),
+    apt_unit: str = Form(""),
+    city: str = Form(""),
+    state: str = Form(""),
+    zip_code: str = Form(""),
+    has_mailing_address: str = Form(""),
+    mailing_address_line1: str = Form(""),
+    mailing_apt_unit: str = Form(""),
+    mailing_city: str = Form(""),
+    mailing_state: str = Form(""),
+    mailing_zip: str = Form(""),
+    active_tab: str = Form("overview"),
+):
+    try:
+        conn = get_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            ensure_client_mailing_address_columns(cur)
+            ensure_referral_sources_table(cur)
+            cur.execute("SELECT ssn_full_enc FROM clients WHERE id = %s::uuid", (client_id,))
+            row = cur.fetchone()
+            if not row:
+                return render_client_workspace(request, client_id, error="Client not found.", active_tab=active_tab)
+
+            dob_formatted = normalize_dob_input(date_of_birth) if date_of_birth else ""
+            dob_iso = parse_date_input(dob_formatted) if dob_formatted else ""
+            ssn_normalized = normalize_ssn_input(ssn_full) if ssn_full else ""
+            if ssn_normalized:
+                ssn_last4 = only_digits(ssn_normalized)[-4:] if only_digits(ssn_normalized) else None
+                ssn_full_enc = enc_text(ssn_normalized)
+            else:
+                ssn_last4 = None
+                ssn_full_enc = row[0]
+
+            primary_email = (primary_email or '').strip().lower()
+            secondary_email = (secondary_email or '').strip().lower()
+            email_pattern = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+            if primary_email and not email_pattern.match(primary_email):
+                return render_client_workspace(request, client_id, error='Primary email must be a valid email address.', active_tab=active_tab)
+            if secondary_email and not email_pattern.match(secondary_email):
+                return render_client_workspace(request, client_id, error='Secondary email must be a valid email address.', active_tab=active_tab)
+
+            preferred_email_choice = (preferred_email_choice or 'primary').strip().lower()
+            if preferred_email_choice not in {'primary', 'secondary', 'both'}:
+                preferred_email_choice = 'primary'
+            send_to_both_emails = (preferred_email_choice == 'both')
+            if send_to_both_emails:
+                preferred_email_choice = 'primary'
+            if not secondary_email:
+                preferred_email_choice = 'primary'
+                send_to_both_emails = False
+
+            residential_apt_unit = normalize_apt_unit_input(apt_unit)
+            state = (state or '').strip().upper()
+            zip_code = (zip_code or '').strip()
+            show_mailing = _truthy(has_mailing_address) or any(str(v or '').strip() for v in [mailing_address_line1, mailing_apt_unit, mailing_city, mailing_state, mailing_zip])
+            mailing_line1 = (mailing_address_line1 or '').strip() if show_mailing else ''
+            mailing_apt = normalize_apt_unit_input(mailing_apt_unit) if show_mailing else ''
+            mailing_city = (mailing_city or '').strip() if show_mailing else ''
+            mailing_state = (mailing_state or '').strip().upper() if show_mailing else ''
+            mailing_zip = (mailing_zip or '').strip() if show_mailing else ''
+
+            cur.execute(
+                """
+                UPDATE clients
+                SET first_name = %s,
+                    middle_name = NULLIF(%s, ''),
+                    last_name = %s,
+                    suffix = NULLIF(%s, ''),
+                    date_of_birth = NULLIF(%s, '')::date,
+                    ssn_last4 = COALESCE(%s, ssn_last4),
+                    ssn_full_enc = %s,
+                    phone = NULLIF(%s, ''),
+                    primary_phone_type = NULLIF(%s, ''),
+                    secondary_phone = NULLIF(%s, ''),
+                    secondary_phone_type = NULLIF(%s, ''),
+                    primary_email = NULLIF(%s, ''),
+                    email = NULLIF(%s, ''),
+                    secondary_email = NULLIF(%s, ''),
+                    preferred_email_choice = %s,
+                    send_to_both_emails = %s,
+                    mailing_address_line1 = NULLIF(%s, ''),
+                    mailing_apt_unit = NULLIF(%s, ''),
+                    mailing_city = NULLIF(%s, ''),
+                    mailing_state = NULLIF(%s, ''),
+                    mailing_zip = NULLIF(%s, ''),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s::uuid
+                """,
+                (
+                    first_name,
+                    middle_name,
+                    last_name,
+                    suffix,
+                    dob_iso,
+                    ssn_last4,
+                    ssn_full_enc,
+                    normalize_phone_input(primary_phone) if primary_phone else "",
+                    primary_phone_type or "cell",
+                    normalize_phone_input(secondary_phone) if secondary_phone else "",
+                    secondary_phone_type or "other",
+                    primary_email,
+                    primary_email,
+                    secondary_email,
+                    preferred_email_choice,
+                    send_to_both_emails,
+                    mailing_line1,
+                    mailing_apt,
+                    mailing_city,
+                    mailing_state,
+                    mailing_zip,
+                    client_id,
+                ),
+            )
+            cur.execute(
+                """
+                SELECT id
+                FROM client_addresses
+                WHERE client_id = %s::uuid AND is_current = TRUE
+                ORDER BY created_at DESC NULLS LAST, id DESC
+                LIMIT 1
+                """,
+                (client_id,),
+            )
+            addr_row = cur.fetchone()
+            if addr_row:
+                cur.execute(
+                    """
+                    UPDATE client_addresses
+                    SET line1 = NULLIF(%s, ''),
+                        apt_unit = NULLIF(%s, ''),
+                        line2 = NULL,
+                        city = NULLIF(%s, ''),
+                        state = NULLIF(%s, ''),
+                        zip = NULLIF(%s, '')
+                    WHERE id = %s::uuid
+                    """,
+                    (address_line1, residential_apt_unit, city, state, zip_code, addr_row[0]),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO client_addresses
+                      (client_id, is_current, line1, apt_unit, line2, city, state, zip)
+                    VALUES
+                      (%s::uuid, TRUE, NULLIF(%s,''), NULLIF(%s,''), NULL, NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''))
+                    """,
+                    (client_id, address_line1, residential_apt_unit, city, state, zip_code),
+                )
+        conn.close()
+        return render_client_workspace(request, client_id, message="Client profile updated.", active_tab=active_tab)
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab=active_tab)
+
+
+@app.post('/ui/client/update-section-status')
+def ui_client_update_section_status(
+    request: Request,
+    client_id: str = Form(...),
+    section_key: str = Form(...),
+    status: str = Form(...),
+    return_tab: str = Form('overview'),
+    return_modal: str = Form(''),
+):
+    conn = get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                set_client_section_status(cur, client_id, section_key, status)
+                if section_key == 'client_interview':
+                    ensure_client_interview_table(cur)
+                    ci_status = 'not_started' if status == 'incomplete' else status
+                    completed_at_sql = 'CURRENT_TIMESTAMP' if ci_status == 'complete' else 'NULL'
+                    cur.execute(
+                        f"""
+                        INSERT INTO client_interviews (client_id, workflow_status, completed_at, updated_at, last_source)
+                        VALUES (%s, %s, {completed_at_sql}, CURRENT_TIMESTAMP, %s)
+                        ON CONFLICT (client_id) DO UPDATE
+                        SET workflow_status = EXCLUDED.workflow_status,
+                            completed_at = {completed_at_sql},
+                            updated_at = CURRENT_TIMESTAMP,
+                            last_source = EXCLUDED.last_source
+                        """,
+                        (client_id, ci_status, 'staff')
+                    )
+                label = section_key.replace('_', ' ').title()
+                status_label = SECTION_STATUS_LABELS.get(status, status.title())
+                cur.execute("INSERT INTO client_notes (client_id, note_text, note_type, created_by) VALUES (%s, %s, %s, %s)", (client_id, f"{label} status updated to {status_label}.", 'system', 'Carlos G Suarez'))
+        extra_context = {}
+        if return_modal == 'client_interview_view':
+            extra_context = {'open_client_interview_modal': True, 'interview_modal_mode': 'view'}
+        return render_client_workspace(request, client_id, message='Section status updated.', active_tab=return_tab, extra_context=extra_context)
+    except Exception as e:
+        extra_context = {}
+        if return_modal == 'client_interview_view':
+            extra_context = {'open_client_interview_modal': True, 'interview_modal_mode': 'view'}
+        return render_client_workspace(request, client_id, error=str(e), active_tab=return_tab, extra_context=extra_context)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+@app.post("/ui/client/save-interview")
+def ui_client_save_interview(
+    request: Request,
+    client_id: str = Form(...),
+    active_tab: str = Form('client_interview'),
+    clear_answers: str = Form(''),
+    us_citizen: str = Form(''),
+    has_other_citizenship: str = Form(''),
+    other_citizenship_country: str = Form(''),
+    permanent_resident: str = Form(''),
+    residency_status: str = Form(''),
+    citizenship_country: str = Form(''),
+    employment_status: str = Form(''),
+    employer_name: str = Form(''),
+    position_title: str = Form(''),
+    receives_unemployment: str = Form(''),
+    unemployment_benefit_amount: str = Form(''),
+    school_name: str = Form(''),
+    expected_graduation_date: str = Form(''),
+    area_of_study: str = Form(''),
+    occupation_other: str = Form(''),
+    annual_income: str = Form(''),
+    annual_income_frequency: str = Form(''),
+    household_income: str = Form(''),
+    has_additional_income: str = Form(''),
+    additional_income_source_type: str = Form(''),
+    additional_income_source_name: str = Form(''),
+    additional_income_amount: str = Form(''),
+    housing_status: str = Form(''),
+    monthly_housing_payment: str = Form(''),
+    banking_status: str = Form(''),
+    credit_goals: list[str] = Form([]),
+    goal_timeframe: str = Form(''),
+    goal_details_json: str = Form(''),
+    additional_sources_json: str = Form(''),
+    working_with_lender: str = Form(''),
+    lender_name: str = Form(''),
+    lender_company: str = Form(''),
+    lender_address: str = Form(''),
+    lender_phone: str = Form(''),
+    lender_email: str = Form(''),
+    working_with_realtor: str = Form(''),
+    realtor_name: str = Form(''),
+    realtor_company: str = Form(''),
+    realtor_address: str = Form(''),
+    realtor_phone: str = Form(''),
+    realtor_email: str = Form(''),
+    lender_authorized: str = Form(''),
+    lender_authorization_on_file: str = Form(''),
+    realtor_authorized: str = Form(''),
+    realtor_authorization_on_file: str = Form(''),
+    prior_events_json: str = Form(''),
+    authorize_file_discussion: str = Form(''),
+    authorization_on_file: str = Form(''),
+    prior_bankruptcy: str = Form(''),
+    bankruptcy_date: str = Form(''),
+    prior_short_sale: str = Form(''),
+    short_sale_date: str = Form(''),
+    workflow_status: str = Form('not_started'),
+    notes: str = Form(''),
+):
+    conn = get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                ensure_client_interview_table(cur)
+                if clear_answers == 'yes':
+                    cur.execute("DELETE FROM client_interviews WHERE client_id = %s", (client_id,))
+                    cur.execute("INSERT INTO client_notes (client_id, note_text, note_type, created_by) VALUES (%s, %s, %s, %s)", (client_id, 'Client Interview cleared and restarted.', 'system', 'Carlos G Suarez'))
+                    return render_client_workspace(request, client_id, message='Client Interview cleared.', active_tab='onboarding', extra_context={'open_client_interview_modal': True, 'interview_modal_mode': 'edit'})
+                save_client_interview(cur, client_id, {
+                    'us_citizen': us_citizen,
+                    'has_other_citizenship': has_other_citizenship,
+                    'other_citizenship_country': other_citizenship_country,
+                    'permanent_resident': permanent_resident,
+                    'residency_status': residency_status,
+                    'citizenship_country': citizenship_country,
+                    'employment_status': employment_status,
+                    'employer_name': employer_name,
+                    'position_title': position_title,
+                    'receives_unemployment': receives_unemployment,
+                    'unemployment_benefit_amount': unemployment_benefit_amount,
+                    'school_name': school_name,
+                    'expected_graduation_date': expected_graduation_date,
+                    'area_of_study': area_of_study,
+                    'occupation_other': occupation_other,
+                    'annual_income': annual_income,
+                    'annual_income_frequency': annual_income_frequency,
+                    'household_income': household_income,
+                    'has_additional_income': has_additional_income,
+                    'additional_income_source_type': additional_income_source_type,
+                    'additional_income_source_name': additional_income_source_name,
+                    'additional_income_amount': additional_income_amount,
+                    'housing_status': housing_status,
+                    'monthly_housing_payment': monthly_housing_payment,
+                    'banking_status': banking_status,
+                    'credit_goals': credit_goals,
+                    'goal_timeframe': goal_timeframe,
+                    'goal_details_json': goal_details_json,
+                    'additional_sources_json': additional_sources_json,
+                    'working_with_lender': working_with_lender,
+                    'lender_name': lender_name,
+                    'lender_company': lender_company,
+                    'lender_address': lender_address,
+                    'lender_phone': lender_phone,
+                    'lender_email': lender_email,
+                    'working_with_realtor': working_with_realtor,
+                    'realtor_name': realtor_name,
+                    'realtor_company': realtor_company,
+                    'realtor_address': realtor_address,
+                    'realtor_phone': realtor_phone,
+                    'realtor_email': realtor_email,
+                    'lender_authorized': lender_authorized,
+                    'lender_authorization_on_file': lender_authorization_on_file,
+                    'realtor_authorized': realtor_authorized,
+                    'realtor_authorization_on_file': realtor_authorization_on_file,
+                    'prior_events_json': prior_events_json,
+                    'authorize_file_discussion': authorize_file_discussion,
+                    'authorization_on_file': authorization_on_file,
+                    'prior_bankruptcy': prior_bankruptcy,
+                    'bankruptcy_date': bankruptcy_date,
+                    'prior_short_sale': prior_short_sale,
+                    'short_sale_date': short_sale_date,
+                    'workflow_status': workflow_status,
+                    'notes': notes,
+                    'last_source': 'staff',
+                })
+                note_text = 'Client Interview updated.'
+                if workflow_status == 'complete':
+                    note_text = 'Client Interview marked complete.'
+                elif workflow_status == 'pending':
+                    note_text = 'Client Interview saved as pending.'
+                elif workflow_status == 'skip':
+                    note_text = 'Client Interview skipped.'
+                cur.execute("INSERT INTO client_notes (client_id, note_text, note_type, created_by) VALUES (%s, %s, %s, %s)", (client_id, note_text, 'system', 'Carlos G Suarez'))
+        return render_client_workspace(request, client_id, message='Client Interview saved.', active_tab='onboarding', extra_context={'open_client_interview_modal': True, 'interview_modal_mode': 'view'})
+    except Exception as e:
+        return render_client_workspace(request, client_id, error=str(e), active_tab='onboarding', extra_context={'open_client_interview_modal': True, 'interview_modal_mode': 'edit'})
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

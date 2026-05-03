@@ -1,0 +1,146 @@
+{
+  "royal_blue_executive": {
+    "label": "Royal Blue Executive",
+    "description": "Deep royal-blue executive theme with cosmic depth, premium gold accents, and dark polished panels.",
+    "accent": "#d9a441",
+    "mode": "dark",
+    "backgrounds": {
+      "login": "cosmic_03_royal_blue_elegance",
+      "entry": "cosmic_03_royal_blue_elegance",
+      "lobby": "cosmic_01_royal_blue_beauty",
+      "module": "cosmic_02_royal_blue_stars_nebulae",
+      "dashboard": "cosmic_02_royal_blue_stars_nebulae",
+      "settings": "cosmic_03_royal_blue_elegance"
+    },
+    "palette": {
+      "primary": "#1D3E73",
+      "secondary": "#B78C26",
+      "surface": "rgba(8,18,33,0.86)",
+      "surface_soft": "rgba(11,24,43,0.72)",
+      "border": "rgba(212,171,82,0.45)",
+      "text": "#f3e5bc",
+      "muted": "#cab889"
+    },
+    "summary": "Dark executive cosmic theme"
+  },
+  "emerald_marble": {
+    "label": "Emerald Marble",
+    "description": "Emerald marble theme with antique gold accents and dark green executive surfaces.",
+    "accent": "#c9a34a",
+    "mode": "dark",
+    "backgrounds": {
+      "login": "green_01_marble_elegant_gold_veins",
+      "entry": "green_01_marble_elegant_gold_veins",
+      "lobby": "green_02_marble_golden_veins",
+      "module": "green_03_marble_rich_gold_veins",
+      "dashboard": "green_03_marble_rich_gold_veins",
+      "settings": "green_02_marble_golden_veins"
+    },
+    "palette": {
+      "primary": "#123C34",
+      "secondary": "#C7A24D",
+      "surface": "rgba(10,23,19,0.84)",
+      "surface_soft": "rgba(16,35,28,0.72)",
+      "border": "rgba(199,162,77,0.44)",
+      "text": "#efe5c3",
+      "muted": "#c9bb91"
+    },
+    "summary": "Executive marble with gold"
+  },
+  "ivory_stone": {
+    "label": "Ivory Stone",
+    "description": "Light ivory and stone theme with restrained bronze accents and softer surfaces.",
+    "accent": "#b38a4f",
+    "mode": "light",
+    "backgrounds": {
+      "login": "light_02_marble_white_soft_veins",
+      "entry": "light_01_offwhite_linen_soft_accents",
+      "lobby": "light_02_marble_white_soft_veins",
+      "module": "sand_01_weathered_stone_fragments",
+      "dashboard": "light_02_marble_white_soft_veins",
+      "settings": "light_01_offwhite_linen_soft_accents"
+    },
+    "palette": {
+      "primary": "#7A6145",
+      "secondary": "#B38A4F",
+      "surface": "rgba(255,251,243,0.88)",
+      "surface_soft": "rgba(248,242,233,0.78)",
+      "border": "rgba(179,138,79,0.28)",
+      "text": "#2e241a",
+      "muted": "#6f5f4b"
+    },
+    "summary": "Light stone and ivory"
+  },
+  "sandstone_reserve": {
+    "label": "Sandstone Reserve",
+    "description": "Warm parchment and sandstone theme with burnished bronze contrast.",
+    "accent": "#b8894d",
+    "mode": "light",
+    "backgrounds": {
+      "login": "sand_01_weathered_stone_fragments",
+      "entry": "sand_01_weathered_stone_fragments",
+      "lobby": "light_01_offwhite_linen_soft_accents",
+      "module": "sand_01_weathered_stone_fragments",
+      "dashboard": "sand_01_weathered_stone_fragments",
+      "settings": "light_02_marble_white_soft_veins"
+    },
+    "palette": {
+      "primary": "#8A6233",
+      "secondary": "#C69955",
+      "surface": "rgba(255,248,239,0.88)",
+      "surface_soft": "rgba(249,240,227,0.80)",
+      "border": "rgba(198,153,85,0.28)",
+      "text": "#312113",
+      "muted": "#73563b"
+    },
+    "summary": "Warm parchment executive light"
+  },
+  "heritage_wood": {
+    "label": "Heritage Wood",
+    "description": "Dark heritage wood theme with aged brass accents and warm executive depth.",
+    "accent": "#b67d3c",
+    "mode": "dark",
+    "backgrounds": {
+      "login": "wood_03_weathered_planks_lighter",
+      "entry": "wood_03_weathered_planks_lighter",
+      "lobby": "wood_01_plank_texture_detail",
+      "module": "wood_02_weathered_planks",
+      "dashboard": "wood_02_weathered_planks",
+      "settings": "wood_03_weathered_planks_lighter"
+    },
+    "palette": {
+      "primary": "#5A3B21",
+      "secondary": "#B67D3C",
+      "surface": "rgba(24,16,10,0.82)",
+      "surface_soft": "rgba(42,28,18,0.68)",
+      "border": "rgba(182,125,60,0.42)",
+      "text": "#f2e0bf",
+      "muted": "#c8aa82"
+    },
+    "summary": "Warm wood and aged brass"
+  },
+  "executive_white": {
+    "label": "Executive White",
+    "description": "Professional white executive theme with restrained gold accents, soft stone backgrounds, and high readability for long operational work sessions.",
+    "accent": "#a8823f",
+    "mode": "light",
+    "backgrounds": {
+      "login": "light_01_offwhite_linen_soft_accents",
+      "entry": "light_01_offwhite_linen_soft_accents",
+      "lobby": "light_02_marble_white_soft_veins",
+      "module": "light_01_offwhite_linen_soft_accents",
+      "dashboard": "light_02_marble_white_soft_veins",
+      "settings": "light_01_offwhite_linen_soft_accents"
+    },
+    "palette": {
+      "primary": "#546273",
+      "secondary": "#A8823F",
+      "surface": "rgba(255,255,255,0.90)",
+      "surface_soft": "rgba(247,249,252,0.84)",
+      "border": "rgba(168,130,63,0.24)",
+      "text": "#1e2936",
+      "muted": "#607080"
+    },
+    "summary": "Refined light corporate theme"
+  }
+}

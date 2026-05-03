@@ -1,23 +1,102 @@
-
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
   <title>Edit Client {{ client_id }}</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 24px; }
+    body { font-family: Arial, sans-serif; margin: 24px; background:#fafafa; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-    .box { border: 1px solid #ddd; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
-    input, select { padding: 8px; width: 100%; box-sizing: border-box; }
-    button, .btn { padding: 8px 12px; cursor: pointer; text-decoration: none; display: inline-block; border: 1px solid #ccc; border-radius: 6px; background: white; color: black; }
+    .box { border: 1px solid #ddd; padding: 16px; border-radius: 8px; margin-bottom: 16px; background:#fff; }
+    input, select, textarea { padding: 8px; width: 100%; box-sizing: border-box; }
+    select, option { text-transform: capitalize; }
+    textarea { min-height: 84px; }
+    button, .btn { padding: 10px 14px; cursor: pointer; text-decoration: none; display: inline-block; border: 1px solid #ccc; border-radius: 8px; background: white; color: black; }
+    .btn-danger { background:#b42318; color:#fff; border-color:#b42318; }
+    .btn-green { background:#1f8f3b; color:#fff; border-color:#1f8f3b; }
+    .btn-gray { background:#667085; color:#fff; border-color:#667085; }
     .row { margin-bottom: 10px; }
-    .actions { display:flex; gap:8px; margin-bottom:16px; }
+    .actions { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
     h3 { margin-top: 0; }
     .status-badge { display:inline-block; padding:4px 10px; border-radius:999px; color:white; font-weight:700; font-size:12px; }
     .status-active { background:#1f8f3b; }
     .status-inactive { background:#b42318; }
-    .client-banner { border:1px solid #ddd; padding:12px 14px; border-radius:8px; margin-bottom:16px; background:#fafafa; display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; }
-  </style>
+    .client-banner { border:1px solid #ddd; padding:12px 14px; border-radius:8px; margin-bottom:16px; background:#fff; display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+    .subgrid { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; }
+    .muted { color:#555; font-size:12px; }
+    .search-results { border:1px solid #ddd; border-radius:8px; background:#fff; display:none; max-height:220px; overflow:auto; margin-top:4px; }
+    .search-result-btn { width:100%; text-align:left; border:0; border-bottom:1px solid #eee; border-radius:0; padding:10px 12px; background:#fff; }
+    .search-result-btn:hover { background:#f7f7f7; }
+    .picked-pill { font-size:12px; color:#0b57d0; margin-top:6px; }
+  
+/* --- CreditSapientia themed form/layout overrides --- */
+:root{
+  --cs-gold: {{ theme_runtime.palette.secondary if theme_runtime else '#d7af57' }};
+  --cs-gold-soft: {{ theme_runtime.palette.text if theme_runtime else '#f1d38b' }};
+  --cs-primary: {{ theme_runtime.palette.primary if theme_runtime else '#0a1a2f' }};
+  --cs-panel: {{ theme_runtime.palette.surface if theme_runtime else 'rgba(8,18,33,.88)' }};
+  --cs-border: {{ theme_runtime.palette.border if theme_runtime else 'rgba(212,171,82,.45)' }};
+  --cs-text: {{ theme_runtime.palette.text if theme_runtime else '#f3e5bc' }};
+  --cs-muted: {{ theme_runtime.palette.muted if theme_runtime else '#cab889' }};
+}
+body{
+  margin:0 auto !important;
+  padding:24px 18px 36px !important;
+  max-width:1280px !important;
+  font-family:Inter,Arial,sans-serif !important;
+  color:var(--cs-text) !important;
+  background:#071220 !important;
+  min-height:100vh;
+  position:relative;
+}
+body::before{
+  content:"";
+  position:fixed;
+  inset:0;
+  background:url('/static/brand/themes/{{ current_theme or "cosmic_03_royal_blue_elegance" }}.png') center/cover no-repeat fixed;
+  z-index:-3;
+}
+body::after{
+  content:"";
+  position:fixed;
+  inset:0;
+  background:radial-gradient(circle at 78% 15%, rgba(245,208,119,.16), transparent 20%),linear-gradient(180deg, rgba(2,7,16,.35), rgba(2,7,16,.82));
+  z-index:-2;
+}
+.box,.card{
+  background:var(--cs-panel) !important;
+  border:1px solid var(--cs-border) !important;
+  border-radius:18px !important;
+  box-shadow:0 18px 42px rgba(0,0,0,.34) !important;
+  color:var(--cs-text) !important;
+}
+h1,h2,h3,label,b,strong{color:var(--cs-text) !important}
+.muted,.small{color:var(--cs-muted) !important}
+input,select,textarea{
+  background:rgba(255,255,255,.94) !important;
+  color:#111827 !important;
+  border:1px solid rgba(215,175,87,.38) !important;
+  border-radius:12px !important;
+}
+button,.btn{
+  background:linear-gradient(180deg,#f3d88f,#c79131) !important;
+  color:#231605 !important;
+  border:1px solid rgba(215,175,87,.42) !important;
+  border-radius:14px !important;
+  font-weight:800 !important;
+  box-shadow:0 10px 20px rgba(0,0,0,.16) !important;
+}
+button.secondary,.btn-secondary,.btn-gray,.btn-outline{
+  background:rgba(6,15,28,.72) !important;
+  color:var(--cs-text) !important;
+  border:1px solid var(--cs-border) !important;
+}
+.btn-danger,.danger-btn{background:linear-gradient(180deg,#8d1e1e,#5a0e0e) !important;color:#fff !important}
+.error{background:rgba(127,29,29,.24) !important;border:1px solid rgba(254,202,202,.35) !important;color:#ffe0e0 !important}
+.success{background:rgba(34,197,94,.14) !important;border:1px solid rgba(134,239,172,.35) !important;color:#d7ffdb !important}
+table{background:transparent;color:var(--cs-text)} th,td{border-bottom:1px solid rgba(148,163,184,.18) !important}
+a{color:var(--cs-gold-soft)}
+
+</style>
 </head>
 <body>
   <div class="actions">
@@ -31,11 +110,22 @@
       <div>{{ profile.get('phone') or '—' }} · {{ profile.get('primary_email') or '—' }}</div>
       <div>{{ profile.get('address_line1') or '—' }}{% if profile.get('city') or profile.get('state') or profile.get('zip') %}, {{ profile.get('city') or '' }}, {{ profile.get('state') or '' }} {{ profile.get('zip') or '' }}{% endif %}</div>
     </div>
-    <div><span class="status-badge {% if profile.get('is_active') %}status-active{% else %}status-inactive{% endif %}">{{ 'Active' if profile.get('is_active') else 'Inactive' }}</span></div>
+    <div><span id="bannerStatusBadge" class="status-badge {% if profile.get('is_active') %}status-active{% else %}status-inactive{% endif %}">{{ 'Active' if profile.get('is_active') else 'Inactive' }}</span></div>
   </div>
 
-  <form method="post" action="/ui/client/save-profile" enctype="multipart/form-data">
+  <form method="post" action="/ui/client/save-profile" enctype="multipart/form-data" id="clientEditForm">
     <input type="hidden" name="client_id" value="{{ client_id }}">
+    <input type="hidden" name="is_active_hidden" id="is_active_hidden" value="{{ 'true' if profile.get('is_active') else 'false' }}">
+    <input type="hidden" name="cancel_client" id="cancel_client_hidden" value="false">
+
+    <div class="box">
+      <h3>Profile Status</h3>
+      <div class="actions">
+        <button type="button" id="activeToggleBtn" class="btn {% if profile.get('is_active') %}btn-green{% else %}btn-gray{% endif %}">{{ 'Deactivate' if profile.get('is_active') else 'Activate' }}</button>
+        <button type="button" id="cancelClientBtn" class="btn btn-danger">Cancel Client</button>
+      </div>
+      <div class="muted">Active clients can be processed. Cancel Client will switch the client to inactive and automatically stamp today's cancelled date after you confirm.</div>
+    </div>
 
     <div class="grid">
       <div class="box">
@@ -57,18 +147,18 @@
 
       <div class="box">
         <h3>Contact</h3>
-        <div class="row"><label>Primary phone</label><input id="primary_phone" name="primary_phone" value="{{ profile.get('phone') or '' }}" placeholder="000-000-0000"></div>
+        <div class="row"><label>Primary Telephone</label><input id="primary_phone" name="primary_phone" value="{{ profile.get('phone') or '' }}" placeholder="000-000-0000"></div>
         <div class="row">
-          <label>Primary phone type</label>
+          <label>Primary Telephone Type</label>
           <select name="primary_phone_type">
             {% for p in phone_types %}
               <option value="{{ p }}" {% if profile.get('primary_phone_type') == p %}selected{% endif %}>{{ p }}</option>
             {% endfor %}
           </select>
         </div>
-        <div class="row"><label>Secondary phone</label><input id="secondary_phone" name="secondary_phone" value="{{ profile.get('secondary_phone') or '' }}" placeholder="000-000-0000"></div>
+        <div class="row"><label>Secondary Telephone</label><input id="secondary_phone" name="secondary_phone" value="{{ profile.get('secondary_phone') or '' }}" placeholder="000-000-0000"></div>
         <div class="row">
-          <label>Secondary phone type</label>
+          <label>Secondary Telephone Type</label>
           <select name="secondary_phone_type">
             {% for p in phone_types %}
               <option value="{{ p }}" {% if profile.get('secondary_phone_type') == p %}selected{% endif %}>{{ p }}</option>
@@ -81,8 +171,8 @@
         <div class="row">
           <label>Preferred email</label>
           <select name="preferred_email_choice">
-            <option value="primary" {% if profile.get('preferred_email_choice') == 'primary' %}selected{% endif %}>primary</option>
-            <option value="secondary" {% if profile.get('preferred_email_choice') == 'secondary' %}selected{% endif %}>secondary</option>
+            <option value="primary" {% if profile.get('preferred_email_choice') == 'primary' %}selected{% endif %}>Primary</option>
+            <option value="secondary" {% if profile.get('preferred_email_choice') == 'secondary' %}selected{% endif %}>Secondary</option>
           </select>
         </div>
         <div class="row">
@@ -94,41 +184,33 @@
     <div class="grid">
       <div class="box">
         <h3>Address</h3>
-        <div class="row"><label>Address line 1</label><input name="address_line1" value="{{ profile.get('address_line1') or '' }}"></div>
-        <div class="row"><label>Apt / Unit</label><input name="apt_unit" value="{{ profile.get('apt_unit') or '' }}"></div>
-        <div class="row"><label>Address line 2</label><input name="address_line2" value="{{ profile.get('address_line2') or '' }}"></div>
+        <div class="row"><label>Residential Address 1</label><input name="address_line1" value="{{ profile.get('address_line1') or '' }}"></div>
+        <div class="row"><label>Apt / Unit #</label><input name="apt_unit" value="{{ profile.get('apt_unit') or '' }}" placeholder="Apt # 125, Unit # 125, Suite # 131"></div>
         <div class="row"><label>City</label><input name="city" value="{{ profile.get('city') or '' }}"></div>
-        <div class="row"><label>State</label><input name="state" value="{{ profile.get('state') or '' }}"></div>
+        <div class="row"><label>State</label><select name="state">
+              <option value=""></option>
+              {% for abbr, name in us_states %}
+                <option value="{{ abbr }}" {% if (profile.get('state') or '') == abbr %}selected{% endif %}>{{ abbr }} - {{ name }}</option>
+              {% endfor %}
+            </select></div>
         <div class="row"><label>ZIP</label><input name="zip_code" value="{{ profile.get('zip') or '' }}"></div>
       </div>
 
       <div class="box">
-        <h3>Status / Referral</h3>
-        <div class="row"><label><input type="checkbox" name="is_active" {% if profile.get('is_active') %}checked{% endif %}> Active</label></div>
-        <div class="row"><label><input type="checkbox" name="pending_payment" {% if profile.get('pending_payment') %}checked{% endif %}> Pending payment warning</label></div>
-        <div class="row">
+        <h3>Status</h3>
+                <div class="row">
           <label>Lifecycle status</label>
-          <select name="lifecycle_status">
+          <select name="lifecycle_status" id="lifecycle_status">
             {% for s in statuses %}
               <option value="{{ s }}" {% if profile.get('lifecycle_status') == s %}selected{% endif %}>{{ s }}</option>
             {% endfor %}
           </select>
         </div>
-        <div class="row"><label>Start date</label><input type="date" name="start_date" value="{{ profile.get('start_date') or '' }}"></div>
-        <div class="row"><label>Cancelled date</label><input type="date" name="cancelled_date" value="{{ profile.get('cancelled_date') or '' }}"></div>
-
-        <div class="row">
-          <label>Referred by</label>
-          <select name="referred_by_partner_id">
-            <option value="">—</option>
-            {% for rp in referral_partners %}
-              <option value="{{ rp.id }}" {% if profile.get('referred_by_partner_id') == rp.id %}selected{% endif %}>
-                {{ rp.name }}{% if rp.company_name %} — {{ rp.company_name }}{% endif %}
-              </option>
-            {% endfor %}
-          </select>
+        <div class="subgrid">
+          <div class="row"><label>Start date</label><input type="date" name="start_date" value="{{ profile.get('start_date') or '' }}"></div>
+          <div class="row"><label>Cancelled date</label><input type="date" name="cancelled_date" id="cancelled_date" value="{{ profile.get('cancelled_date') or '' }}"></div>
         </div>
-        <div class="row"><label>Referral / referred-out reason</label><input name="referral_reason" value="{{ profile.get('referral_reason') or '' }}"></div>
+
       </div>
     </div>
 
@@ -172,36 +254,21 @@
       </div>
     </div>
 
-    <div class="grid">
-      <div class="box">
-        <h3>Letter Signature</h3>
-        {% if profile.get('signature_file_path') %}
-          <div class="row"><img src="/ui/client/{{ client_id }}/signature" alt="Client signature" style="max-width:260px; max-height:90px; border:1px solid #ddd; padding:8px; background:#fff;"></div>
-          <div class="row" style="font-size:12px;color:#555;">Uploaded: {{ profile.get('signature_uploaded_at_display') or 'on file' }}</div>
-        {% else %}
-          <div class="row" style="font-size:12px;color:#555;">No signature uploaded yet.</div>
-        {% endif %}
-        <div class="row"><label>Upload signature (PNG or JPG)</label><input type="file" name="signature_file" accept=".png,.jpg,.jpeg,image/png,image/jpeg"></div>
-        <div class="row"><label><input type="checkbox" name="use_signature_on_letters" {% if profile.get('use_signature_on_letters') %}checked{% endif %}> Use this signature on generated letters by default</label></div>
-        <div class="row"><label><input type="checkbox" name="remove_signature"> Remove current signature</label></div>
-      </div>
-
+        <div class="grid">
       <div class="box">
         <h3>Letter Formatting Notes</h3>
         <div class="row" style="font-size:12px;color:#555;line-height:1.5;">Date of birth should be entered as MM/DD/YYYY. Generated dispute letters use a formal letter date like May 19, 2026, place that date at the top right, and can include the client signature if enabled.</div>
+        <div class="row" style="font-size:12px;color:#555;line-height:1.5; margin-top:10px;">Client Signature is now managed in the Documents tab inside the client workspace.</div>
       </div>
     </div>
-
 
     <div class="grid">
       <div class="box">
         <h3>Profile Management</h3>
         <div class="row" style="font-size:12px;color:#555;">Delete this profile permanently or merge duplicate profiles into one clean client record.</div>
-        <div class="row" style="display:flex;gap:10px;flex-direction:row;align-items:center;">
+        <div class="row" style="display:flex;gap:10px;flex-direction:row;align-items:center; flex-wrap:wrap;">
           <a href="/ui/client/{{ client_id }}/merge" style="padding:10px 14px;border-radius:8px;background:#0b57d0;color:#fff;text-decoration:none;">Merge Duplicate Profiles</a>
-          <form method="post" action="/ui/client/{{ client_id }}/delete" onsubmit="return confirm('Delete this client profile and all linked CRM records? This cannot be undone.');">
-            <button type="submit" style="background:#b42318;">Delete Profile</button>
-          </form>
+          <button type="submit" formaction="/ui/client/{{ client_id }}/delete" formmethod="post" onclick="return confirm('Delete this client profile and all linked CRM records? This cannot be undone.');" style="background:#b42318; color:#fff;">Delete Profile</button>
         </div>
       </div>
     </div>
@@ -231,6 +298,22 @@ function formatSsn(value) {
   if (d.length <= 5) return d.slice(0,3) + '-' + d.slice(3);
   return d.slice(0,3) + '-' + d.slice(3,5) + '-' + d.slice(5);
 }
+function syncStatusUi(isActive){
+  const hidden = document.getElementById('is_active_hidden');
+  const btn = document.getElementById('activeToggleBtn');
+  const badge = document.getElementById('bannerStatusBadge');
+  if(hidden) hidden.value = isActive ? 'true' : 'false';
+  if(btn){
+    btn.textContent = isActive ? 'Deactivate' : 'Activate';
+    btn.classList.toggle('btn-green', !!isActive);
+    btn.classList.toggle('btn-gray', !isActive);
+  }
+  if(badge){
+    badge.textContent = isActive ? 'Active' : 'Inactive';
+    badge.classList.toggle('status-active', !!isActive);
+    badge.classList.toggle('status-inactive', !isActive);
+  }
+}
 const dob = document.getElementById('date_of_birth');
 const ssn = document.getElementById('ssn_full');
 const primaryPhone = document.getElementById('primary_phone');
@@ -251,6 +334,58 @@ if (secondaryPhone) {
   secondaryPhone.addEventListener('input', e => e.target.value = formatPhone(e.target.value));
   secondaryPhone.addEventListener('blur', e => e.target.value = formatPhone(e.target.value));
 }
+const activeToggleBtn = document.getElementById('activeToggleBtn');
+if(activeToggleBtn){
+  activeToggleBtn.addEventListener('click', function(){
+    const isActive = document.getElementById('is_active_hidden').value === 'true';
+    const nextIsActive = !isActive;
+    syncStatusUi(nextIsActive);
+    document.getElementById('cancel_client_hidden').value = 'false';
+    const lifecycle = document.getElementById('lifecycle_status');
+    const startDate = document.querySelector('input[name="start_date"]');
+    const cancelledDate = document.getElementById('cancelled_date');
+    if(nextIsActive){
+      if(lifecycle) lifecycle.value = 'active client';
+      if(startDate) startDate.value = '{{ today_iso }}';
+      if(cancelledDate) cancelledDate.value = '';
+    } else {
+      if(lifecycle) lifecycle.value = 'inactive';
+    }
+  });
+}
+const cancelClientBtn = document.getElementById('cancelClientBtn');
+if(cancelClientBtn){
+  cancelClientBtn.addEventListener('click', function(){
+    if(!confirm('Cancel this client? This will mark the client inactive and stamp today as the cancelled date.')) return;
+    syncStatusUi(false);
+    document.getElementById('cancel_client_hidden').value = 'true';
+    const cancelledDate = document.getElementById('cancelled_date');
+    if(cancelledDate) cancelledDate.value = '{{ today_iso }}';
+    const lifecycle = document.getElementById('lifecycle_status');
+    if(lifecycle) lifecycle.value = 'cancelled';
+  });
+}
+const deleteSignatureBtn = document.getElementById('deleteSignatureBtn');
+if(deleteSignatureBtn){
+  deleteSignatureBtn.addEventListener('click', function(e){
+    e.preventDefault();
+    if(!confirm('Delete the saved client signature?')) return;
+    const form = document.createElement('form');
+    form.method = 'post';
+    form.action = '/ui/client/{{ client_id }}/signature/delete';
+    document.body.appendChild(form);
+    form.submit();
+  });
+}
+document.getElementById('clientEditForm').addEventListener('submit', function(e){
+  const preferSig = document.getElementById('use_signature_on_letters');
+  const hasSignature = {{ 'true' if profile.get('signature_file_path') else 'false' }};
+  const fileInput = this.querySelector('input[name="signature_file"]');
+  if(preferSig && preferSig.checked && !hasSignature && !(fileInput && fileInput.value)){
+    e.preventDefault();
+    alert('No client signature is on file. Upload one or uncheck Prefer client signature.');
+  }
+});
 </script>
 </body>
 </html>

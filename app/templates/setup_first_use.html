@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Create First User - CreditSapientia CRM</title>
+  <style>
+    :root {--cs-gold-dark:#8A6B1F; --cs-gold-main:#C9A24A; --cs-gold-highlight:#E3C46B; --cs-gold-soft:#F2D16B; --plate-text:#1F1B10; --plate-shadow:rgba(0,0,0,.38); --fragment-blue:rgba(111,182,255,.14); --fragment-gold:rgba(201,162,74,.14); --orbit-color:rgba(227,196,107,.18);} *{box-sizing:border-box} html,body{margin:0;min-height:100%;font-family:Inter,Montserrat,Arial,sans-serif} body{color:#fff;background:#07162a;overflow:auto}
+    .entry-screen{position:relative;min-height:100vh;overflow:hidden}.entry-bg,.bg-gradient,.bg-stars,.bg-orbits,.bg-fragments,.bg-vignette{position:absolute;inset:0}.entry-bg{pointer-events:none;z-index:0}.theme-image{position:absolute;inset:0;background:url('/static/brand/themes/{{ current_theme or "royal_blue" }}.png') center/cover no-repeat fixed;transform:scale(1.03)} .bg-gradient{background:radial-gradient(circle at 50% 18%, rgba(255,223,152,.09) 0%, transparent 22%), radial-gradient(circle at 50% 50%, rgba(3,10,22,.08) 0%, rgba(3,10,22,.46) 72%)} .bg-vignette{background:radial-gradient(circle at center, transparent 44%, rgba(0,0,0,.16) 74%, rgba(0,0,0,.42) 100%)} .bg-stars,.bg-orbits,.bg-fragments,.bg-vignette{z-index:1}
+    .bg-orbits{background:radial-gradient(circle at 14% 78%, transparent 0 44%, var(--orbit-color) 44.5% 45.1%, transparent 45.6%), radial-gradient(circle at 86% 18%, transparent 0 52%, var(--orbit-color) 52.5% 53.1%, transparent 53.7%), radial-gradient(circle at 50% 50%, transparent 0 67%, rgba(227,196,107,.09) 67.4% 67.7%, transparent 68.2%); filter: blur(.2px)} .entry-shell-card{background:linear-gradient(180deg, rgba(8,18,33,.90), rgba(8,18,33,.82));border:1px solid rgba(215,175,87,.34);border-radius:24px;box-shadow:0 24px 52px rgba(0,0,0,.34)} .entry-shell-card h1,.entry-shell-card h2,.entry-shell-card h3{color:#f3e5bc} .bg-fragments{overflow:hidden;opacity:1}.fragment{position:absolute;user-select:none;font-weight:700;line-height:1;pointer-events:none;text-shadow:0 0 8px rgba(0,0,0,.18)}
+    .entry-content{position:relative;z-index:2;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:42px 24px 54px}.entry-logo{width:min(580px,76vw);height:auto;display:block;margin:0 auto 8px;filter:drop-shadow(0 8px 22px rgba(0,0,0,.28)) drop-shadow(0 0 16px rgba(227,196,107,.08))}.entry-divider{width:min(420px,62vw);height:2px;border-radius:999px;background:linear-gradient(90deg, transparent 0%, var(--cs-gold-main) 18%, var(--cs-gold-soft) 52%, var(--cs-gold-main) 82%, transparent 100%);box-shadow:0 0 10px rgba(227,196,107,.18);margin:8px 0 10px}.entry-tagline{text-align:center;font-size:clamp(18px,1.6vw,28px);line-height:1.3;color:var(--cs-gold-highlight);text-shadow:0 1px 0 rgba(255,255,255,.12);margin-bottom:14px}
+    .metal-plate{position:relative;width:min(980px,92vw);min-height:300px;border-radius:24px;padding:30px 30px 28px;background:linear-gradient(180deg,#D8BD77 0%, #C9A24A 52%, #8A6B1F 100%);border:2px solid rgba(99,73,14,.85);box-shadow:0 22px 42px var(--plate-shadow), inset 0 1px 0 rgba(255,255,255,.28), inset 0 -2px 12px rgba(78,53,8,.28);overflow:hidden}
+    .metal-plate::before{content:"";position:absolute;inset:10px;border-radius:16px;border:1px solid rgba(255,255,255,.16);box-shadow:inset 0 0 0 1px rgba(106,74,15,.22);pointer-events:none}.screw{position:absolute;width:16px;height:16px;border-radius:50%;background:radial-gradient(circle at 35% 35%, #f3d88c 0 18%, #a97c24 38%, #6f5118 78%);box-shadow:inset 0 1px 1px rgba(255,255,255,.24), 0 1px 4px rgba(0,0,0,.28)} .screw::after{content:"";position:absolute;left:50%;top:50%;width:8px;height:1.2px;background:rgba(76,54,13,.85);transform:translate(-50%,-50%) rotate(32deg);border-radius:999px} .screw.tl{top:12px;left:12px}.screw.tr{top:12px;right:12px}.screw.bl{bottom:12px;left:12px}.screw.br{bottom:12px;right:12px}
+    .plate-title,.intro{text-align:center;color:var(--plate-text)} .plate-title{font-size:38px;font-weight:700;margin:0 0 8px} .intro{font-size:17px;line-height:1.4;max-width:760px;margin:0 auto 18px}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:14px}.field label{display:block;margin-bottom:8px;font-weight:700;font-size:14px;color:var(--plate-text)} .field input,.field select{width:100%;padding:16px 18px;border-radius:16px;border:1px solid rgba(239,198,111,.76);background:rgba(6,15,34,.82);color:#fff;font-size:18px}
+    .options{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:16px;margin-top:18px}.option input{display:none}.option-card{display:block;border:1px solid rgba(239,198,111,.45);border-radius:22px;padding:18px;background:rgba(6,15,34,.55);min-height:138px;cursor:pointer;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease;color:#fff}.option-card strong{display:block;font-size:21px;margin-bottom:8px;color:#f4e5ba}.option-card span{display:block;font-size:15px;line-height:1.35;opacity:.92}.option input:checked + .option-card{border-color:#f0cf7d;box-shadow:0 0 0 3px rgba(240,207,125,.12),0 12px 26px rgba(0,0,0,.24);transform:translateY(-2px)}
+    .actions{display:flex;justify-content:center;gap:12px;flex-wrap:wrap;margin-top:22px}.btn{min-width:170px;height:48px;border-radius:14px;font-size:18px;font-weight:600;cursor:pointer;border:1px solid rgba(0,0,0,.16);display:inline-flex;align-items:center;justify-content:center;text-decoration:none}.btn-primary{background:linear-gradient(180deg,#e3c46b 0%, #c9a24a 65%, #8a6b1f 100%);color:#1d1910}.btn-secondary{background:linear-gradient(180deg,#18314a 0%, #0b1f33 100%);color:#fff}.flash{width:min(780px,92vw);padding:12px 16px;border-radius:16px;border:1px solid rgba(239,198,111,.5);font-size:16px}.flash.error{background:rgba(79,14,17,.78);color:#ffd6d7}.flash.success{background:rgba(10,60,35,.72);color:#d5ffe6}
+    @media (max-width:860px){.options,.grid{grid-template-columns:1fr}.entry-logo{width:min(500px,84vw)}.metal-plate{padding:24px 18px}.actions>*{width:100%}}
+  </style>
+</head>
+<body class="theme-{{ current_theme or 'royal_blue' }}">
+<div class="entry-screen"><div class="entry-bg"><div class="theme-image"></div><div class="bg-gradient"></div><canvas id="bgStars" class="bg-stars"></canvas><div class="bg-orbits"></div><div id="bgFragments" class="bg-fragments"></div><div class="bg-vignette"></div></div>
+<main class="entry-content">
+  {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+  {% if message %}<div class="flash success">{{ message }}</div>{% endif %}
+  <img src="/static/brand/creditsapientia_logo.png" alt="{{ software_name }}" class="entry-logo">
+  <div class="entry-divider"></div>
+  <div class="entry-tagline">{{ software_tagline }}</div>
+  <section class="metal-plate">
+    <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+    <h1 class="plate-title">Please Create a User</h1>
+    <div class="intro">Software registration and business creation are separate. This screen creates the first user account for the software. After this, you will enter the Lobby and create the first business or personal accounting record there.</div>
+    
+<form method="post" action="/ui/setup-first-use">
+      <div class="grid">
+        <div class="field"><label>Name</label><input name="admin_display_name" placeholder="Enter user name" value="{{ admin_display_name or '' }}" required></div>
+        <div class="field"><label>Username</label><input name="admin_username" placeholder="Username for login" value="{{ admin_username or '' }}" required></div>
+        <div class="field"><label>Email</label><input name="admin_email" placeholder="Enter user email" value="{{ admin_email or '' }}"></div>
+        <div class="field"><label>Role</label><select name="admin_role">{% for key, label in role_catalog.items() %}<option value="{{ key }}" {% if admin_role == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+        <div class="field"><label>Password</label><input type="password" name="admin_password" placeholder="Create password" required></div>
+        <div class="field"><label>Confirm Password</label><input type="password" name="admin_password_confirm" placeholder="Confirm password" required></div>
+      </div>
+      <div class="options">
+        <label class="option"><input type="radio" checked disabled><span class="option-card"><strong>Administrator</strong><span>Full access to all modules, settings, registration, users, records, accounting, and credit repair.</span></span></label>
+        <label class="option"><input type="radio" checked disabled><span class="option-card"><strong>More roles can be added later</strong><span>After this first user is created, additional users can be managed from Settings &gt; Users with role-based access.</span></span></label>
+      </div>
+      <div class="policy-box" style="margin-top:18px;padding:16px 18px;border-radius:18px;border:1px solid rgba(239,198,111,.45);background:rgba(6,15,34,.55);color:#fff;">
+        <strong>Password Rules</strong>
+        <ul style="margin:10px 0 0 18px;padding:0;line-height:1.45;">
+          <li>Case-sensitive password.</li>
+          <li>Minimum 8 characters.</li>
+          <li>At least 1 uppercase letter.</li>
+          <li>At least 1 lowercase letter.</li>
+          <li>At least 1 number.</li>
+          <li>At least 1 symbol.</li>
+        </ul>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary" type="submit">Create User and Enter Lobby</button>
+        <a class="btn btn-secondary" href="/ui/license">Back</a>
+        <a class="btn btn-secondary" href="/">Cancel</a>
+      </div>
+    </form>
+
+  </section>
+</main></div>
+<script>
+const starCanvas=document.getElementById('bgStars'); const starCtx=starCanvas.getContext('2d'); function resizeStars(){starCanvas.width=window.innerWidth; starCanvas.height=window.innerHeight;} resizeStars(); window.addEventListener('resize', resizeStars); const stars=Array.from({length:90},()=>({x:Math.random()*window.innerWidth,y:Math.random()*window.innerHeight,r:Math.random()*1.8+.3,a:Math.random()*.6+.2,tw:Math.random()*.03+.01})); function drawStars(time=0){ starCtx.clearRect(0,0,starCanvas.width,starCanvas.height); for(const s of stars){ const alpha=s.a+Math.sin(time*s.tw+s.x)*.15; starCtx.beginPath(); starCtx.fillStyle=`rgba(255,245,210,${Math.max(.05,alpha)})`; starCtx.arc(s.x,s.y,s.r,0,Math.PI*2); starCtx.fill(); if(s.r>1.2){ starCtx.strokeStyle=`rgba(227,196,107,${Math.max(.04,alpha*.5)})`; starCtx.lineWidth=.5; starCtx.beginPath(); starCtx.moveTo(s.x-s.r*4,s.y); starCtx.lineTo(s.x+s.r*4,s.y); starCtx.moveTo(s.x,s.y-s.r*4); starCtx.lineTo(s.x,s.y+s.r*4); starCtx.stroke(); } } requestAnimationFrame(drawStars);} requestAnimationFrame(drawStars); const fragmentContainer=document.getElementById('bgFragments'); const fragmentSymbols=['C','S','CS','◖','◗','◜','◝','◟','◞']; function seedFragments(count=34){ fragmentContainer.innerHTML=''; const rotations=[15,22,35,68,88,103,127,137,151,179]; for(let i=0;i<count;i++){ const el=document.createElement('div'); el.className='fragment'; el.textContent=fragmentSymbols[Math.floor(Math.random()*fragmentSymbols.length)]; const rotate=rotations[Math.floor(Math.random()*rotations.length)]; const flipX=Math.random()>.5?-1:1; const flipY=Math.random()>.5?-1:1; const size=Math.floor(Math.random()*34+18); const opacity=(Math.random()*.12+.04).toFixed(2); const useGold=Math.random()>.5; el.style.left=`${Math.random()*100}%`; el.style.top=`${Math.random()*100}%`; el.style.fontSize=`${size}px`; el.style.opacity=opacity; el.style.color=useGold?'var(--fragment-gold)':'var(--fragment-blue)'; el.style.transform=`rotate(${rotate}deg) scale(${flipX}, ${flipY})`; fragmentContainer.appendChild(el);} } seedFragments(); window.addEventListener('resize', ()=>seedFragments());
+</script>
+</body>
+</html>

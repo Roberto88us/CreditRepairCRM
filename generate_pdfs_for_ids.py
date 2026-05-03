@@ -1,17 +1,41 @@
 import os
 import sys
+from pathlib import Path
+
 import psycopg2
 from reportlab.lib.pagesizes import LETTER
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 
-DB_HOST = "localhost"
-DB_PORT = 5432
-DB_NAME = "creditrepair"
-DB_USER = "postgres"
-DB_PASSWORD = "CreditRepair@1974!"
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - script can still run if dotenv is unavailable
+    load_dotenv = None
 
-OUTPUT_DIR = r"C:\CreditRepairCRM\letters"
+PROJECT_ROOT = Path(__file__).resolve().parent
+APP_ENV_PATH = PROJECT_ROOT / "app" / ".env"
+if load_dotenv and APP_ENV_PATH.exists():
+    load_dotenv(APP_ENV_PATH)
+
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = int(os.getenv("DB_PORT", "5432"))
+DB_NAME = os.getenv("DB_NAME", "creditrepair")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+
+OUTPUT_DIR = os.getenv("OUTPUT_DIR", str(PROJECT_ROOT / "letters"))
+
+
+def get_connection():
+    if not DB_PASSWORD:
+        raise SystemExit("DB_PASSWORD is not configured. Add it to app/.env or the environment before running this script.")
+    return psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+    )
 
 def make_pdf(letter_text: str, out_path: str):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -76,9 +100,7 @@ def generate_pdf_for_letter(cur, letter_id: str):
     print("PDF:", out_path)
 
 def main(letter_ids):
-    conn = psycopg2.connect(
-        host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD
-    )
+    conn = get_connection()
     conn.autocommit = True
 
     with conn.cursor() as cur:

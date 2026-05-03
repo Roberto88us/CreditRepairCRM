@@ -1,0 +1,99 @@
+{% if active_section == 'appearance' %}
+  <div class="table-block" style="margin-bottom:18px;">
+    <h3>Global Theme System</h3>
+    <div class="table-note">Choose from curated theme families below. Each card previews the theme itself, so you can compare the look before applying it.</div>
+
+    <div class="theme-grid">
+      {% for key, meta in theme_catalog.items() %}
+      {% set pack = theme_pack_library.get(key, {}) %}
+      {% set palette = pack.get('palette', {}) %}
+      {% set mode = pack.get('mode', meta.get('mode', 'dark')) %}
+      {% set backgrounds = pack.get('backgrounds', {}) %}
+      {% set preview_stem = backgrounds.get('lobby') or backgrounds.get('settings') or backgrounds.get('module') or backgrounds.get('login', '') %}
+      {% set is_active = active_theme_key == key %}
+      {% set is_dark = mode == 'dark' %}
+      {% set card_bg = (palette.get('surface') or ('rgba(12,20,33,.88)' if is_dark else 'rgba(255,255,255,.86)')) %}
+      {% set card_text = (palette.get('text') or ('#f2e6c6' if is_dark else '#1f2937')) %}
+      {% set card_muted = (palette.get('muted') or ('#cbb78f' if is_dark else '#6b7280')) %}
+      {% set card_border = (palette.get('border') or ('rgba(212,171,82,.30)' if is_dark else 'rgba(15,23,42,.10)')) %}
+      {% set rail_bg = ('linear-gradient(180deg, rgba(6,12,22,.92), rgba(8,18,33,.78))' if is_dark else 'linear-gradient(180deg, rgba(255,255,255,.92), rgba(246,244,239,.90))') %}
+      {% set rail_pill = ('rgba(255,255,255,.18)' if is_dark else 'rgba(15,23,42,.14)') %}
+      {% set panel_bg = (palette.get('surface_soft') or ('rgba(8,18,33,.68)' if is_dark else 'rgba(255,255,255,.72)')) %}
+      {% set search_bg = ('rgba(255,255,255,.14)' if is_dark else 'rgba(255,255,255,.78)') %}
+      {% set preview_tint = ('linear-gradient(180deg, rgba(2,8,18,.34), rgba(2,8,18,.14))' if is_dark else 'linear-gradient(180deg, rgba(255,255,255,.18), rgba(255,255,255,.05))') %}
+      <div class="theme-card {% if is_active %}active{% endif %}" data-mode="{{ mode }}"
+           style="--theme-card-bg: {{ card_bg }}; --theme-outline: {{ card_border }}; --theme-ink: {{ card_text }}; --theme-muted: {{ card_muted }}; --theme-secondary: {{ pack.get('accent', palette.get('secondary', '#b38a4f')) }}; --theme-rail-bg: {{ rail_bg }}; --theme-rail-pill: {{ rail_pill }}; --theme-panel-bg: {{ panel_bg }}; --theme-search-bar: {{ search_bg }}; --theme-preview-base: {{ panel_bg }}; --theme-preview-border: {{ card_border }}; --theme-preview-tint: {{ preview_tint }}; --theme-title-bar: {{ palette.get('primary', '#24384f') }}; --theme-badge-bg: {{ 'rgba(255,255,255,.08)' if is_dark else 'rgba(255,255,255,.56)' }}; --theme-badge-border: {{ card_border }}; --theme-clock-bg: {{ 'rgba(255,255,255,.10)' if is_dark else 'rgba(255,255,255,.74)' }};">
+        <div class="theme-top">
+          <div>
+            <div class="theme-label">{{ meta.label }}</div>
+            <div class="theme-subtitle">{{ meta.get('summary') or meta.description }}</div>
+          </div>
+          <div class="theme-badges">
+            <span class="theme-badge">{{ 'Dark' if is_dark else 'Light' }}</span>
+            {% if meta.get('ai_generated') %}
+              <span class="theme-badge">AI</span>
+            {% else %}
+              <span class="theme-badge">Built-in</span>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="theme-preview" {% if preview_stem %}style="background-image:url('/static/brand/themes/{{ preview_stem }}.png');"{% endif %}>
+          <div class="theme-preview-rail">
+            <span style="width:76%"></span>
+            <span style="width:88%"></span>
+            <span class="active"></span>
+            <span style="width:68%"></span>
+          </div>
+          <div class="theme-preview-main">
+            <div class="theme-preview-header">
+              <span class="theme-preview-title"></span>
+              <span class="theme-preview-clock"></span>
+            </div>
+            <div class="theme-preview-cards">
+              <span></span>
+              <span></span>
+            </div>
+            <div class="theme-preview-footer"></div>
+          </div>
+        </div>
+
+        <div class="theme-swatch">
+          <span title="Primary" style="background:{{ palette.get('primary', '#24384f') }}"></span>
+          <span title="Accent" style="background:{{ pack.get('accent', palette.get('secondary', '#b38a4f')) }}"></span>
+          <span title="Surface" style="background:{{ palette.get('surface', '#ffffff') }}"></span>
+          <span title="Text" style="background:{{ palette.get('text', '#1f2937') }}"></span>
+        </div>
+
+        <div class="theme-actions">
+          <div class="theme-note">{{ meta.surface_labels.login }} · {{ meta.surface_labels.lobby }} · {{ meta.surface_labels.settings }}</div>
+          <form method="post" action="/ui/settings/theme/apply">
+            <input type="hidden" name="apply_scope" value="global">
+            <input type="hidden" name="theme_key" value="{{ key }}">
+            <button class="theme-button {% if is_active %}active-state{% endif %}" type="submit" {% if is_active %}disabled{% endif %}>{{ 'Active' if is_active else 'Use Theme' }}</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="locked-note">
+      <strong>Brand Lock:</strong> The CreditSapientia crest, wordmark, vault interaction, and software naming remain fixed. Themes may change approved visual tokens, backgrounds, card styling, and decorative elements only.
+    </div>
+  </div>
+
+  <div class="table-block" style="margin-bottom:18px;">
+    <h3>AI Theme Agent</h3>
+    <div class="theme-agent-shell">
+      <p class="theme-agent-intro">Describe the mood or material language you want, such as executive, wood, cosmic, industrial, light, dark, or minimalist. The agent will generate a draft visual theme pack without touching workflow logic or permissions.</p>
+      <form method="post" action="/ui/settings/theme/ai-generate">
+        <div style="margin-bottom:12px;">
+          <textarea class="theme-prompt" name="prompt" placeholder="Example: Create a cleaner executive white theme with slimmer rails, lighter cards, and more refined gold accents."></textarea>
+        </div>
+        <div class="actions">
+          <button type="submit">Generate Draft Theme Pack</button>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endif %}

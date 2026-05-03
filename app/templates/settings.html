@@ -1,0 +1,844 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{ page_title or 'Settings' }} - CreditSapientia CRM</title>
+  <style>
+    :root{
+      --gold: {{ theme_runtime.palette.secondary if theme_runtime else '#d7af57' }};
+      --gold-soft: {{ theme_runtime.palette.text if theme_runtime else '#f1d38b' }};
+      --primary: {{ theme_runtime.palette.primary if theme_runtime else '#0a1a2f' }};
+      --panel: {{ theme_runtime.palette.surface if theme_runtime else 'rgba(8,18,33,.86)' }};
+      --panel-soft: {{ theme_runtime.palette.surface_soft if theme_runtime else 'rgba(11,24,43,.72)' }};
+      --border: {{ theme_runtime.palette.border if theme_runtime else 'rgba(212,171,82,.45)' }};
+      --text: {{ theme_runtime.palette.text if theme_runtime else '#f3e5bc' }};
+      --muted: {{ theme_runtime.palette.muted if theme_runtime else '#cab889' }};
+      --shadow: {{ theme_runtime.ui.shadow if theme_runtime and theme_runtime.ui else '0 18px 42px rgba(0,0,0,.34)' }};
+      --rail-bg: {{ theme_runtime.ui.rail_bg if theme_runtime and theme_runtime.ui else 'linear-gradient(180deg, rgba(6,12,22,.95), rgba(6,12,22,.72))' }};
+      --rail-border: {{ theme_runtime.ui.rail_border if theme_runtime and theme_runtime.ui else 'rgba(215,175,87,.16)' }};
+      --button-dark-bg: {{ theme_runtime.ui.button_dark_bg if theme_runtime and theme_runtime.ui else 'rgba(8,18,33,.72)' }};
+      --button-dark-text: {{ theme_runtime.ui.button_dark_text if theme_runtime and theme_runtime.ui else (theme_runtime.palette.text if theme_runtime else '#f3e5bc') }};
+      --button-dark-border: {{ theme_runtime.ui.button_dark_border if theme_runtime and theme_runtime.ui else 'rgba(212,171,82,.45)' }};
+      --active-bg: {{ theme_runtime.ui.active_bg if theme_runtime and theme_runtime.ui else 'linear-gradient(180deg, rgba(216,180,92,.18), rgba(216,180,92,.08))' }};
+      --active-text: {{ theme_runtime.ui.active_text if theme_runtime and theme_runtime.ui else (theme_runtime.palette.text if theme_runtime else '#f3e5bc') }};
+      --page-bg: {{ theme_runtime.ui.page_bg if theme_runtime and theme_runtime.ui else '#071220' }};
+      --flash-success-text: {{ theme_runtime.ui.flash_success if theme_runtime and theme_runtime.ui else '#d7ffdb' }};
+      --flash-error-text: {{ theme_runtime.ui.flash_error if theme_runtime and theme_runtime.ui else '#ffd8d8' }};
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,Arial,sans-serif;color:var(--text);background:var(--page-bg);min-height:100vh}
+    body::before{content:"";position:fixed;inset:0;background:url('/static/brand/themes/{{ current_theme or "cosmic_03_royal_blue_elegance" }}.png') center/cover no-repeat fixed;z-index:-3}
+    body::after{content:"";position:fixed;inset:0;background:{{ theme_runtime.ui.page_tint if theme_runtime and theme_runtime.ui else 'radial-gradient(circle at 78% 15%, rgba(245,208,119,.16), transparent 20%),linear-gradient(180deg, rgba(2,7,16,.38), rgba(2,7,16,.82))' }};z-index:-2}
+    a{text-decoration:none;color:inherit}
+    .shell{display:grid;grid-template-columns:212px 1fr;min-height:100vh}
+    .rail{padding:16px 12px;border-right:1px solid var(--rail-border);background:var(--rail-bg)}
+    .brand-card{padding:0;border:none;border-radius:0;background:none;box-shadow:none;display:flex;justify-content:center;align-items:flex-start;margin-bottom:8px}
+    .brand-card img{width:min(190px,100%);height:auto;display:block}
+    .rail-nav{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+    .rail-nav a{display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:16px;border:1px solid var(--button-dark-border);background:var(--button-dark-bg);color:var(--button-dark-text);font-weight:800;font-size:15px;line-height:1.15}
+    .rail-nav a.active{background:var(--active-bg);border-color:rgba(241,211,139,.7);color:var(--active-text)}
+    .rail-nav a.sub{margin-left:10px;padding:10px 12px;font-size:13px}
+    .main{padding:24px 28px 32px}
+    .topbar{display:flex;justify-content:space-between;align-items:flex-start;gap:18px;flex-wrap:wrap;padding-bottom:14px;border-bottom:1px solid rgba(215,175,87,.22)}
+    .title{margin:0;font-size:46px;line-height:1;color:var(--gold-soft)}
+    .subtitle{margin-top:10px;color:var(--gold-soft);font-size:18px}
+    .topbar-right{display:flex;flex-direction:column;gap:10px;align-items:flex-end}
+    .chip{min-width:230px;padding:12px 16px;border-radius:20px;border:1px solid var(--border);background:var(--panel);box-shadow:var(--shadow)}
+    .time-chip .time-row{display:flex;justify-content:space-between;align-items:center;gap:12px}
+    .time-chip .time-big{font-size:22px;font-weight:900;line-height:1.05}
+    .time-chip .date-wrap{display:flex;flex-direction:column;align-items:flex-end;line-height:1.15}
+    .time-chip .day-name{font-size:15px;font-weight:800}
+    .time-chip .date-line{font-size:14px;color:var(--gold-soft)}
+    .user-chip{display:flex;align-items:center;gap:12px}
+    .avatar-dot{width:34px;height:34px;border-radius:999px;background:linear-gradient(180deg,#f3d88f,#c79131);color:#231605;font-weight:900;display:grid;place-items:center;flex:0 0 34px}
+    .user-name{font-size:16px;font-weight:900;line-height:1.1}
+    .user-role{font-size:14px;color:var(--gold-soft)}
+    .flash{padding:14px 16px;border-radius:18px;margin-top:16px;font-weight:700}
+    .flash.success{background:rgba(34,197,94,.14);border:1px solid rgba(134,239,172,.35);color:var(--flash-success-text)}
+    .flash.error{background:rgba(239,68,68,.14);border:1px solid rgba(254,202,202,.35);color:var(--flash-error-text)}
+    .box{background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:20px;box-shadow:var(--shadow);margin-top:18px}
+    .section-title{margin:0 0 8px;font-size:30px}
+    .section-desc{margin:0 0 16px;color:var(--muted)}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+    .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+    label{display:block;font-weight:800;margin-bottom:6px}
+    input[type=text],input[type=email],input[type=password],select,textarea,input[type=date],input[type=time]{width:100%;padding:10px 12px;border:1px solid rgba(215,175,87,.28);border-radius:12px;background:rgba(255,255,255,.96);color:#111827}
+    textarea{min-height:96px}
+    button,.btn{display:inline-flex;align-items:center;justify-content:center;padding:11px 16px;border-radius:12px;font-weight:800;border:1px solid var(--border);cursor:pointer;background:linear-gradient(180deg,#f3d88f,#c79131);color:#231605}
+    .btn-outline{background:var(--button-dark-bg);color:var(--button-dark-text)}
+    .btn-muted{background:var(--button-dark-bg);color:var(--button-dark-text);border-color:var(--button-dark-border)}
+    .status-badge{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;border:1px solid rgba(215,175,87,.28);background:rgba(255,255,255,.05);font-weight:800}
+    .status-badge.ok{color:#d7ffdb;border-color:rgba(134,239,172,.35);background:rgba(34,197,94,.12)}
+    .status-badge.warn{color:#ffe9bf;border-color:rgba(252,211,77,.35);background:rgba(245,158,11,.12)}
+    .status-badge.bad{color:#ffd8d8;border-color:rgba(254,202,202,.35);background:rgba(239,68,68,.12)}
+    .summary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+    .summary-item{border:1px solid rgba(215,175,87,.18);border-radius:16px;padding:14px;background:rgba(255,255,255,.05)}
+    .summary-item.full{grid-column:1 / -1}
+    .summary-label{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:800;margin-bottom:6px}
+    .summary-value{font-size:18px;font-weight:800;line-height:1.25;word-break:break-word}
+    .summary-value.small{font-size:16px;font-weight:700}
+    .summary-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:18px}
+    .renew-box{margin-top:18px;padding:16px;border-radius:18px;border:1px solid rgba(252,211,77,.35);background:rgba(245,158,11,.10)}
+    .renew-box h3{margin:0 0 8px;font-size:20px}
+    .muted{color:var(--muted)}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px 8px;border-bottom:1px solid rgba(148,163,184,.22);text-align:left;vertical-align:top}
+    .mini-card{border:1px solid rgba(215,175,87,.2);border-radius:16px;padding:14px;background:rgba(255,255,255,.05)}
+    .mini-card h3{margin:0 0 8px;font-size:18px}
+    .mini-card ul{margin:0 0 0 18px;padding:0}
+    .meta{color:var(--muted);margin-top:10px}
+    .table-wrap{overflow:auto}
+    .actions-inline{display:flex;gap:8px;flex-wrap:wrap}
+    .hidden{display:none}
+    .user-modal-backdrop{position:fixed;inset:0;background:rgba(5,9,16,.66);display:none;align-items:flex-start;justify-content:center;padding:24px 16px;z-index:1200}
+    .user-modal-backdrop.open{display:flex}
+    .user-modal-backdrop[aria-hidden="true"]{display:none}
+    .user-modal{width:min(840px,96vw);max-height:92vh;overflow:auto;background:var(--panel);border:1px solid var(--border);border-radius:22px;padding:18px;box-shadow:var(--shadow)}
+    .user-modal-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
+    .user-modal-title{margin:0;font-size:28px}
+    .policy-box{margin-top:12px;padding:14px;border:1px solid rgba(215,175,87,.22);border-radius:16px;background:rgba(255,255,255,.05)}
+    .policy-box ul{margin:8px 0 0 18px;padding:0}
+    .checkbox-row{display:flex;align-items:center;gap:10px;margin-top:8px}
+    .checkbox-row input{width:auto}
+    .copy-link-box{margin-top:14px;padding:14px;border:1px solid rgba(215,175,87,.22);border-radius:16px;background:rgba(255,255,255,.05)}
+    .copy-link-box input{margin-top:8px}
+    .role-summary{margin-top:12px;padding:12px;border:1px solid rgba(215,175,87,.22);border-radius:16px;background:rgba(255,255,255,.05)}
+    .role-summary ul{margin:8px 0 0 18px;padding:0}
+    .security-lines{font-size:13px;line-height:1.35;color:var(--muted)}
+    .backup-panel{max-width:1320px}
+    .backup-toolbar{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+    .backup-toolbar form{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0}
+    .backup-table td:last-child,.backup-table th:last-child{text-align:right}
+    .btn-danger{background:linear-gradient(180deg,#f3d88f,#c79131);color:#231605;border-color:rgba(215,175,87,.45)}
+    .warning-modal-backdrop{position:fixed;inset:0;background:rgba(5,9,16,.74);display:none;align-items:center;justify-content:center;padding:24px 16px;z-index:1300}
+    .warning-modal-backdrop.open{display:flex}
+    .warning-modal{width:min(560px,96vw);background:linear-gradient(180deg, rgba(56,20,16,.96), rgba(36,12,10,.97));border:1px solid rgba(255,184,140,.45);border-radius:22px;padding:20px;box-shadow:var(--shadow)}
+    .warning-head{display:flex;align-items:flex-start;gap:14px;margin-bottom:12px}
+    .warning-icon{width:44px;height:44px;border-radius:999px;display:grid;place-items:center;background:rgba(255,159,64,.16);border:1px solid rgba(255,214,170,.4);color:#ffd8b0;font-size:24px;font-weight:900;flex:0 0 44px}
+    .warning-title{margin:0;font-size:24px;color:#fff1d3}
+    .warning-body{color:#ffe4c2;line-height:1.45}
+    .warning-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:18px}
+    .admin-note{margin-top:10px;color:var(--muted)}
+
+    .table-block{border:1px solid rgba(215,175,87,.18);border-radius:18px;padding:18px;background:var(--panel-soft);margin-top:14px}
+    .table-note{color:var(--muted);line-height:1.45;margin-top:6px}
+    .theme-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-top:18px;align-items:stretch}
+    .theme-card{position:relative;display:flex;flex-direction:column;gap:12px;min-height:292px;padding:14px;border-radius:18px;border:1px solid var(--theme-outline, rgba(15,23,42,.08));background:var(--theme-card-bg, rgba(255,255,255,.82));box-shadow:0 14px 26px rgba(15,23,42,.12);color:var(--theme-ink, #1f2937);overflow:hidden}
+    .theme-card::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,0));pointer-events:none}
+    .theme-card[data-mode="dark"]{box-shadow:0 16px 30px rgba(2,6,12,.28)}
+    .theme-card.active{outline:2px solid rgba(168,130,63,.34);outline-offset:2px}
+    .theme-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;position:relative;z-index:1}
+    .theme-label{font-size:19px;font-weight:900;line-height:1.05;letter-spacing:-.01em}
+    .theme-subtitle{margin-top:6px;font-size:13px;line-height:1.35;color:var(--theme-muted, #607080);min-height:34px;max-width:17rem}
+    .theme-badges{display:flex;gap:6px;flex-wrap:wrap;position:relative;z-index:1}
+    .theme-badge{display:inline-flex;align-items:center;padding:4px 9px;border-radius:999px;border:1px solid var(--theme-badge-border, rgba(15,23,42,.10));background:var(--theme-badge-bg, rgba(255,255,255,.50));font-size:11px;font-weight:800;line-height:1.1;color:var(--theme-ink, #1f2937)}
+    .theme-badge.active{background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.24);color:#166534}
+    .theme-button.active-state{background:linear-gradient(180deg,#34d399,#22c55e);border-color:rgba(21,128,61,.52);color:#062814;box-shadow:0 10px 18px rgba(34,197,94,.24)}
+    .theme-button.active-state[disabled]{background:linear-gradient(180deg,#34d399,#22c55e);border-color:rgba(21,128,61,.52);color:#062814;box-shadow:0 10px 18px rgba(34,197,94,.24)}
+    .theme-preview{position:relative;display:grid;grid-template-columns:54px 1fr;height:118px;border-radius:14px;overflow:hidden;border:1px solid var(--theme-preview-border, rgba(15,23,42,.10));background-color:var(--theme-preview-base, rgba(255,255,255,.65));background-size:cover;background-position:center;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+    .theme-preview::before{content:"";position:absolute;inset:0;background:var(--theme-preview-tint, linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.02)))}
+    .theme-preview-rail{position:relative;z-index:1;padding:10px 8px;background:var(--theme-rail-bg, rgba(255,255,255,.82));border-right:1px solid rgba(15,23,42,.08);display:flex;flex-direction:column;gap:7px;justify-content:flex-start}
+    .theme-preview-rail span{height:8px;border-radius:999px;background:var(--theme-rail-pill, rgba(15,23,42,.18))}
+    .theme-preview-rail span.active{background:var(--theme-secondary, #b38a4f);width:78%}
+    .theme-preview-main{position:relative;z-index:1;padding:10px 10px 9px;display:flex;flex-direction:column;gap:8px}
+    .theme-preview-header{display:flex;justify-content:space-between;align-items:center;gap:8px}
+    .theme-preview-title{width:58%;height:10px;border-radius:999px;background:var(--theme-title-bar, rgba(15,23,42,.82))}
+    .theme-preview-clock{width:34px;height:18px;border-radius:999px;background:var(--theme-clock-bg, rgba(255,255,255,.62));border:1px solid rgba(15,23,42,.12)}
+    .theme-preview-cards{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .theme-preview-cards span{display:block;height:36px;border-radius:10px;background:var(--theme-panel-bg, rgba(255,255,255,.70));border:1px solid rgba(15,23,42,.10)}
+    .theme-preview-footer{margin-top:auto;height:12px;border-radius:999px;background:var(--theme-search-bar, rgba(255,255,255,.74));border:1px solid rgba(15,23,42,.12)}
+    .theme-swatch{display:flex;gap:6px;position:relative;z-index:1}
+    .theme-swatch span{display:block;flex:1;height:14px;border-radius:999px;border:1px solid rgba(15,23,42,.08)}
+    .theme-actions{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:auto;position:relative;z-index:1}
+    .theme-button{min-width:118px}
+    .theme-button[disabled]{opacity:1;cursor:default;background:linear-gradient(180deg,#f5f3ec,#e5dccb);color:#3f4d5c;border-color:rgba(15,23,42,.10)}
+    .theme-note{font-size:12px;color:var(--theme-muted, #607080)}
+    .locked-note{margin-top:16px;padding:14px;border-radius:16px;border:1px solid var(--border);background:rgba(255,255,255,.58)}
+    .theme-agent-shell{display:grid;gap:12px}
+    .theme-agent-intro{color:var(--muted);line-height:1.45;margin:0}
+    .theme-prompt{width:100%;min-height:110px;padding:12px 14px;border:1px solid rgba(215,175,87,.28);border-radius:14px;background:rgba(255,255,255,.96);color:#111827}
+    @media (max-width:1100px){
+      .shell,.grid,.summary-grid{grid-template-columns:1fr}
+      .main{padding:18px}
+      .title{font-size:38px}
+      .topbar-right{width:100%;align-items:stretch}
+      .chip{min-width:0}
+    }
+  </style>
+</head>
+<body class="theme-{{ theme_runtime.mode if theme_runtime else 'dark' }}">
+  {% set workspace_q = (("personal_profile_id=" ~ (current_profile.id|urlencode)) if current_profile and current_profile.type == "personal" and current_profile.id else (("profile_id=" ~ (current_profile.id|urlencode)) if current_profile and current_profile.id else "")) %}
+  {% set scope = settings_scope or 'global' %}
+  {% set display_user_name = current_user_name or 'Carlos G Suarez' %}
+  {% set display_user_role = current_user_role_label or current_user_role or 'Administrator' %}
+  {% set registration = registration_data or {} %}
+  {% set has_registration = registration and (registration.license_key or registration.registration_name or registration.registration_company) %}
+  {% set registered_on = registration.registered_on or registration.registration_date or registration.created_at or registration.activated_at or registration.issued_at or '' %}
+  {% set expires_on = registration.expires_on or registration.expiration_date or registration.expiry_date or registration.renewal_due_at or registration.renewal_date or '' %}
+  {% set registration_status = registration.status or ('Expired' if registration.is_expired else ('Renewal Due' if registration.needs_renewal else 'Active')) %}
+  {% set renewal_needed = registration.is_expired or registration.needs_renewal or ((registration_status|string|lower) in ['expired','renewal due','renewal_required']) %}
+  {% set user_initial = (display_user_name[0] if display_user_name else 'C')|upper %}
+  {% set is_admin_user = (current_user_role|default('', true)|lower) == 'administrator' %}
+  {% set role_catalog_safe = role_catalog|default({}, true) %}
+  {% set role_permission_catalog_safe = role_permission_catalog|default({}, true) %}
+  {% set app_users_safe = app_users|default([], true) %}
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand-card">
+        <img src="/static/brand/creditsapientia_logo.png" alt="{{ software_name or 'CreditSapientia CRM' }}">
+      </div>
+      <nav class="rail-nav">
+        {% if scope == 'global' %}
+          <a href="/ui/lobby">← Back to Lobby</a>
+          <a href="/ui/global-reports">Global Reports</a>
+          <a class="active" href="/ui/global-settings?section=software_registration">Global Settings</a>
+          <a class="sub {% if active_section == 'software_registration' %}active{% endif %}" href="/ui/global-settings?section=software_registration">Software Registration</a>
+          <a class="sub {% if active_section == 'users' %}active{% endif %}" href="/ui/global-settings?section=users">Users</a>
+          <a class="sub {% if active_section == 'backup' %}active{% endif %}" href="/ui/global-settings?section=backup">Back-Up</a>
+          <a class="sub {% if active_section == 'appearance' %}active{% endif %}" href="/ui/global-settings?section=appearance">Global Theme System</a>
+          <a href="/ui/help">Help</a>
+          <a href="/ui/logout">Log Out</a>
+        {% elif scope == 'credit_repair' %}
+          <a href="/ui/lobby">← Back to Lobby</a>
+          <a href="/ui/credit-repair-dashboard">Credit Repair Dashboard</a>
+          <a href="/ui/presentations">Presentations</a>
+          <a href="/ui/marketing">Marketing</a>
+          <a href="/ui/reports">Reports</a>
+          <a href="/ui/education">Education</a>
+          <a href="/ui/compliance">Compliance &amp; Legal</a>
+          <a class="active" href="/ui/credit-repair-settings?section=credit_repair_configuration{% if workspace_q %}&{{ workspace_q }}{% endif %}">Credit Repair Settings</a>
+          <a class="sub {% if active_section == 'credit_repair_configuration' %}active{% endif %}" href="/ui/credit-repair-settings?section=credit_repair_configuration{% if workspace_q %}&{{ workspace_q }}{% endif %}">Credit Repair Configuration</a>
+          <a class="sub {% if active_section == 'credit_repair_tables_records' %}active{% endif %}" href="/ui/credit-repair-settings?section=credit_repair_tables_records{% if workspace_q %}&{{ workspace_q }}{% endif %}">Credit Repair Tables &amp; Records</a>
+          <a class="sub {% if active_section == 'credit_repair_templates' %}active{% endif %}" href="/ui/credit-repair-settings?section=credit_repair_templates{% if workspace_q %}&{{ workspace_q }}{% endif %}">Credit Repair Templates</a>
+          <a href="/ui/help">Help</a>
+          <a href="/ui/logout">Log Out</a>
+        {% else %}
+          <a href="/ui/lobby">← Back to Lobby</a>
+          <a href="/ui/accounting-dashboard{% if workspace_q %}?{{ workspace_q }}{% endif %}">Accounting Dashboard</a>
+          <a class="active" href="/ui/accounting-settings?section=billing_invoice_configuration{% if workspace_q %}&{{ workspace_q }}{% endif %}">Accounting Settings</a>
+          <a class="sub {% if active_section == 'billing_invoice_configuration' %}active{% endif %}" href="/ui/accounting-settings?section=billing_invoice_configuration{% if workspace_q %}&{{ workspace_q }}{% endif %}">Accounting Configuration</a>
+          <a class="sub {% if active_section == 'accounting_tables_records' %}active{% endif %}" href="/ui/accounting-settings?section=accounting_tables_records{% if workspace_q %}&{{ workspace_q }}{% endif %}">Accounting Tables &amp; Records</a>
+          <a class="sub {% if active_section == 'accounting_templates' %}active{% endif %}" href="/ui/accounting-settings?section=accounting_templates{% if workspace_q %}&{{ workspace_q }}{% endif %}">Accounting Templates</a>
+          <a href="/ui/help">Help</a>
+          <a href="/ui/logout">Log Out</a>
+        {% endif %}
+      </nav>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h1 class="title">{{ page_title }}</h1>
+          <div class="subtitle">{{ settings_subtitle }}</div>
+        </div>
+        <div class="topbar-right">
+          <div class="chip time-chip">
+            <div class="time-row">
+              <div class="time-big" id="settingsClockTime">--:-- --</div>
+              <div class="date-wrap">
+                <div class="day-name" id="settingsClockDay">----</div>
+                <div class="date-line" id="settingsClockDate">----</div>
+              </div>
+            </div>
+          </div>
+          <div class="chip user-chip">
+            <div class="avatar-dot">{{ user_initial }}</div>
+            <div>
+              <div class="user-name">{{ display_user_name }}</div>
+              <div class="user-role">{{ display_user_role }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+      {% if message %}<div class="flash success">{{ message }}</div>{% endif %}
+
+      <div class="box">
+        {% if scope == 'global' and active_section == 'software_registration' %}
+          <h2 class="section-title">Software Registration</h2>
+          <p class="section-desc">This screen is software-wide and read-only after activation. It shows who purchased the software, the current license key, when the registration was completed, and when renewal is due.</p>
+
+          {% if has_registration %}
+            <div class="summary-actions">
+              {% set status_class = 'bad' if (registration_status|string|lower) == 'expired' else ('warn' if renewal_needed else 'ok') %}
+              <div class="status-badge {{ status_class }}">{{ registration_status }}</div>
+              {% if registered_on %}<div class="muted">Registered: {{ registered_on }}</div>{% endif %}
+              {% if expires_on %}<div class="muted">Expires: {{ expires_on }}</div>{% endif %}
+            </div>
+
+            <div class="summary-grid" style="margin-top:18px;">
+              <div class="summary-item">
+                <div class="summary-label">License Key</div>
+                <div class="summary-value">{{ registration.license_key or 'Not recorded' }}</div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">Registered To</div>
+                <div class="summary-value">{{ registration.registration_name or 'Not recorded' }}</div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">Company</div>
+                <div class="summary-value">{{ registration.registration_company or 'Not recorded' }}</div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">Telephone</div>
+                <div class="summary-value js-registration-phone-display">{{ registration.registration_phone or 'Not recorded' }}</div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">Email</div>
+                <div class="summary-value small">{{ registration.registration_email or 'Not recorded' }}</div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">Website</div>
+                <div class="summary-value small">{{ registration.registration_website or 'Not recorded' }}</div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">Registered On</div>
+                <div class="summary-value">{{ registered_on or 'Not recorded' }}</div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">Expires On</div>
+                <div class="summary-value">{{ expires_on or 'Not recorded' }}</div>
+              </div>
+              <div class="summary-item full">
+                <div class="summary-label">Address</div>
+                <div class="summary-value small">{{ registration.registration_address or 'Not recorded' }}</div>
+              </div>
+            </div>
+
+            {% if renewal_needed %}
+            <div class="renew-box">
+              <h3>Update License Key</h3>
+              <div class="muted" style="margin-bottom:12px;">This registration is due for renewal. Enter the new annual license key below. The purchaser and registration details remain read-only.</div>
+              <form method="post" action="/ui/settings/save-registration">
+                <input type="hidden" name="registration_name" value="{{ registration.registration_name or '' }}">
+                <input type="hidden" name="registration_company" value="{{ registration.registration_company or '' }}">
+                <input type="hidden" name="registration_phone" value="{{ registration.registration_phone or '' }}">
+                <input type="hidden" name="registration_email" value="{{ registration.registration_email or '' }}">
+                <input type="hidden" name="registration_website" value="{{ registration.registration_website or '' }}">
+                <input type="hidden" name="registration_address" value="{{ registration.registration_address or '' }}">
+                <div class="row" style="margin-bottom:0;">
+                  <div style="flex:1 1 360px;">
+                    <label>New License Key</label>
+                    <input type="text" name="license_key" value="" placeholder="Enter renewed annual license key">
+                  </div>
+                  <button type="submit">Update License Key</button>
+                </div>
+              </form>
+            </div>
+            {% else %}
+            <div class="muted" style="margin-top:18px;">The renewal button appears when the license is expired or marked for renewal.</div>
+            {% endif %}
+
+          {% else %}
+            <p class="section-desc">No registration is on file yet. Complete the first-time software activation below.</p>
+            <form method="post" action="/ui/settings/save-registration">
+              <div class="grid">
+                <div>
+                  <label>License Key</label>
+                  <input type="text" name="license_key" value="{{ registration.license_key if registration else '' }}">
+                </div>
+                <div>
+                  <label>Registered To</label>
+                  <input type="text" name="registration_name" value="{{ registration.registration_name if registration else '' }}">
+                </div>
+                <div>
+                  <label>Company</label>
+                  <input type="text" name="registration_company" value="{{ registration.registration_company if registration else '' }}">
+                </div>
+                <div>
+                  <label>Telephone</label>
+                  <input type="text" name="registration_phone" value="{{ registration.registration_phone if registration else '' }}" inputmode="numeric" maxlength="12" placeholder="305-555-1212" pattern="\d{3}-\d{3}-\d{4}" class="js-registration-phone-input">
+                </div>
+                <div>
+                  <label>Email</label>
+                  <input type="email" name="registration_email" value="{{ registration.registration_email if registration else '' }}">
+                </div>
+                <div>
+                  <label>Website</label>
+                  <input type="text" name="registration_website" value="{{ registration.registration_website if registration else '' }}">
+                </div>
+                <div style="grid-column:1 / -1;">
+                  <label>Address</label>
+                  <textarea name="registration_address">{{ registration.registration_address if registration else '' }}</textarea>
+                </div>
+              </div>
+              <div class="row"><button type="submit">Save Registration</button></div>
+            </form>
+          {% endif %}
+
+        {% elif scope == 'global' and active_section == 'users' %}
+          <h2 class="section-title">Users</h2>
+          <p class="section-desc">Manage software users and access. Passwords are case-sensitive, never viewable by the administrator, and must meet the software security rules.</p>
+          <div class="row">
+            {% if is_admin_user %}<a class="btn" href="/ui/global-settings?section=users&edit_user_id=new">Add User</a>{% endif %}
+            {% if current_user_name %}<div class="muted">Current logged in user: {{ current_user_name }}</div>{% endif %}
+          </div>
+          {% if not is_admin_user %}<div class="admin-note">Only administrators can create or delete software users.</div>{% endif %}
+          {% if generated_reset_link %}
+          <div class="copy-link-box">
+            <strong>Reset Link Ready for {{ generated_reset_name or 'User' }}</strong>
+            <div class="muted" style="margin-top:6px;">Use this one-time link to email or text the user manually. The link expires in 30 minutes.</div>
+            <input type="text" readonly value="{{ generated_reset_link }}" onclick="this.select();">
+          </div>
+          {% endif %}
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>Username / Email</th><th>Role</th><th>Status</th><th>Last Login</th><th>Security</th><th>Actions</th></tr></thead>
+              <tbody>
+                {% for user in app_users_safe %}
+                <tr>
+                  <td>
+                    <strong>{{ user.display_name }}</strong>{% if current_user_id and user.id == current_user_id %} <strong>(Current)</strong>{% endif %}
+                    <div class="muted">Created: {{ user.created_at or '—' }}</div>
+                    {% if user.created_by %}<div class="muted">Created by: {{ user.created_by }}</div>{% endif %}
+                  </td>
+                  <td>
+                    <div>{{ user.username }}</div>
+                    <div class="muted">{{ user.email or 'No email on file' }}</div>
+                  </td>
+                  <td>
+                    <div><strong>{{ user.role_label or user.role }}</strong></div>
+                    <div class="security-lines">
+                      {% for item in user.permission_items[:2] %}<div>{{ item }}</div>{% endfor %}
+                    </div>
+                  </td>
+                  <td>
+                    <div class="status-badge {{ user.status.class }}">{{ user.status.label }}</div>
+                    {% if user.locked_until %}<div class="muted" style="margin-top:6px;">Locked until {{ user.locked_until }}</div>{% endif %}
+                  </td>
+                  <td>{{ user.last_login_at or 'Never' }}</td>
+                  <td>
+                    <div class="security-lines">Password changed: {{ user.password_changed_at or 'Never' }}</div>
+                    <div class="security-lines">Failed attempts: {{ user.failed_login_attempts or 0 }}</div>
+                    <div class="security-lines">{% if user.force_password_reset %}Reset required at next login{% else %}No pending reset{% endif %}</div>
+                  </td>
+                  <td>
+                    <div class="actions-inline">
+                      <a class="btn btn-outline" href="/ui/global-settings?section=users&edit_user_id={{ user.id }}">Edit</a>
+                      <form method="post" action="/ui/settings/users/toggle-active" style="display:inline;">
+                        <input type="hidden" name="user_id" value="{{ user.id }}">
+                        <input type="hidden" name="desired_state" value="{{ '0' if user.is_active else '1' }}">
+                        <button type="submit">{{ 'Deactivate' if user.is_active else 'Activate' }}</button>
+                      </form>
+                      <form method="post" action="/ui/settings/users/force-reset" style="display:inline;">
+                        <input type="hidden" name="user_id" value="{{ user.id }}">
+                        <button type="submit" class="btn-muted">Force Reset</button>
+                      </form>
+                      <form method="post" action="/ui/settings/users/generate-reset-link" style="display:inline;">
+                        <input type="hidden" name="user_id" value="{{ user.id }}">
+                        <button type="submit" class="btn-muted">Generate Reset Link</button>
+                      </form>
+                      {% if user.status.key == 'locked' %}
+                      <form method="post" action="/ui/settings/users/unlock" style="display:inline;">
+                        <input type="hidden" name="user_id" value="{{ user.id }}">
+                        <button type="submit" class="btn-muted">Unlock</button>
+                      </form>
+                      {% endif %}
+                      {% if is_admin_user and user.id != current_user_id %}
+                      <button type="button" class="btn-danger js-open-warning"
+                              data-warning-action="/ui/settings/users/delete"
+                              data-warning-field="user_id"
+                              data-warning-value="{{ user.id }}"
+                              data-warning-title="Delete User"
+                              data-warning-message="You are about to delete this user. Any data or information associated with that user will be deleted and this process is irreversible. Are you sure you want to continue?">Delete</button>
+                      {% endif %}
+                    </div>
+                  </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="7" class="muted">No users found.</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+
+          <div id="userEditorModal" class="user-modal-backdrop {% if show_user_editor %}open{% endif %}" aria-hidden="{{ 'false' if show_user_editor else 'true' }}">
+            <div class="user-modal">
+              <div class="user-modal-head">
+                <div>
+                  <h3 class="user-modal-title">{{ 'Edit User' if edit_user else 'Add User' }}</h3>
+                  <div class="muted">Create or update a software user. The administrator can reset a password later, but cannot view the stored password.</div>
+                </div>
+                <button type="button" class="btn btn-outline js-user-modal-close" data-close-target="/ui/global-settings?section=users">Close</button>
+              </div>
+              <form method="post" action="/ui/settings/users/save" id="userEditorForm">
+                <input type="hidden" name="user_id" value="{{ edit_user.id if edit_user else '' }}">
+                <div class="grid">
+                  <div><label>Display Name</label><input type="text" name="display_name" value="{{ edit_user.display_name if edit_user else '' }}" required></div>
+                  <div><label>Username</label><input type="text" name="username" value="{{ edit_user.username if edit_user else '' }}" required autocapitalize="off" spellcheck="false"></div>
+                  <div><label>Email</label><input type="email" name="email" value="{{ edit_user.email if edit_user else '' }}"></div>
+                  <div><label>Role</label>
+                    <select name="role" id="userRoleSelect">
+                      {% for role_key, role_label in role_catalog_safe.items() %}
+                      <option value="{{ role_key }}" {% if edit_user and edit_user.role == role_key %}selected{% endif %}>{{ role_label }}</option>
+                      {% endfor %}
+                    </select>
+                    <div class="role-summary" id="roleSummaryBox">
+                      {% set active_role_key = edit_user.role if edit_user else 'administrator' %}
+                      {% set active_role_entry = role_permission_catalog_safe[active_role_key] if role_permission_catalog_safe and active_role_key in role_permission_catalog_safe else {} %}
+                      {% set active_role_items = active_role_entry['items'] if active_role_entry and 'items' in active_role_entry else [] %}
+                      <strong id="roleSummaryLabel">{{ active_role_entry['label'] if active_role_entry and 'label' in active_role_entry else 'Permissions' }}</strong>
+                      <ul id="roleSummaryItems">
+                        {% for item in active_role_items %}<li>{{ item }}</li>{% endfor %}
+                      </ul>
+                    </div>
+                  </div>
+                  <div><label>Password</label><input type="password" name="password" id="userPassword" {% if not edit_user %}required{% endif %} minlength="8" pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}" title="At least 8 characters, with 1 uppercase, 1 lowercase, 1 number, and 1 symbol."></div>
+                  <div><label>Confirm Password</label><input type="password" name="password_confirm" id="userPasswordConfirm" {% if not edit_user %}required{% endif %}></div>
+                </div>
+                <label class="checkbox-row"><input type="checkbox" name="is_active" value="1" {% if edit_user %}{% if edit_user.is_active %}checked{% endif %}{% else %}checked{% endif %}> <span>Active user</span></label>
+                <label class="checkbox-row"><input type="checkbox" name="require_password_reset" value="1" {% if edit_user %}{% if edit_user.force_password_reset %}checked{% endif %}{% else %}checked{% endif %}> <span>Require password change at next login</span></label>
+                <div class="policy-box">
+                  <strong>Password Rules</strong>
+                  <ul>
+                    <li>Case-sensitive password.</li>
+                    <li>Minimum 8 characters.</li>
+                    <li>At least 1 uppercase letter.</li>
+                    <li>At least 1 lowercase letter.</li>
+                    <li>At least 1 number.</li>
+                    <li>At least 1 symbol.</li>
+                  </ul>
+                  <div class="muted" style="margin-top:10px;">For security, administrators cannot view stored passwords. They can only change a password or generate a reset link.</div>
+                </div>
+                {% if edit_user %}
+                <div class="copy-link-box">
+                  <strong>Account Security Snapshot</strong>
+                  <div class="security-lines" style="margin-top:8px;">Status: {{ edit_user.status.label }}</div>
+                  <div class="security-lines">Last login: {{ edit_user.last_login_at or 'Never' }}</div>
+                  <div class="security-lines">Password changed: {{ edit_user.password_changed_at or 'Never' }}</div>
+                  <div class="security-lines">Failed attempts: {{ edit_user.failed_login_attempts or 0 }}</div>
+                </div>
+                {% endif %}
+                <div class="row" style="margin-top:14px; margin-bottom:0;">
+                  <button type="submit">Save User</button>
+                  <button type="button" class="btn btn-outline js-user-modal-close" data-close-target="/ui/global-settings?section=users">Cancel</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+
+        {% elif scope == 'global' and active_section == 'backup' %}
+          <div class="backup-panel">
+          <h2 class="section-title">Back-Up</h2>
+          <p class="section-desc">Create and review software back-ups for the whole application.</p>
+          <div class="backup-toolbar">
+            <form method="post" action="/ui/system/backup">
+              <input type="hidden" name="section" value="backup">
+              <input type="text" name="backup_note" placeholder="Optional note for this back-up">
+              <button type="submit">Create Back-Up</button>
+            </form>
+            {% if is_admin_user %}<a class="btn btn-outline" href="/ui/system/backup/open-folder">Open Back-Up Folder</a>{% endif %}
+          </div>
+          <div class="table-wrap">
+            <table class="backup-table">
+              <thead><tr><th>Back-Up</th><th>Created</th><th>Size</th><th>Actions</th></tr></thead>
+              <tbody>
+                {% for item in backup_history or [] %}
+                <tr>
+                  <td>{{ item.name }}</td>
+                  <td>{{ item.created_at }}</td>
+                  <td>{{ item.size }}</td>
+                  <td>
+                    {% if is_admin_user %}
+                    <button type="button" class="btn-danger js-open-warning"
+                            data-warning-action="/ui/system/backup/delete"
+                            data-warning-field="backup_name"
+                            data-warning-value="{{ item.name }}"
+                            data-warning-title="Delete Back-Up"
+                            data-warning-message="You are about to delete a back-up file. This process is irreversible. Are you sure you want to delete it?">Delete</button>
+                    {% endif %}
+                  </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" class="muted">No saved back-ups yet.</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          </div>
+
+        {% elif scope == 'global' and active_section == 'appearance' %}
+          <h2 class="section-title">Global Theme System</h2>
+          <p class="section-desc">Choose the visual theme family for the software shell.</p>
+          {% include 'theme_settings_section.html' %}
+
+        {% else %}
+          <h2 class="section-title">{{ settings_content.title }}</h2>
+          <p class="section-desc">{{ settings_content.description }}</p>
+
+          {% if settings_content.cards %}
+          <div class="grid">
+            {% for card in settings_content.cards %}
+            <div class="mini-card">
+              <h3>{{ card.title }}</h3>
+              {% if card['items'] %}
+              <ul>
+                {% for item in card['items'] %}<li>{{ item }}</li>{% endfor %}
+              </ul>
+              {% endif %}
+              {% if card['meta'] %}<div class="meta">{{ card['meta'] }}</div>{% endif %}
+            </div>
+            {% endfor %}
+          </div>
+          {% endif %}
+
+          {% if settings_content.tables %}
+            {% for table in settings_content.tables %}
+            <div class="mini-card" style="margin-top:18px;">
+              <h3>{{ table.title }}</h3>
+              {% if table.note %}<div class="muted" style="margin-bottom:8px;">{{ table.note }}</div>{% endif %}
+              <div class="table-wrap">
+                <table>
+                  <thead><tr>{% for col in table.columns %}<th>{{ col }}</th>{% endfor %}</tr></thead>
+                  <tbody>
+                    {% if table.rows %}
+                      {% for row in table.rows %}
+                      <tr>
+                        {% for cell in row %}
+                        <td>{% if table.safe_cells %}{{ cell|safe }}{% else %}{{ cell }}{% endif %}</td>
+                        {% endfor %}
+                      </tr>
+                      {% endfor %}
+                    {% else %}
+                      <tr><td colspan="{{ table.columns|length }}" class="muted">{{ table.empty_text or 'No rows yet.' }}</td></tr>
+                    {% endif %}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            {% endfor %}
+          {% endif %}
+        {% endif %}
+      </div>
+      <div id="warningConfirmModal" class="warning-modal-backdrop" aria-hidden="true">
+        <div class="warning-modal">
+          <div class="warning-head">
+            <div class="warning-icon">!</div>
+            <div>
+              <h3 class="warning-title" id="warningConfirmTitle">Warning</h3>
+              <div class="warning-body" id="warningConfirmMessage">Are you sure?</div>
+            </div>
+          </div>
+          <form method="post" id="warningConfirmForm">
+            <input type="hidden" name="section" value="backup" id="warningSectionField">
+            <input type="hidden" name="" value="" id="warningConfirmField">
+            <div class="warning-actions">
+              <button type="button" class="btn btn-outline js-warning-close">No</button>
+              <button type="submit" class="btn-danger">Yes</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    (function(){
+      function formatPhoneDisplay(value){
+        const digits = String(value || '').replace(/\D/g, '').slice(0, 10);
+        if(digits.length < 10){ return value || ''; }
+        return digits.slice(0,3) + '-' + digits.slice(3,6) + '-' + digits.slice(6,10);
+      }
+
+      function bindRegistrationPhoneFormatting(){
+        document.querySelectorAll('.js-registration-phone-input').forEach(function(input){
+          const apply = function(){
+            input.value = formatPhoneDisplay(input.value);
+          };
+          apply();
+          input.addEventListener('input', apply);
+          input.addEventListener('blur', apply);
+          if(input.form){
+            input.form.addEventListener('submit', apply);
+          }
+        });
+
+        document.querySelectorAll('.js-registration-phone-display').forEach(function(node){
+          const raw = (node.textContent || '').trim();
+          if(!raw || raw.toLowerCase() === 'not recorded'){ return; }
+          node.textContent = formatPhoneDisplay(raw);
+        });
+      }
+
+      bindRegistrationPhoneFormatting();
+
+      function initRoleSummary(){
+        const select = document.getElementById('userRoleSelect');
+        const label = document.getElementById('roleSummaryLabel');
+        const list = document.getElementById('roleSummaryItems');
+        if(!select || !label || !list){ return; }
+        const catalog = {{ role_permission_catalog_safe|tojson }};
+        function render(){
+          const key = select.value || 'administrator';
+          const entry = catalog[key] || catalog.administrator || {};
+          label.textContent = entry.label || 'Permissions';
+          list.innerHTML = '';
+          (entry.items || []).forEach(function(item){
+            const li = document.createElement('li');
+            li.textContent = item;
+            list.appendChild(li);
+          });
+        }
+        select.addEventListener('change', render);
+        render();
+      }
+
+      function closeUserEditorModal(){
+        const modal = document.getElementById('userEditorModal');
+        if(!modal){ return; }
+        modal.classList.remove('open');
+        modal.setAttribute('aria-hidden', 'true');
+        const target = '/ui/global-settings?section=users';
+        if(window.location.pathname === '/ui/global-settings' || window.location.pathname === '/ui/settings'){
+          try {
+            window.history.replaceState({}, document.title, target);
+          } catch (err) {
+            // ignore history API failures
+          }
+        }
+      }
+
+      function initUserEditorModal(){
+        const modal = document.getElementById('userEditorModal');
+        if(!modal){ return; }
+
+        const form = document.getElementById('userEditorForm');
+        if(form){
+          form.addEventListener('click', function(event){
+            event.stopPropagation();
+          });
+        }
+
+        const panel = modal.querySelector('.user-modal');
+        if(panel){
+          panel.addEventListener('click', function(event){
+            event.stopPropagation();
+          });
+        }
+
+        modal.addEventListener('click', function(event){
+          if(event.target === modal){
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        });
+
+        document.querySelectorAll('.js-user-modal-close').forEach(function(btn){
+          btn.addEventListener('click', function(event){
+            event.preventDefault();
+            event.stopPropagation();
+            closeUserEditorModal();
+          });
+        });
+
+        document.addEventListener('keydown', function(event){
+          if(event.key === 'Escape' && modal.classList.contains('open')){
+            event.preventDefault();
+            closeUserEditorModal();
+          }
+        });
+      }
+
+      function validateUserPasswordForm(){
+        const form = document.getElementById('userEditorForm');
+        if(!form){ return; }
+        form.addEventListener('submit', function(event){
+          const password = document.getElementById('userPassword');
+          const confirm = document.getElementById('userPasswordConfirm');
+          if(!password || !confirm){ return; }
+          const raw = password.value || '';
+          if(raw){
+            const policyOk = raw.length >= 8 && /[A-Z]/.test(raw) && /[a-z]/.test(raw) && /\d/.test(raw) && /[^A-Za-z0-9]/.test(raw);
+            if(!policyOk){
+              event.preventDefault();
+              alert('Password must be at least 8 characters and include 1 uppercase letter, 1 lowercase letter, 1 number, and 1 symbol.');
+              password.focus();
+              return;
+            }
+          }
+          if((password.value || '') !== (confirm.value || '')){
+            event.preventDefault();
+            alert('Passwords do not match.');
+            confirm.focus();
+          }
+        });
+      }
+
+
+
+      function initWarningModal(){
+        const modal = document.getElementById('warningConfirmModal');
+        const form = document.getElementById('warningConfirmForm');
+        const title = document.getElementById('warningConfirmTitle');
+        const message = document.getElementById('warningConfirmMessage');
+        const field = document.getElementById('warningConfirmField');
+        const sectionField = document.getElementById('warningSectionField');
+        if(!modal || !form || !title || !message || !field || !sectionField){ return; }
+        const panel = modal.querySelector('.warning-modal');
+        function closeModal(){
+          modal.classList.remove('open');
+          modal.setAttribute('aria-hidden','true');
+          form.setAttribute('action','');
+          field.setAttribute('name','');
+          field.value='';
+        }
+        document.querySelectorAll('.js-open-warning').forEach(function(btn){
+          btn.addEventListener('click', function(){
+            title.textContent = btn.dataset.warningTitle || 'Warning';
+            message.textContent = btn.dataset.warningMessage || 'Are you sure?';
+            form.setAttribute('action', btn.dataset.warningAction || '');
+            field.setAttribute('name', btn.dataset.warningField || '');
+            field.value = btn.dataset.warningValue || '';
+            sectionField.value = (btn.dataset.warningAction || '').includes('/backup/') ? 'backup' : 'users';
+            modal.classList.add('open');
+            modal.setAttribute('aria-hidden','false');
+          });
+        });
+        modal.addEventListener('click', function(event){
+          if(event.target === modal){ event.preventDefault(); event.stopPropagation(); }
+        });
+        if(panel){ panel.addEventListener('click', function(event){ event.stopPropagation(); }); }
+        document.querySelectorAll('.js-warning-close').forEach(function(btn){
+          btn.addEventListener('click', function(event){ event.preventDefault(); closeModal(); });
+        });
+        document.addEventListener('keydown', function(event){
+          if(event.key === 'Escape' && modal.classList.contains('open')) closeModal();
+        });
+      }
+
+      function updateClock(){
+        const now = new Date();
+        const parts = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'America/New_York',
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true,
+          weekday: 'long',
+          month: 'long',
+          day: 'numeric',
+          year: 'numeric'
+        }).formatToParts(now);
+
+        const map = {};
+        parts.forEach(function(part){ map[part.type] = (map[part.type] || '') + part.value; });
+
+        const timeEl = document.getElementById('settingsClockTime');
+        const dayEl = document.getElementById('settingsClockDay');
+        const dateEl = document.getElementById('settingsClockDate');
+
+        if(timeEl){ timeEl.textContent = ((map.hour || '--') + ':' + (map.minute || '--') + ' ' + (map.dayPeriod || '')).trim(); }
+        if(dayEl){ dayEl.textContent = map.weekday || ''; }
+        if(dateEl){ dateEl.textContent = [map.month, map.day ? (map.day + ',') : '', map.year].filter(Boolean).join(' '); }
+      }
+      initUserEditorModal();
+      validateUserPasswordForm();
+      initRoleSummary();
+      initWarningModal();
+      updateClock();
+      setInterval(updateClock, 30000);
+    })();
+  </script>
+</body>
+</html>

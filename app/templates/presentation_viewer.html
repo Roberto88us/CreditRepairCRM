@@ -1,0 +1,100 @@
+
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{ deck.title }}</title>
+  <style>
+    :root{--gold:{{ theme_runtime.palette.secondary if theme_runtime else '#d7af57' }};--gold-2:{{ theme_runtime.palette.text if theme_runtime else '#f1d38b' }};--border:{{ theme_runtime.palette.border if theme_runtime else 'rgba(212,171,82,.45)' }};--text:{{ theme_runtime.palette.text if theme_runtime else '#f3e5bc' }};--muted:{{ theme_runtime.palette.muted if theme_runtime else '#cab889' }};--panel:{{ theme_runtime.palette.surface if theme_runtime else 'rgba(8,18,33,.86)' }};--shadow:0 18px 42px rgba(0,0,0,.34)}
+    *{box-sizing:border-box} body{margin:0;font-family:Inter,Arial,sans-serif;color:var(--text);background:#071220;min-height:100vh}
+    body::before{content:"";position:fixed;inset:0;background:url('/static/brand/themes/{{ current_theme or "royal_blue" }}.png') center/cover no-repeat fixed;z-index:-3}
+    body::after{content:"";position:fixed;inset:0;background:radial-gradient(circle at 78% 15%, rgba(245,208,119,.16), transparent 20%),linear-gradient(180deg, rgba(2,7,16,.35), rgba(2,7,16,.78));z-index:-2}
+    .page{padding:22px 28px 32px;max-width:1500px;margin:0 auto}.topbar{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding-bottom:14px}.title{font-size:46px;font-weight:800;line-height:1;margin:0;color:#fff1c6}.subtitle{margin-top:8px;color:var(--gold-2);font-size:16px;font-weight:700}.muted{color:var(--muted)}
+    .toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}.btn,.btn-outline{display:inline-flex;align-items:center;justify-content:center;padding:11px 16px;border-radius:14px;font-weight:800;border:1px solid var(--border);text-decoration:none;color:inherit;cursor:pointer}.btn{background:linear-gradient(180deg,#f3d88f,#c79131);color:#231605}.btn-outline{background:rgba(6,15,28,.72)}
+    .flash{padding:14px 16px;border-radius:18px;margin-top:16px;font-weight:700}.flash.success{background:rgba(34,197,94,.14);border:1px solid rgba(134,239,172,.35);color:#d7ffdb}.flash.error{background:rgba(239,68,68,.14);border:1px solid rgba(254,202,202,.35);color:#ffd8d8}
+    .layout{display:grid;grid-template-columns:1.3fr .7fr;gap:18px;margin-top:18px}.panel{padding:20px 22px;border-radius:24px;border:1px solid var(--border);background:var(--panel);box-shadow:var(--shadow)}.panel-title{font-size:24px;font-weight:800;margin:0 0 12px}.slide-card{padding:14px;border-radius:16px;border:1px solid rgba(215,175,87,.20);background:rgba(255,255,255,.03);margin-bottom:12px}.slide-card h3{margin:0 0 8px;font-size:18px;color:#fff1c6}.slide-card ul{margin:0 0 0 18px;padding:0}.slide-card li{margin-bottom:6px;color:#e6d4a2;font-size:13px}
+    .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:flex;flex-direction:column;gap:6px}.field.full{grid-column:1/-1}.field label{font-size:13px;font-weight:700;color:#f0d188}.field input,.field select,.field textarea{width:100%;padding:10px 12px;border-radius:12px;border:1px solid rgba(215,175,87,.38);background:rgba(255,255,255,.95);color:#111827}.field textarea{min-height:110px}
+    iframe{width:100%;height:72vh;border:1px solid rgba(215,175,87,.22);border-radius:16px;background:#fff}
+    .meta-grid{display:grid;grid-template-columns:max-content 1fr;gap:8px 12px}.draft-card{padding:12px;border:1px solid rgba(215,175,87,.20);border-radius:16px;background:rgba(255,255,255,.03);margin-top:10px}
+    @media (max-width:1100px){.layout{grid-template-columns:1fr}.form-grid{grid-template-columns:1fr}.page{padding:18px}}
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="topbar">
+      <div>
+        <h1 class="title">{{ deck.title }}</h1>
+        <div class="subtitle">{{ deck.workspace_name }} · {{ (deck.language or 'english')|title }} · {{ deck.audience or 'client education' }}</div>
+        <div class="muted" style="margin-top:8px;">{% if deck.created_from == 'draft_builder' %}Draft PowerPoint generated from the business record and builder settings.{% else %}Uploaded PowerPoint deck indexed into the workspace library.{% endif %}</div>
+      </div>
+      <div class="toolbar">
+        <a class="btn-outline" href="/ui/presentations">Back to Presentations</a>
+        {% if pptx_available %}<a class="btn-outline" href="/ui/presentations/file/{{ deck.deck_id }}/pptx">Download PowerPoint</a>{% endif %}
+        {% if pdf_available %}<a class="btn-outline" href="/ui/presentations/file/{{ deck.deck_id }}/pdf">Download PDF</a>{% endif %}
+      </div>
+    </div>
+    {% if message %}<div class="flash success">{{ message }}</div>{% endif %}
+    {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+
+    <div class="layout">
+      <section class="panel">
+        <h2 class="panel-title">Presentation Viewer</h2>
+        {% if pdf_available %}
+          <iframe src="/ui/presentations/file/{{ deck.deck_id }}/pdf"></iframe>
+        {% else %}
+          <div class="muted" style="margin-bottom:12px;">PDF preview is not available on this machine yet, so the deck opens in text-outline mode inside the software.</div>
+          {% for slide in deck.outline %}
+            <div class="slide-card">
+              <h3>Slide {{ slide.number }} · {{ slide.title }}</h3>
+              {% if slide.bullets %}<ul>{% for bullet in slide.bullets %}<li>{{ bullet }}</li>{% endfor %}</ul>{% else %}<div class="muted">No extracted bullet text for this slide.</div>{% endif %}
+            </div>
+          {% endfor %}
+        {% endif %}
+      </section>
+      <div>
+        <section class="panel">
+          <h2 class="panel-title">Deck Details</h2>
+          <div class="meta-grid">
+            <div>Category</div><div>{{ deck.category or 'deck' }}</div>
+            <div>Created</div><div>{{ deck.created_at or '—' }}</div>
+            <div>Updated</div><div>{{ deck.updated_at or '—' }}</div>
+            <div>Slides</div><div>{{ deck.outline|length }}</div>
+            <div>Viewer</div><div>{% if pdf_available %}PDF + outline{% else %}Outline only{% endif %}</div>
+          </div>
+          <form method="post" action="/ui/presentations/update/{{ deck.deck_id }}" style="margin-top:16px;">
+            <div class="form-grid">
+              <div class="field"><label>Title</label><input name="title" value="{{ deck.title }}"></div>
+              <div class="field"><label>Audience</label><input name="audience" value="{{ deck.audience or '' }}"></div>
+              <div class="field"><label>Language</label><select name="language"><option value="english" {% if (deck.language or 'english') == 'english' %}selected{% endif %}>English</option><option value="spanish" {% if (deck.language or '') == 'spanish' %}selected{% endif %}>Spanish</option></select></div>
+              <div class="field full"><label>Notes</label><textarea name="notes">{{ deck.notes or '' }}</textarea></div>
+            </div>
+            <div class="toolbar"><button class="btn" type="submit">Save Presentation</button></div>
+          </form>
+          <form method="post" action="/ui/presentations/delete/{{ deck.deck_id }}" style="margin-top:12px;" onsubmit="return confirm('Delete this presentation?');"><button class="btn-outline" type="submit">Delete Presentation</button></form>
+        </section>
+
+        <section class="panel" style="margin-top:18px;">
+          <h2 class="panel-title">Email Draft</h2>
+          <form method="post" action="/ui/presentations/email-draft/{{ deck.deck_id }}">
+            <div class="form-grid">
+              <div class="field"><label>Recipient Name</label><input name="recipient_name"></div>
+              <div class="field"><label>Recipient Email</label><input type="email" name="recipient_email"></div>
+              <div class="field"><label>Recipient Type</label><select name="recipient_type"><option value="client">Client</option><option value="partner">Partner</option><option value="referral source">Referral Source</option></select></div>
+              <div class="field"><label>Attachment</label><select name="attachment_choice"><option value="pdf">PDF</option><option value="pptx">PowerPoint</option></select></div>
+              <div class="field full"><label>Message / Note</label><textarea name="email_note" placeholder="Saved inside the presentation record so it can be copied into your email workflow."></textarea></div>
+            </div>
+            <div class="toolbar"><button class="btn" type="submit">Save Email Draft</button></div>
+          </form>
+          {% for draft in deck.email_drafts or [] %}
+            <div class="draft-card">
+              <div><strong>{{ draft.recipient_name or 'Recipient' }}</strong> · {{ draft.recipient_email or 'No email' }}</div>
+              <div class="muted">{{ draft.created_at }} · {{ draft.recipient_type }} · Attach {{ draft.attachment_choice }}</div>
+              {% set draft_note = draft.note or draft.email_note %}{% if draft_note %}<div style="margin-top:6px;">{{ draft_note }}</div>{% endif %}
+            </div>
+          {% endfor %}
+        </section>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

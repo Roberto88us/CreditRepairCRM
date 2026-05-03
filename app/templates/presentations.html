@@ -1,0 +1,236 @@
+
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Presentations</title>
+  <style>
+    :root{--gold:{{ theme_runtime.palette.secondary if theme_runtime else '#d7af57' }};--gold-2:{{ theme_runtime.palette.text if theme_runtime else '#f1d38b' }};--gold-dark:{{ theme_runtime.palette.primary if theme_runtime else '#8b6323' }};--bg:#06111f;--panel:{{ theme_runtime.palette.surface if theme_runtime else 'rgba(8,18,33,.86)' }};--panel-soft:{{ theme_runtime.palette.surface_soft if theme_runtime else 'rgba(11,24,43,.72)' }};--border:{{ theme_runtime.palette.border if theme_runtime else 'rgba(212,171,82,.45)' }};--text:{{ theme_runtime.palette.text if theme_runtime else '#f3e5bc' }};--muted:{{ theme_runtime.palette.muted if theme_runtime else '#cab889' }};--shadow:0 18px 42px rgba(0,0,0,.34)}
+    *{box-sizing:border-box} body{margin:0;font-family:Inter,Arial,sans-serif;color:var(--text);background:#071220;min-height:100vh}
+    body::before{content:"";position:fixed;inset:0;background:url('/static/brand/themes/{{ current_theme or "royal_blue" }}.png') center/cover no-repeat fixed;z-index:-3}
+    body::after{content:"";position:fixed;inset:0;background:radial-gradient(circle at 78% 15%, rgba(245,208,119,.16), transparent 20%),linear-gradient(180deg, rgba(2,7,16,.35), rgba(2,7,16,.78));z-index:-2}
+    .shell{display:grid;grid-template-columns:280px 1fr;min-height:100vh}
+    .rail{padding:22px 18px;border-right:1px solid rgba(215,175,87,.16);background:linear-gradient(180deg, rgba(6,12,22,.95), rgba(6,12,22,.72));backdrop-filter:blur(7px)}
+    .brand-card{padding:14px;border:1px solid var(--border);border-radius:24px;background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.01));box-shadow:var(--shadow)}
+    .brand-card img{width:72%;margin:0 auto;height:auto;display:block}.brand-tag{font-size:12px;line-height:1.35;color:var(--muted);text-align:center;margin-top:8px}
+    .rail-nav{display:flex;flex-direction:column;gap:8px;margin-top:16px}
+    .rail-nav a{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:15px;border:1px solid rgba(215,175,87,.28);background:rgba(8,18,33,.72);color:var(--text);font-weight:700;font-size:14px;line-height:1.15;text-decoration:none}
+    .nav-main{font-size:15px;font-weight:800}.submenu{margin-left:34px;margin-top:8px;display:flex;flex-direction:column;gap:8px}.submenu a{padding:8px 10px;font-size:12.5px;border-radius:13px}.submenu a.active{background:linear-gradient(180deg,#2b1f08,#151008);border-color:rgba(241,211,139,.65)}
+    .main{padding:24px 28px 34px}
+    .topbar{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding-bottom:14px;border-bottom:1px solid rgba(215,175,87,.22)}
+    .title{text-align:center;font-size:52px;font-weight:800;line-height:1;margin:0;color:#fff1c6}.subtitle{text-align:center;margin-top:8px;color:var(--gold-2);font-size:18px;font-weight:700}.mini{text-align:center;margin-top:8px;color:var(--muted);font-size:15px}
+    .user-chip{display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:20px;border:1px solid var(--border);background:rgba(7,18,34,.58)}
+    .avatar{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,#f0d188,#c99732);color:#241603;font-weight:800}
+    .toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}.btn,.btn-outline{display:inline-flex;align-items:center;justify-content:center;padding:11px 16px;border-radius:14px;font-weight:800;border:1px solid var(--border);text-decoration:none;color:inherit;cursor:pointer}
+    .btn{background:linear-gradient(180deg,#f3d88f,#c79131);color:#231605}.btn-outline{background:rgba(6,15,28,.72)}
+    .flash{padding:14px 16px;border-radius:18px;margin-top:16px;font-weight:700}.flash.success{background:rgba(34,197,94,.14);border:1px solid rgba(134,239,172,.35);color:#d7ffdb}.flash.error{background:rgba(239,68,68,.14);border:1px solid rgba(254,202,202,.35);color:#ffd8d8}
+    .panel{margin-top:18px;padding:20px 22px;border-radius:24px;border:1px solid var(--border);background:var(--panel);box-shadow:var(--shadow)}
+    .panel-head{display:flex;justify-content:space-between;gap:14px;align-items:center;flex-wrap:wrap}.panel-title{font-size:26px;font-weight:800;margin:0}.muted{color:var(--muted)}
+    .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}.summary-card{padding:18px;border-radius:18px;border:1px solid rgba(215,175,87,.25);background:rgba(255,255,255,.04)}.summary-card .label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:700}.summary-card .value{font-size:24px;font-weight:800;margin-top:8px}.summary-card .sub{margin-top:6px;color:var(--muted);font-size:13px}
+    .two-col{display:grid;grid-template-columns:1.2fr .8fr;gap:18px}
+    .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.field{display:flex;flex-direction:column;gap:6px}.field.full{grid-column:1/-1}.field label{font-size:13px;font-weight:700;color:#f0d188}.field input,.field select,.field textarea{width:100%;padding:10px 12px;border-radius:12px;border:1px solid rgba(215,175,87,.38);background:rgba(255,255,255,.95);color:#111827}.field textarea{min-height:110px}.form-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+    .deck-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}.deck-card{padding:18px;border-radius:18px;border:1px solid rgba(215,175,87,.24);background:rgba(255,255,255,.04)}.deck-card h3{margin:0 0 8px;font-size:20px;color:#fff1c6}.pill-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.pill{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;border:1px solid rgba(215,175,87,.28);background:rgba(255,255,255,.04);font-size:12px;color:#f0d188}.deck-meta{display:grid;grid-template-columns:max-content 1fr;gap:6px 10px;font-size:13px;margin-top:10px}.deck-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.small{padding:7px 10px;font-size:12px;border-radius:12px}
+    .section-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.section-card{padding:14px;border-radius:16px;border:1px solid rgba(215,175,87,.20);background:rgba(255,255,255,.03)}.section-card h4{margin:0 0 8px;font-size:16px;color:#fff1c6}.section-card ul{margin:0 0 0 18px;padding:0}.section-card li{margin-bottom:6px;color:#e6d4a2;font-size:13px}
+    .modal{position:fixed;inset:0;background:rgba(1,6,12,.68);display:none;align-items:center;justify-content:center;padding:20px;z-index:999}.modal.open{display:flex}.modal-card{width:min(980px,100%);max-height:88vh;overflow:auto;padding:20px 22px;border-radius:22px;border:1px solid var(--border);background:linear-gradient(180deg, rgba(10,20,34,.98), rgba(6,12,22,.98));box-shadow:var(--shadow)}
+    .context{display:grid;grid-template-columns:84px 1fr;gap:16px;align-items:flex-start}.context-logo,.fallback-logo{width:84px;height:84px;border-radius:22px;border:1px solid rgba(215,175,87,.28);background:rgba(255,255,255,.06);padding:8px;object-fit:contain}.fallback-logo{display:flex;align-items:center;justify-content:center;font-size:32px;font-weight:800;color:var(--gold-2)}
+    @media (max-width:1120px){.shell{grid-template-columns:1fr}.rail{border-right:0;border-bottom:1px solid rgba(215,175,87,.16)}.main{padding:20px}.two-col{grid-template-columns:1fr}.title{font-size:40px}.context{grid-template-columns:1fr}.submenu{margin-left:0}}
+  </style>
+  <script>
+    function openModal(id){document.getElementById(id)?.classList.add('open');}
+    function closeModal(id){document.getElementById(id)?.classList.remove('open');}
+  </script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand-card">
+        <img src="/static/brand/creditsapientia_logo.png" alt="{{ software_name }}">
+        <div class="brand-tag">{{ software_tagline }}</div>
+      </div>
+      <nav class="rail-nav">
+        <a href="/ui/credit-repair-dashboard">Back to Credit Repair Dashboard</a>
+        <div class="submenu">
+          <a href="/ui/credit-repair-dashboard">Credit Repair Dashboard</a>
+          <a class="active nav-main" href="/ui/presentations">Presentations</a>
+          <a href="/ui/marketing">Marketing</a>
+          <a href="/ui/reports">Reports</a>
+          <a href="/ui/education">Education</a>
+          <a href="/ui/compliance">Compliance / Legal</a>
+          <a href="/ui/credit-repair-settings?section=credit_repair_configuration">Credit Repair Settings</a>
+          <a href="/ui/help">Help</a>
+          <a href="/ui/logout">Log Out</a>
+        </div>
+      </nav>
+    </aside>
+    <main class="main">
+      <div class="topbar">
+        <div style="flex:1"></div>
+        <div style="flex:1.6">
+          <h1 class="title">Presentations</h1>
+          <div class="subtitle">Upload, build, open, save, delete, and email branded presentation decks.</div>
+          <div class="mini">The active business record supplies the branding, contact info, and default client-education context.</div>
+        </div>
+        <div class="user-chip"><div class="avatar">{{ (request.cookies.get('crm_user_name') or 'U')[:1] }}</div><div><div style="font-weight:800;">{{ request.cookies.get('crm_user_name') or 'User' }}</div><div class="muted" style="font-size:13px;">{{ request.cookies.get('crm_user_role') or 'administrator' }}</div></div></div>
+      </div>
+
+      {% if message %}<div class="flash success">{{ message }}</div>{% endif %}
+      {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+
+      <section class="panel">
+        <div class="panel-head"><h2 class="panel-title">Business Presentation Context</h2><div class="muted">Decks inherit branding from the business you opened before entering Presentations.</div></div>
+        <div class="context" style="margin-top:16px;">
+          <div>
+            {% if current_profile and current_profile.logo_url %}
+              <img class="context-logo" src="{{ current_profile.logo_url }}" alt="logo">
+            {% else %}
+              <div class="fallback-logo">{{ (current_profile.business_name or current_profile.full_name or current_profile.name or 'P')[:1] }}</div>
+            {% endif %}
+          </div>
+          <div>
+            <div style="font-size:28px;font-weight:800;color:#fff1c6;">{{ current_profile.business_name or current_profile.full_name or current_profile.name or 'No active business selected' }}</div>
+            {% if current_profile.dba_name %}<div class="muted" style="margin-top:4px;">DBA: {{ current_profile.dba_name }}</div>{% endif %}
+            <div style="margin-top:10px;display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:10px 18px;">
+              <div><strong style="color:#f0d188;">Address:</strong> {{ current_profile.display_address or current_profile.address_text or '—' }}</div>
+              <div><strong style="color:#f0d188;">Phone:</strong> {{ current_profile.display_business_phone or current_profile.phone or '—' }}</div>
+              <div><strong style="color:#f0d188;">Email:</strong> {{ current_profile.email or '—' }}</div>
+              <div><strong style="color:#f0d188;">Website:</strong> {{ current_profile.website or '—' }}</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="summary-grid">
+          {% for card in summary_cards %}
+          <div class="summary-card"><div class="label">{{ card.label }}</div><div class="value">{{ card.value }}</div><div class="sub">{{ card.note }}</div></div>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2 class="panel-title">Presentation Actions</h2><div class="muted">PowerPoint-first workflow, with in-software viewing and draft generation.</div></div>
+        <div class="toolbar">
+          <button class="btn" type="button" onclick="openModal('uploadModal')">Upload PowerPoint</button>
+          <button class="btn-outline" type="button" onclick="openModal('openModal')">Open Presentation</button>
+          <button class="btn-outline" type="button" onclick="openModal('createModal')">Create New Presentation</button>
+          <button class="btn-outline" type="button" onclick="openModal('emailModal')">Email Presentation</button>
+        </div>
+      </section>
+
+      <div class="two-col">
+        <section class="panel">
+          <div class="panel-head"><h2 class="panel-title">Presentation Library</h2><div class="muted">Uploaded decks and generated drafts for this active workspace. Deck rows will show Open, Delete, Email, and PPTX/PDF actions after you upload or generate a presentation.</div></div>
+          <div class="deck-grid" style="margin-top:16px;">
+            {% for deck in presentation_decks %}
+              <div class="deck-card">
+                <h3>{{ deck.title }}</h3>
+                <div class="pill-row">
+                  <span class="pill">{{ (deck.language or 'english')|title }}</span>
+                  <span class="pill">{{ deck.audience or 'client education' }}</span>
+                  <span class="pill">{{ deck.category or 'deck' }}</span>
+                </div>
+                <div class="deck-meta">
+                  <div>Updated</div><div>{{ deck.updated_at or deck.created_at or '—' }}</div>
+                  <div>Viewer</div><div>{% if deck.pdf_exists %}PDF + outline{% else %}Outline viewer{% endif %}</div>
+                  <div>Slides</div><div>{{ deck.outline|length }}</div>
+                </div>
+                {% if deck.notes %}<div class="muted" style="margin-top:10px;">{{ deck.notes }}</div>{% endif %}
+                <div class="deck-actions">
+                  <a class="btn small" href="/ui/presentations/view/{{ deck.deck_id }}">Open</a>
+                  {% if deck.pptx_exists %}<a class="btn-outline small" href="/ui/presentations/file/{{ deck.deck_id }}/pptx">PowerPoint</a>{% endif %}
+                  {% if deck.pdf_exists %}<a class="btn-outline small" href="/ui/presentations/file/{{ deck.deck_id }}/pdf">PDF</a>{% endif %}
+                  <form method="post" action="/ui/presentations/delete/{{ deck.deck_id }}" style="display:inline;" onsubmit="return confirm('Delete this presentation?');"><button class="btn-outline small" type="submit">Delete</button></form>
+                </div>
+              </div>
+            {% else %}
+              <div class="deck-card"><h3>No presentations yet</h3><div class="muted">Upload one of your PowerPoints or create a generated draft deck from the current business.</div></div>
+            {% endfor %}
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><h2 class="panel-title">Standard Education Structure</h2><div class="muted">The default draft builder follows your locked instructional order.</div></div>
+          <div class="section-grid" style="margin-top:16px;">
+            <div class="section-card"><h4>1. What is Credit</h4><ul><li>What credit is and is not</li><li>How credit measures risk</li></ul></div>
+            <div class="section-card"><h4>2. Bureaus and Functions</h4><ul><li>Equifax, Experian, TransUnion</li><li>How data gets reported</li></ul></div>
+            <div class="section-card"><h4>3. How Credit Goes Bad</h4><ul><li>One day late vs 30 day late</li><li>Charge-off, collections, judgments, bankruptcy</li></ul></div>
+            <div class="section-card"><h4>4. How Credit Cards Work</h4><ul><li>Utilization graph</li><li>Due date vs statement date</li></ul></div>
+            <div class="section-card"><h4>5. What the Law Allows</h4><ul><li>FCRA rights</li><li>No guarantee, can do it yourself, no full upfront fees</li></ul></div>
+            <div class="section-card"><h4>6. Your Program</h4><ul><li>Current pricing confirmed from business settings</li><li>Next steps and required documents</li></ul></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div id="uploadModal" class="modal" onclick="if(event.target===this) closeModal('uploadModal')">
+    <div class="modal-card">
+      <div class="panel-head"><h2 class="panel-title">Upload PowerPoint</h2><button class="btn-outline small" type="button" onclick="closeModal('uploadModal')">Close</button></div>
+      <form method="post" action="/ui/presentations/upload" enctype="multipart/form-data">
+        <div class="form-grid" style="margin-top:14px;">
+          <div class="field"><label>Presentation Title</label><input name="presentation_title" placeholder="Newest Client Education Deck"></div>
+          <div class="field"><label>Language</label><select name="language"><option value="english">English</option><option value="spanish">Spanish</option></select></div>
+          <div class="field"><label>Audience</label><input name="audience" value="client education"></div>
+          <div class="field"><label>Category</label><input name="category" value="uploaded deck"></div>
+          <div class="field full"><label>PowerPoint File</label><input type="file" name="deck_file" accept=".ppt,.pptx" required></div>
+        </div>
+        <div class="form-actions"><button class="btn" type="submit">Upload and Index</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div id="openModal" class="modal" onclick="if(event.target===this) closeModal('openModal')">
+    <div class="modal-card">
+      <div class="panel-head"><h2 class="panel-title">Open Presentation</h2><button class="btn-outline small" type="button" onclick="closeModal('openModal')">Close</button></div>
+      <div class="deck-grid" style="margin-top:16px;">
+        {% for deck in presentation_decks %}
+          <div class="deck-card"><h3>{{ deck.title }}</h3><div class="pill-row"><span class="pill">{{ (deck.language or 'english')|title }}</span><span class="pill">{{ deck.category or 'deck' }}</span></div><div class="deck-actions"><a class="btn small" href="/ui/presentations/view/{{ deck.deck_id }}">Open</a></div></div>
+        {% else %}
+          <div class="deck-card"><h3>No saved presentations yet</h3></div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div id="createModal" class="modal" onclick="if(event.target===this) closeModal('createModal')">
+    <div class="modal-card">
+      <div class="panel-head"><h2 class="panel-title">Create New Presentation</h2><button class="btn-outline small" type="button" onclick="closeModal('createModal')">Close</button></div>
+      <form method="post" action="/ui/presentations/create-draft">
+        <div class="form-grid" style="margin-top:14px;">
+          <div class="field"><label>Presentation Title</label><input name="presentation_title" placeholder="Credit Education Consultation Deck"></div>
+          <div class="field"><label>Language</label><select name="language"><option value="english">English</option><option value="spanish">Spanish</option></select></div>
+          <div class="field"><label>Audience</label><input name="audience" value="client education"></div>
+          <div class="field"><label>Target State</label><input name="target_state" placeholder="FL"></div>
+          <div class="field"><label>Years in Credit Repair</label><input name="credit_years" value="13"></div>
+          <div class="field"><label>Years in Banking / Lending</label><input name="banking_years" value="8"></div>
+          <div class="field"><label>Consulting and Education Fee</label><input name="consultation_fee" value="175"></div>
+          <div class="field"><label>Monthly Fee</label><input name="monthly_fee" value="125"></div>
+          <div class="field"><label>Program Months</label><input name="program_months" value="12"></div>
+          <div class="field full"><label>Billing Note</label><input name="billing_note" value="Monthly billing is for work completed the month before. If the client cancels, the final earned payment remains due."></div>
+          <div class="field full"><label>What do you want included?</label><textarea name="user_prompt" placeholder="Example: Emphasize utilization, due date vs statement date, and why recent defaulters may need to wait before starting credit repair."></textarea></div>
+        </div>
+        <div class="form-actions"><button class="btn" type="submit">Create Draft PowerPoint</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div id="emailModal" class="modal" onclick="if(event.target===this) closeModal('emailModal')">
+    <div class="modal-card">
+      <div class="panel-head"><h2 class="panel-title">Email Presentation</h2><button class="btn-outline small" type="button" onclick="closeModal('emailModal')">Close</button></div>
+      {% if presentation_decks %}
+      <form method="post" action="/ui/presentations/email-draft/{{ (presentation_selected.deck_id if presentation_selected else presentation_decks[0].deck_id) }}">
+        <div class="form-grid" style="margin-top:14px;">
+          <div class="field"><label>Recipient Name</label><input name="recipient_name"></div>
+          <div class="field"><label>Recipient Email</label><input type="email" name="recipient_email"></div>
+          <div class="field"><label>Recipient Type</label><select name="recipient_type"><option value="client">Client</option><option value="partner">Partner</option><option value="referral source">Referral Source</option></select></div>
+          <div class="field"><label>Attachment</label><select name="attachment_choice"><option value="pdf">PDF</option><option value="pptx">PowerPoint</option></select></div>
+          <div class="field full"><label>Email Note</label><textarea name="email_note" placeholder="Saved as an email draft in the presentation record. Attach and send from your email workflow."></textarea></div>
+        </div>
+        <div class="form-actions"><button class="btn" type="submit">Save Email Draft</button></div>
+      </form>
+      {% else %}
+      <div class="muted" style="margin-top:16px;">Create or upload a presentation first.</div>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

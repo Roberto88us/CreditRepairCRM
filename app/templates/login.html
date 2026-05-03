@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CreditSapientia CRM — Login</title>
+  <style>
+    :root{
+      --message-max: 820px;
+      --gold-text: #f2dfb0;
+      --panel-text: #f3e0b5;
+
+      /* Screen 1 vault lock hotspot */
+      --vault-hotspot-left: 44.6%;
+      --vault-hotspot-top: 66.7%;
+      --vault-hotspot-width: 9.2%;
+      --vault-hotspot-height: 6.9%;
+
+      /* Screen 2 credentials composite overlays */
+      --cred-user-left: 50.8%;
+      --cred-user-top: 58.7%;
+      --cred-user-width: 25.6%;
+      --cred-user-height: 4.9%;
+
+      --cred-pass-left: 50.8%;
+      --cred-pass-top: 63.5%;
+      --cred-pass-width: 25.6%;
+      --cred-pass-height: 4.9%;
+
+      --cred-login-left: 33.7%;
+      --cred-login-top: 67.8%;
+      --cred-login-width: 15.0%;
+      --cred-login-height: 5.2%;
+
+      --cred-cancel-left: 54.0%;
+      --cred-cancel-top: 67.8%;
+      --cred-cancel-width: 15.0%;
+      --cred-cancel-height: 5.2%;
+
+      --cred-switch-left: 54.0%;
+      --cred-switch-top: 73.8%;
+      --cred-switch-width: 18.2%;
+      --cred-switch-height: 3.4%;
+
+      --eye-left: 74.8%;
+      --eye-top: 62.8%;
+      --eye-width: 2.8%;
+      --eye-height: 4.2%;
+    }
+
+    *{ box-sizing:border-box; }
+
+    html, body{
+      margin:0;
+      min-height:100%;
+    }
+
+    body{
+      min-height:100vh;
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      color:#ffffff;
+      background:
+        radial-gradient(circle at 50% 14%, rgba(255,255,255,.06), transparent 18%),
+        linear-gradient(90deg, rgba(18,46,98,.28), transparent 12%, transparent 88%, rgba(18,46,98,.28)),
+        #05070b url("/static/brand/themes/{{ current_theme|default('cosmic_03_royal_blue_elegance', true) }}.png") center/cover no-repeat fixed;
+    }
+
+    .page{
+      min-height:100vh;
+      display:flex;
+      justify-content:center;
+      align-items:flex-start;
+      padding:26px 18px 24px;
+    }
+
+    .stage{
+      width:100%;
+      max-width:1400px;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      gap:10px;
+    }
+
+    .message{
+      width:min(var(--message-max), 100%);
+      text-align:center;
+      padding:12px 18px;
+      border-radius:16px;
+      font-size:1rem;
+      font-family: Georgia, "Times New Roman", serif;
+      letter-spacing:.1px;
+      backdrop-filter:blur(5px);
+      box-shadow: 0 10px 18px rgba(0,0,0,.22);
+      margin-top:2px;
+      border:1px solid rgba(235,201,126,.45);
+      color: #f6e8c5;
+      background:
+        linear-gradient(180deg, rgba(108,72,31,.92), rgba(63,37,13,.90));
+    }
+
+    .error{
+      border-color: rgba(196,120,92,.55);
+      background:
+        linear-gradient(180deg, rgba(118,58,43,.94), rgba(78,33,24,.92));
+    }
+
+    .info{
+      border-color: rgba(235,201,126,.45);
+      background:
+        linear-gradient(180deg, rgba(108,72,31,.92), rgba(63,37,13,.90));
+    }
+
+    .screen{
+      width:100%;
+      display:flex;
+      justify-content:center;
+      align-items:flex-start;
+    }
+
+    .hidden{ display:none !important; }
+
+    .artboard{
+      position:relative;
+      display:inline-block;
+    }
+
+    .composite{
+      display:block;
+      width:auto;
+      height:auto;
+      max-width:99vw;
+      max-height: calc(100vh - 70px);
+      user-select:none;
+      -webkit-user-drag:none;
+      filter: drop-shadow(0 16px 24px rgba(0,0,0,.34));
+    }
+
+    .hotspot{
+      position:absolute;
+      border:0;
+      background:transparent;
+      cursor:pointer;
+      padding:0;
+      color:transparent;
+      z-index:5;
+      appearance:none;
+      outline:none;
+      box-shadow:none;
+      font-size:0;
+    }
+
+    .hotspot:hover{
+      background:transparent;
+      border-color:transparent;
+    }
+
+    .hotspot:focus,
+    .hotspot:focus-visible{
+      outline:none;
+      box-shadow:none;
+    }
+
+    #vaultHotspot{
+      left:var(--vault-hotspot-left);
+      top:var(--vault-hotspot-top);
+      width:var(--vault-hotspot-width);
+      height:var(--vault-hotspot-height);
+    }
+
+    .field{
+      position:absolute;
+      z-index:6;
+    }
+
+    .field input{
+      width:100%;
+      height:100%;
+      border:0;
+      outline:none;
+      background:transparent;
+      color:var(--panel-text);
+      font-size:clamp(12px, .9vw, 15px);
+      line-height:1;
+      padding:0 20px 0 4px;
+      font-family:"Segoe UI", Tahoma, sans-serif;
+      text-shadow:0 1px 2px rgba(0,0,0,.45);
+      caret-color:var(--panel-text);
+    }
+
+    .field input::placeholder{
+      color:transparent;
+    }
+
+    #userField{
+      left:var(--cred-user-left);
+      top:var(--cred-user-top);
+      width:var(--cred-user-width);
+      height:var(--cred-user-height);
+    }
+
+    #passField{
+      left:var(--cred-pass-left);
+      top:var(--cred-pass-top);
+      width:var(--cred-pass-width);
+      height:var(--cred-pass-height);
+    }
+
+    #loginHotspot{
+      left:var(--cred-login-left);
+      top:var(--cred-login-top);
+      width:var(--cred-login-width);
+      height:var(--cred-login-height);
+      z-index:7;
+    }
+
+    #cancelHotspot{
+      left:var(--cred-cancel-left);
+      top:var(--cred-cancel-top);
+      width:var(--cred-cancel-width);
+      height:var(--cred-cancel-height);
+      z-index:8;
+    }
+
+    #switchHotspot{
+      left:var(--cred-switch-left);
+      top:var(--cred-switch-top);
+      width:var(--cred-switch-width);
+      height:var(--cred-switch-height);
+      z-index:8;
+    }
+
+    #eyeBtn{
+      left:var(--eye-left);
+      top:var(--eye-top);
+      width:var(--eye-width);
+      height:var(--eye-height);
+      z-index:8;
+      background:transparent;
+      border:0;
+      box-shadow:none;
+      color:transparent;
+      font-size:0;
+    }
+
+    #eyeBtn::before{
+      content:"";
+      position:absolute;
+      left:50%;
+      top:50%;
+      width:15px;
+      height:9px;
+      transform:translate(-50%,-50%);
+      border:2px solid #f3dfab;
+      border-radius:12px / 8px;
+      box-sizing:border-box;
+      filter:drop-shadow(0 1px 1px rgba(0,0,0,.45));
+    }
+
+    #eyeBtn::after{
+      content:"";
+      position:absolute;
+      left:50%;
+      top:50%;
+      width:4px;
+      height:4px;
+      transform:translate(-50%,-50%);
+      background:#f3dfab;
+      border-radius:999px;
+      box-shadow:0 0 3px rgba(0,0,0,.35);
+    }
+
+    @media (max-width: 900px){
+      .composite{
+        max-width:98vw;
+        max-height: calc(100vh - 68px);
+      }
+
+      .field input{
+        font-size:12px;
+      }
+    }
+
+    @media (max-height: 760px){
+      .composite{
+        max-height: calc(100vh - 64px);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="stage">
+      {% if error %}
+      <div class="message error">{{ error }}</div>
+      {% endif %}
+      {% if message %}
+      <div class="message info">{{ message }}</div>
+      {% endif %}
+
+      <div class="message info" style="display:block;padding:10px 16px;max-width:760px;font-size:.96rem;">
+        Passwords are case-sensitive and require at least 8 characters, including 1 uppercase letter, 1 lowercase letter, 1 number, and 1 symbol.
+        <a href="/ui/forgot-password" style="margin-left:10px;color:#fff7d2;text-decoration:underline;font-weight:700;">Forgot Password</a>
+      </div>
+
+      <div class="screen {% if panel_open %}hidden{% endif %}" id="vaultScreen">
+        <div class="artboard">
+          <img
+            class="composite"
+            src="/static/brand/login/login_screen_vault_composite.png"
+            alt="CreditSapientia Secure Vault"
+          />
+          <button
+            id="vaultHotspot"
+            class="hotspot"
+            type="button"
+            aria-label="Enter secure vault"
+          >
+            Open
+          </button>
+        </div>
+      </div>
+
+      <div class="screen {% if not panel_open %}hidden{% endif %}" id="credScreen">
+        <div class="artboard">
+          <img
+            class="composite"
+            src="/static/brand/login/login_screen_credentials_composite.png"
+            alt="CreditSapientia Enter Credentials"
+          />
+
+          <form
+            id="loginForm"
+            method="post"
+            action="/ui/login"
+            autocomplete="on"
+          >
+            <div id="userField" class="field">
+              <input
+                id="username"
+                name="username"
+                type="text"
+                autocomplete="username"
+                spellcheck="false"
+                value="{{ request_form.username if request_form and request_form.username is defined else '' }}"
+                aria-label="Username"
+              />
+            </div>
+
+            <div id="passField" class="field">
+              <input
+                id="password"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                aria-label="Password"
+              />
+            </div>
+
+            <button
+              id="loginHotspot"
+              class="hotspot"
+              type="submit"
+              aria-label="Login"
+            >
+              Login
+            </button>
+
+            <button
+              id="cancelHotspot"
+              class="hotspot"
+              type="button"
+              aria-label="Cancel"
+            >
+              Cancel
+            </button>
+
+            <button
+              id="switchHotspot"
+              class="hotspot"
+              type="button"
+              aria-label="Switch User"
+            >
+              Switch User
+            </button>
+
+            <button
+              id="eyeBtn"
+              class="hotspot"
+              type="button"
+              aria-label="Show password"
+              title="Show password"
+            >
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function(){
+      const vaultScreen = document.getElementById('vaultScreen');
+      const credScreen = document.getElementById('credScreen');
+      const vaultHotspot = document.getElementById('vaultHotspot');
+      const cancelHotspot = document.getElementById('cancelHotspot');
+      const switchHotspot = document.getElementById('switchHotspot');
+      const eyeBtn = document.getElementById('eyeBtn');
+      const loginForm = document.getElementById('loginForm');
+      const username = document.getElementById('username');
+      const password = document.getElementById('password');
+      const rememberedKey = 'creditsapientia_username';
+
+      function preloadUsername(){
+        const remembered = localStorage.getItem(rememberedKey);
+        if (!username.value && remembered){
+          username.value = remembered;
+        }
+      }
+
+      function openCredentials(){
+        vaultScreen.classList.add('hidden');
+        credScreen.classList.remove('hidden');
+        preloadUsername();
+        setTimeout(() => {
+          if (username.value) password.focus();
+          else username.focus();
+        }, 40);
+      }
+
+      function backToVault(){
+        password.value = '';
+        credScreen.classList.add('hidden');
+        vaultScreen.classList.remove('hidden');
+      }
+
+      vaultHotspot.addEventListener('click', openCredentials);
+
+      cancelHotspot.addEventListener('click', function(e){
+        e.preventDefault();
+        e.stopPropagation();
+        backToVault();
+      });
+
+      switchHotspot.addEventListener('click', function(e){
+        e.preventDefault();
+        e.stopPropagation();
+        localStorage.removeItem(rememberedKey);
+        username.value = '';
+        password.value = '';
+        username.focus();
+      });
+
+      eyeBtn.addEventListener('click', function(e){
+        e.preventDefault();
+        e.stopPropagation();
+        const hidden = password.type === 'password';
+        password.type = hidden ? 'text' : 'password';
+        eyeBtn.textContent = hidden ? '👁' : '👁';
+        eyeBtn.setAttribute('aria-label', hidden ? 'Hide password' : 'Show password');
+        eyeBtn.title = hidden ? 'Hide password' : 'Show password';
+      });
+
+      loginForm.addEventListener('submit', function(){
+        localStorage.setItem(rememberedKey, username.value || '');
+      });
+
+      if (!credScreen.classList.contains('hidden')){
+        preloadUsername();
+        setTimeout(() => {
+          if (username.value) password.focus();
+          else username.focus();
+        }, 40);
+      }
+    })();
+  </script>
+</body>
+</html>

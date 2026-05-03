@@ -29,6 +29,8 @@ Git history currently uses short, informal messages such as `Initial commit` and
 
 Pull requests should include a short summary, affected screens or scripts, database/configuration impacts, and verification steps. Include screenshots for template or branding changes, and note any generated files intentionally added under `letters/` or `uploads/`.
 
+After any approved major implementation, large fix set, or new feature, run the relevant verification commands, commit the approved changes, and push them to GitHub. Keep commits focused and do not include unrelated runtime artifacts or client data.
+
 ## Security & Configuration Tips
 
 Keep secrets in `app/.env` and document required keys in `app/.env.example`. Do not commit real client credit reports, signatures, invoices, database credentials, encryption keys, or uploaded identity documents. Review changes under `uploads/` and `letters/` carefully before committing.

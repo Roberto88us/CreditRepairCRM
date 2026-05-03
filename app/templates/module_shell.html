@@ -1,0 +1,342 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{ page_title }}</title>
+  <style>
+    :root{
+      --gold:{{ theme_runtime.palette.secondary if theme_runtime else '#d7af57' }};
+      --gold-soft:{{ theme_runtime.palette.text if theme_runtime else '#f1d38b' }};
+      --border:{{ theme_runtime.palette.border if theme_runtime else 'rgba(212,171,82,.45)' }};
+      --panel:{{ theme_runtime.palette.surface if theme_runtime else 'rgba(8,18,33,.86)' }};
+      --text:{{ theme_runtime.palette.text if theme_runtime else '#f3e5bc' }};
+      --muted:{{ theme_runtime.palette.muted if theme_runtime else '#cab889' }};
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,Arial,sans-serif;color:var(--text);background:#071220;min-height:100vh}
+    body::before{content:"";position:fixed;inset:0;background:url('/static/brand/themes/{{ current_theme or lobby_theme or "royal_blue" }}.png') center/cover no-repeat fixed;z-index:-3}
+    body::after{content:"";position:fixed;inset:0;background:radial-gradient(circle at 78% 15%, rgba(245,208,119,.16), transparent 20%),linear-gradient(180deg, rgba(2,7,16,.35), rgba(2,7,16,.78));z-index:-2}
+    a{text-decoration:none;color:inherit}
+    .shell{display:grid;grid-template-columns:260px 1fr;min-height:100vh}
+    .rail{padding:18px 14px;border-right:1px solid rgba(215,175,87,.16);background:linear-gradient(180deg, rgba(6,12,22,.95), rgba(6,12,22,.72))}
+    .brand-card{padding:14px;border:1px solid rgba(217,179,93,.36);border-radius:24px;background:linear-gradient(180deg,rgba(17,31,54,.95),rgba(7,12,21,.95));box-shadow:0 14px 30px rgba(0,0,0,.25);text-align:center}
+    .brand-card img{width:170px;max-width:100%;display:block;margin:0 auto 8px}.brand-tag{font-size:14px;line-height:1.35;color:var(--muted)}
+    .rail-nav,.rail-group{display:flex;flex-direction:column;gap:10px;margin-top:16px}
+    .rail-nav a,.rail-group a{display:flex;align-items:center;justify-content:flex-start;padding:12px 14px;border-radius:16px;border:1px solid var(--border);background:var(--button-dark-bg);color:var(--button-dark-text);font-weight:800}
+    .rail-nav a.active,.rail-group a.active,.rail-nav a:hover,.rail-group a:hover{background:var(--active-bg)}
+    .rail-group .group-title{margin-top:6px;font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:var(--gold-soft);font-weight:900;padding:4px 2px}
+    .rail-group a.child{margin-left:14px;font-size:14px}
+    .main{padding:20px 24px 30px}
+    .topbar{display:grid;grid-template-columns:1fr auto;gap:16px;align-items:start;padding-bottom:14px;border-bottom:1px solid rgba(215,175,87,.22)}
+    .hero{text-align:center}
+    .hero .eyebrow{font-size:13px;text-transform:uppercase;letter-spacing:.16em;color:var(--gold-soft);font-weight:800}
+    .hero h1{margin:4px 0 0;font-size:62px;line-height:1;color:#fff1c6}
+    .hero .sub{margin-top:8px;color:var(--gold-soft);font-size:18px;font-weight:700}
+    .user-chip{display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:20px;border:1px solid var(--border);background:rgba(7,18,34,.58)}
+    .avatar{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,#f1cf7d,#c3922e);color:#242014;font-weight:900}
+    .nav-row{display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center;margin-top:18px}
+    .nav-left,.nav-right{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .nav-right{justify-content:flex-end}
+    .btn,.btn-outline{display:inline-flex;align-items:center;justify-content:center;padding:11px 16px;border-radius:14px;font-weight:800;border:1px solid var(--border)}
+    .btn{background:linear-gradient(180deg,#f3d88f,#c79131);color:#231605}
+    .btn-outline{background:rgba(6,15,28,.72)}
+    .btn.small,.btn-outline.small{padding:8px 12px;border-radius:12px;font-size:12px}
+    .flash{padding:14px 16px;border-radius:18px;margin-top:16px;font-weight:700}.flash.success{background:rgba(34,197,94,.14);border:1px solid rgba(134,239,172,.35);color:#d7ffdb}.flash.error{background:rgba(239,68,68,.14);border:1px solid rgba(254,202,202,.35);color:#ffd8d8}
+    .panel{margin-top:18px;padding:18px 20px;border-radius:22px;border:1px solid var(--border);background:var(--panel)}
+    .panel-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+    .panel h2{margin:0;font-size:28px}
+    .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+    .summary-card{padding:16px;border-radius:18px;border:1px solid rgba(217,179,93,.25);background:rgba(255,255,255,.04)}
+    .summary-card .label{font-size:12px;text-transform:uppercase;color:var(--muted);font-weight:800}.summary-card .value{font-size:28px;font-weight:900;margin-top:6px}
+    .quick-grid{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:12px}
+    .quick-card{padding:16px;border-radius:18px;border:1px solid rgba(217,179,93,.25);background:rgba(255,255,255,.04);text-align:center}
+    .quick-card .icon{font-size:26px;margin-bottom:8px}.quick-card .label{font-weight:900}
+    .context-grid{display:grid;grid-template-columns:72px 1fr auto;gap:16px;align-items:flex-start}
+    .context-logo,.fallback-logo{width:72px;height:72px;border-radius:18px;border:1px solid rgba(217,179,93,.28);background:rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;overflow:hidden;font-weight:900}
+    .context-logo img{width:100%;height:100%;object-fit:contain}
+    .fallback-logo{font-size:28px;color:var(--gold-soft)}
+    .table-wrap{overflow:auto}table{width:100%;border-collapse:collapse}th,td{padding:11px 12px;border-bottom:1px solid rgba(148,163,184,.22);text-align:left;vertical-align:top}th{font-size:12px;text-transform:uppercase;color:var(--gold-soft)}
+    .field{display:flex;flex-direction:column;gap:6px}.field label{font-size:13px;font-weight:700;color:var(--gold-soft)}.field input,.field select,.field textarea{width:100%;padding:10px 12px;border-radius:12px;border:1px solid rgba(215,175,87,.38);background:rgba(255,255,255,.95);color:#111827}.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.field.full{grid-column:1/-1}.form-actions,.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+    .placeholder-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}.placeholder-card{padding:18px;border-radius:18px;border:1px solid rgba(217,179,93,.24);background:rgba(255,255,255,.04)}.placeholder-card h3{margin:0 0 8px}.placeholder-card ul{margin:10px 0 0 18px;padding:0}
+    .muted{color:var(--muted)}.empty{opacity:.76;font-style:italic}
+
+.modal-backdrop{position:fixed;inset:0;background:rgba(5,9,16,.66);display:none;align-items:flex-start;justify-content:center;padding:20px 16px;z-index:1000}
+.modal-backdrop.open{display:flex}
+.modal{width:min(1280px,97vw);max-height:94vh;overflow:auto;background:#fff;border-radius:18px;border:1px solid #d7deea;padding:14px;color:#1f2937}
+.modal h3{margin:0 0 6px}
+.section-head{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:6px}
+.grid .full,.field.full{grid-column:1/-1}
+.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:10px}
+.modal-note{margin-top:6px;color:#b59b62;font-size:13px}
+.inline-ein-start,.inline-2,.inline-entity,.inline-2-compact,.inline-3-fields,.inline-phone,.inline-email-web,.inline-contact,.inline-accounting{display:grid;gap:10px}
+.inline-ein-start{grid-template-columns:1fr 1fr}
+.inline-2,.inline-2-compact,.inline-email-web,.inline-accounting{grid-template-columns:1fr 1fr}
+.inline-entity{grid-template-columns:2fr 1.4fr 1fr}
+.inline-3-fields{grid-template-columns:1.5fr .9fr .8fr}
+.inline-phone{grid-template-columns:1.3fr 1fr .8fr}
+.inline-contact{grid-template-columns:1.2fr .5fr 1.2fr}
+.subfield{display:flex;flex-direction:column;gap:6px}
+.subfield label{font-size:13px;font-weight:700;color:#1d4ed8}
+.subfield input,.subfield select,.subfield textarea{width:100%;padding:10px 12px;border-radius:12px;border:1px solid rgba(148,163,184,.5);background:#fff;color:#111827}
+.field-help{font-size:12px;color:#6b7280;margin-top:6px}
+.logo-help-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 10px}
+.logo-help-item{display:flex;gap:6px;align-items:flex-start}
+.dot{line-height:1}
+.add-link{display:inline-block;margin-top:6px;color:#1d4ed8;font-weight:700}
+.mailing-box{display:none;margin-top:10px}.mailing-box.open{display:block}
+.compact-note{font-size:12px;color:#6b7280;margin:0 0 8px}
+.role-table{display:grid;gap:8px}
+.role-row{display:grid;grid-template-columns:1fr .55fr 1fr 1fr auto;gap:8px;align-items:center}
+.status-toggle-btn{display:inline-flex;align-items:center;justify-content:center;padding:11px 16px;border-radius:14px;font-weight:800;border:1px solid var(--border);background:rgba(6,15,28,.72);color:var(--text)}
+.status-toggle-btn.off{background:linear-gradient(180deg,#f3d88f,#c79131);color:#231605}
+    @media (max-width:1200px){.shell{grid-template-columns:1fr}.topbar{grid-template-columns:1fr}.hero h1{font-size:46px}.nav-row{grid-template-columns:1fr}.nav-right{justify-content:flex-start}.context-grid{grid-template-columns:1fr}.quick-grid{grid-template-columns:repeat(2,1fr)}}
+  </style>
+</head>
+<body>
+  {% set shell_title = 'Accounting Dashboard' if active_module == 'accounting' else (page_title or 'Workspace') %}
+  {% set current_return_target = request.url.path ~ ('?' ~ request.url.query if request.url.query else '') %}
+  {% set open_editor = open_editor|default('', true) %}
+  {% set edit_corporate_profile = edit_corporate_profile if edit_corporate_profile is defined else None %}
+  {% set edit_personal_profile = edit_personal_profile if edit_personal_profile is defined else None %}
+  {% set modal_return_target = modal_return_target|default(current_return_target, true) %}
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand-card">
+        <img src="/static/brand/creditsapientia_logo.png" alt="{{ software_name }}">
+        <div class="brand-tag">{{ software_tagline }}</div>
+      </div>
+      {% if active_module == 'accounting' and module_sidebar_groups %}
+        <nav class="rail-nav">
+          <a href="/ui/lobby">← Back to Lobby</a>
+          <a href="/ui/logout">Log Out</a>
+        </nav>
+        {% for group in module_sidebar_groups %}
+        <div class="rail-group">
+          <div class="group-title">{{ group.title }}</div>
+          <a href="/ui/accounting-dashboard?section={{ group.key }}{% if accounting_selected_client_id %}&client_id={{ accounting_selected_client_id|urlencode }}{% endif %}" class="{% if selected_section == group.key and not selected_subsection %}active{% endif %}">{{ group.title }}</a>
+          {% for child in group.children or [] %}
+          <a class="child {% if selected_section == group.key and selected_subsection == child.key %}active{% endif %}" href="/ui/accounting-dashboard?section={{ group.key }}&subsection={{ child.key }}{% if accounting_selected_client_id %}&client_id={{ accounting_selected_client_id|urlencode }}{% endif %}">{{ child.title }}</a>
+          {% endfor %}
+        </div>
+        {% endfor %}
+      {% else %}
+        <nav class="rail-nav">
+          {% for item in local_nav or [] %}
+          <a href="{{ item.href }}" {% if active_module == item.key %}class="active"{% endif %}>{{ item.label }}</a>
+          {% endfor %}
+        </nav>
+      {% endif %}
+    </aside>
+    <main class="main">
+      <div class="topbar">
+        <div class="hero">
+          <div class="eyebrow">Workspace</div>
+          <h1>{% if active_module == 'accounting' %}Accounting Dashboard{% elif active_module == 'personal_accounting' %}Personal Accounting Dashboard{% else %}{{ page_title or active_module|replace('_',' ')|title }}{% endif %}</h1>
+          <div class="sub">{{ module_description }}</div>
+        </div>
+        <div class="user-chip"><div class="avatar">{{ (request.cookies.get('crm_user_name') or 'U')[:1] }}</div><div><div style="font-weight:900;">{{ request.cookies.get('crm_user_name') or 'User' }}</div><div style="font-size:13px;color:var(--muted);">{{ request.cookies.get('crm_user_role') or 'administrator' }}</div></div></div>
+      </div>
+
+      <div class="nav-row">
+        <div class="nav-left" style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+          <a class="btn-outline" href="/ui/lobby">← Back to Lobby</a>
+          {% if active_module == 'accounting' and current_profile and current_profile.type != 'personal' and (current_profile.module_mode or current_profile.mode or '')|lower == 'credit_repair_accounting' %}
+          <a class="btn-outline" href="/ui/credit-repair-dashboard?profile_id={{ current_profile.id|urlencode }}">← Back to Credit Repair Dashboard</a>
+          {% endif %}
+        </div>
+        <div></div>
+        <div class="nav-right">{% if current_client and current_client.id %}<a class="btn-outline" href="/ui/client/{{ current_client.id }}">Next: Last Client Record →</a>{% endif %}</div>
+      </div>
+
+      {% if message %}<div class="flash success">{{ message }}</div>{% endif %}
+      {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+
+      {% if current_profile and current_profile.id %}
+      <section class="panel">
+        <div class="panel-head"><h2>{% if current_profile.type == 'personal' %}Personal Profile Summary{% else %}Business Profile Summary{% endif %}</h2>
+        {% if current_profile.type == 'personal' %}
+          <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            <a class="btn-outline" href="/ui/accounting-dashboard?edit_personal_id={{ current_profile.id|urlencode }}&open_editor=personal&return_to={{ current_return_target|urlencode }}">Edit Personal Record</a>
+            <form method="post" action="/ui/profile/toggle-active" style="display:inline;"><input type="hidden" name="profile_type" value="personal"><input type="hidden" name="profile_id" value="{{ current_profile.id }}"><input type="hidden" name="desired_state" value="{% if current_profile.is_active %}0{% else %}1{% endif %}"><button class="status-toggle-btn {% if current_profile.is_active %}off{% endif %}" type="submit">{% if current_profile.is_active %}Deactivate Record{% else %}Activate Record{% endif %}</button></form>
+          </div>
+        {% elif (current_profile.module_mode or current_profile.mode or '')|lower == 'accounting_only' %}
+          <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            <a class="btn-outline" href="/ui/accounting-dashboard?edit_corporate_id={{ current_profile.id|urlencode }}&open_editor=corporate&return_to={{ current_return_target|urlencode }}">Edit Business Info</a>
+            <form method="post" action="/ui/profile/toggle-active" style="display:inline;"><input type="hidden" name="profile_type" value="corporate"><input type="hidden" name="profile_id" value="{{ current_profile.id }}"><input type="hidden" name="desired_state" value="{% if current_profile.is_active %}0{% else %}1{% endif %}"><button class="status-toggle-btn {% if current_profile.is_active %}off{% endif %}" type="submit">{% if current_profile.is_active %}Deactivate Business{% else %}Activate Business{% endif %}</button></form>
+          </div>
+        {% else %}
+                  {% endif %}
+        </div>
+        <div class="context-grid">
+          <div>{% if current_profile.logo_url %}<div class="context-logo"><img src="{{ current_profile.logo_url }}" alt="{{ current_profile.business_name or current_profile.name }}"></div>{% else %}<div class="fallback-logo">{{ (current_profile.business_name or current_profile.name or 'B')[:1] }}</div>{% endif %}</div>
+          <div>
+            <div style="font-size:26px;font-weight:900;">{{ current_profile.business_name or current_profile.full_name or current_profile.name }}</div>
+            {% if current_profile.dba_name %}<div style="margin-top:4px;color:var(--gold-soft);font-size:18px;font-weight:800;">DBA: {{ current_profile.dba_name }}</div>{% endif %}
+            <div style="display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:8px 18px;margin-top:10px;">
+              <div><strong style="color:var(--gold-soft);">Address:</strong> {{ current_profile.display_address or current_profile.address_text or '—' }}</div>
+              <div><strong style="color:var(--gold-soft);">Phone:</strong> {{ current_profile.display_business_phone or current_profile.phone or '—' }}</div>
+              <div><strong style="color:var(--gold-soft);">Email:</strong> {{ current_profile.email or '—' }}</div>
+              <div><strong style="color:var(--gold-soft);">Website:</strong> {% if current_profile.website %}<a href="{{ current_profile.website }}" target="_blank">{{ current_profile.website }}</a>{% else %}—{% endif %}</div>
+            </div>
+          </div>
+        </div>
+      </section>
+      {% endif %}
+
+      {% if active_module == 'accounting' %}
+      <section class="panel">
+        <div class="panel-head"><h2>Quick Actions</h2><div class="muted">Fast accounting actions stay high on the page.</div></div>
+        <div class="quick-grid">
+          <a class="quick-card" href="/ui/accounting-dashboard?section=sales&subsection=invoices{% if accounting_selected_client_id %}&client_id={{ accounting_selected_client_id|urlencode }}{% endif %}"><div class="icon">🧾</div><div class="label">Invoices</div></a>
+          <a class="quick-card" href="/ui/accounting-dashboard?section=sales&subsection=payments{% if accounting_selected_client_id %}&client_id={{ accounting_selected_client_id|urlencode }}{% endif %}"><div class="icon">💳</div><div class="label">Payments</div></a>
+          <a class="quick-card" href="/ui/accounting-dashboard?section=bookkeeping&subsection=reconciliation{% if accounting_selected_client_id %}&client_id={{ accounting_selected_client_id|urlencode }}{% endif %}"><div class="icon">📘</div><div class="label">Reconciliation</div></a>
+          <a class="quick-card" href="/ui/accounting-settings?section=billing_invoice_configuration"><div class="icon">⚙️</div><div class="label">Accounting Settings</div></a>
+        </div>
+      </section>
+      {% endif %}
+
+      {% if summary_cards %}
+      <section class="panel">
+        <div class="panel-head"><h2>Operations Snapshot</h2><div class="muted">Summary for the current workspace.</div></div>
+        <div class="summary-grid">
+          {% for card in summary_cards %}
+          <div class="summary-card"><div class="label">{{ card.label or card.title or 'Summary' }}</div><div class="value">{{ card.value or card.stat or '—' }}</div>{% if card.note or card.description %}<div class="muted" style="margin-top:6px;">{{ card.note or card.description }}</div>{% endif %}</div>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
+
+      {% if module_sidebar_groups %}
+        {% if module_focus %}
+          <section class="panel">
+            <div class="panel-head"><div><h2>{{ module_focus.title or accounting_page_title or page_title }}</h2>{% if module_focus.description %}<div class="muted" style="margin-top:6px;">{{ module_focus.description }}</div>{% endif %}</div>{% if accounting_client and accounting_client.id %}<div class="muted"><strong>Selected Client:</strong> {{ accounting_client.client_name or accounting_client.first_name ~ ' ' ~ accounting_client.last_name }}</div>{% endif %}</div>
+            {% if module_focus.actions %}<div class="actions">{% for action in module_focus.actions %}{% if action.form_action %}<form method="post" action="{{ action.form_action }}" style="display:inline;">{% for key, value in (action.hidden_fields or {}).items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}<button class="btn{% if action.secondary %}-outline{% endif %}" type="submit">{{ action.label }}</button></form>{% else %}<a href="{{ action.href or '#' }}" class="{{ 'btn-outline' if action.secondary else 'btn' }}">{{ action.label }}</a>{% endif %}{% endfor %}</div>{% endif %}
+          </section>
+          {% for tbl in module_focus.tables or [] %}
+            <section class="panel table-wrap"><h2 style="font-size:22px;margin:0 0 12px;">{{ tbl.title }}</h2>{% if tbl.rows %}<table><thead><tr>{% for col in tbl.columns or [] %}<th>{{ col|safe }}</th>{% endfor %}</tr></thead><tbody>{% for row in tbl.rows %}<tr>{% for cell in row %}<td>{% if cell is mapping and (cell.get('type') == 'toggle') %}<form method="post" action="{{ cell.form_action }}" style="display:inline;">{% for key, value in (cell.hidden_fields or {}).items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}<button class="status-toggle-btn {% if cell.is_active %}off{% endif %}" type="submit">{% if cell.is_active %}{{ cell.left_label or 'Deactivate' }}{% else %}{{ cell.right_label or 'Activate' }}{% endif %}</button></form>{% elif cell is mapping and (cell.get('type') == 'actions') %}<div class="actions">{% for action in cell.actions or [] %}{% if action.form_action %}<form method="post" action="{{ action.form_action }}" style="display:inline;" {% if action.confirm %}onsubmit="return confirm('{{ action.confirm|replace("'", "\\'") }}');"{% endif %}>{% for key, value in (action.hidden_fields or {}).items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}<button class="{{ 'btn-outline' if action.secondary or action.danger else 'btn' }} small" {% if action.danger %}style="border-color:#b45309;color:#fecaca;"{% endif %} type="submit">{{ action.label }}</button></form>{% else %}<a href="{{ action.href or '#' }}" class="{{ 'btn-outline' if action.secondary else 'btn' }} small">{{ action.label }}</a>{% endif %}{% endfor %}</div>{% else %}{{ cell|safe }}{% endif %}</td>{% endfor %}</tr>{% endfor %}</tbody></table>{% else %}<div class="empty">{{ tbl.empty_text or 'No records yet.' }}</div>{% endif %}</section>
+          {% endfor %}
+          {% for form in module_focus.forms or [] %}
+            <section class="panel"><h2 style="font-size:22px;margin:0 0 12px;">{{ form.title }}</h2><form method="post" action="{{ form.action }}">{% for key, value in (form.hidden_fields or {}).items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}<div class="form-grid">{% for field in form.fields or [] %}<div class="field {% if field.full_width or field.type == 'textarea' %}full{% endif %}"><label>{{ field.label }}</label>{% if field.type == 'textarea' %}<textarea name="{{ field.name }}" rows="4" placeholder="{{ field.placeholder or '' }}">{{ field.value or '' }}</textarea>{% elif field.type == 'select' %}<select name="{{ field.name }}" {% if field.required %}required{% endif %}>{% for opt in field.options or [] %}{% set opt_value = opt[0] if opt is sequence and opt is not string else opt %}{% set opt_label = opt[1] if opt is sequence and opt is not string and opt|length > 1 else opt_value %}<option value="{{ opt_value }}" {% if (field.value|string) == (opt_value|string) %}selected{% endif %}>{{ opt_label }}</option>{% endfor %}</select>{% else %}<input type="{{ field.type or 'text' }}" name="{{ field.name }}" value="{{ field.value or '' }}" placeholder="{{ field.placeholder or '' }}" {% if field.step %}step="{{ field.step }}"{% endif %} {% if field.required %}required{% endif %}>{% endif %}</div>{% endfor %}</div><div class="form-actions"><button type="submit" class="btn">{{ form.submit_label or 'Save' }}</button>{% if form.cancel_href %}<a class="btn-outline" href="{{ form.cancel_href }}">Cancel</a>{% endif %}</div></form></section>
+          {% endfor %}
+          {% if module_focus.notes %}<section class="panel"><h2 style="font-size:22px;margin:0 0 10px;">Notes</h2><ul>{% for note in module_focus.notes %}<li>{{ note }}</li>{% endfor %}</ul></section>{% endif %}
+        {% else %}
+          <section class="panel"><div class="empty">No module focus selected yet.</div></section>
+        {% endif %}
+      {% else %}
+        <section class="panel">
+          <div class="panel-head"><h2>{{ page_title }}</h2><div class="muted">{{ module_description }}</div></div>
+          <div class="placeholder-list">
+            {% for sec in module_sections %}
+            <div class="placeholder-card"><h3>{{ sec.title or sec['title'] }}</h3>{% if sec.description %}<div class="muted">{{ sec.description }}</div>{% endif %}{% set sec_items = sec['items'] if sec['items'] is defined else [] %}{% if sec_items %}<ul>{% for item in sec_items %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}</div>
+            {% endfor %}
+          </div>
+        </section>
+      {% endif %}
+
+{% if active_module == 'accounting' %}
+{% if open_editor == 'corporate' or (edit_corporate_profile and edit_corporate_profile.id) %}
+<div id="corporateModal" class="modal-backdrop open">
+  <div class="modal">
+    <div class="section-head"><h3>{% if edit_corporate_profile and edit_corporate_profile.id %}Edit Corporate Profile{% else %}Open Corporate Profile{% endif %}</h3><a class="btn btn-outline" href="{{ modal_return_target or current_return_target or '/ui/accounting-dashboard' }}">Close</a></div>
+    <div class="muted">Use this form for both Credit Repair + Accounting businesses and Accounting-Only businesses.</div>
+    <form method="post" action="/ui/profile/corporate/save" enctype="multipart/form-data" onsubmit="return beforeCorporateSubmit()">
+      <input type="hidden" name="profile_id" value="{{ edit_corporate_profile.id or current_profile.id or '' }}">
+      <input type="hidden" name="return_to" value="{{ modal_return_target or current_return_target or '/ui/accounting-dashboard' }}">
+      <input type="hidden" name="llc_managers_json" id="llc_managers_json" value='{{ edit_corporate_profile.llc_managers_json or "[]" }}'>
+      <input type="hidden" name="corp_officers_json" id="corp_officers_json" value='{{ edit_corporate_profile.corp_officers_json or "[]" }}'>
+      <div class="grid" style="margin-top:10px;">
+        <div class="field"><label>Corporate Profile Type</label><select name="module_mode"><option value="credit_repair_accounting" {% if (edit_corporate_profile.module_mode or current_profile.module_mode or '') != 'accounting_only' %}selected{% endif %}>Credit Repair + Accounting</option><option value="accounting_only" {% if (edit_corporate_profile.module_mode or current_profile.module_mode or '') == 'accounting_only' %}selected{% endif %}>Business Accounting Only</option></select></div>
+        <div class="field full"><div class="inline-ein-start"><div class="subfield"><label>EIN</label><input name="ein" id="ein" value="{{ edit_corporate_profile.ein or current_profile.ein or '' }}" inputmode="numeric" maxlength="10" placeholder="12-3456789" pattern="\d{2}-\d{7}" title="Use format 12-3456789" oninput="formatEinField(this)"></div><div class="subfield"><label>Business Start-Up / Incorporation Date</label><input type="date" name="start_date" value="{{ edit_corporate_profile.start_date or current_profile.start_date or '' }}"></div></div></div>
+        <div class="field full"><div class="inline-2"><div class="subfield"><label>Business Name</label><input name="business_name" value="{{ edit_corporate_profile.business_name or current_profile.business_name or '' }}" required></div><div class="subfield"><label>D/B/A Name</label><input name="dba_name" value="{{ edit_corporate_profile.dba_name or current_profile.dba_name or '' }}"></div></div></div>
+        <div class="field full"><div class="inline-entity"><div class="subfield"><label>Entity Type</label><select name="entity_type" id="entity_type" onchange="toggleEntitySections()"><option value="">Select…</option>{% for t in ['Sole Proprietor','LLC','Corporation','Partnership','Nonprofit'] %}<option value="{{ t }}" {% if (edit_corporate_profile.entity_type or current_profile.entity_type or '') == t %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></div><div class="subfield"><label>Small Business Designation</label><select name="tax_treatment" id="tax_treatment"><option value="">Select…</option><option value="S Corp" {% if (edit_corporate_profile.tax_treatment or current_profile.tax_treatment or '') in ['S Corp','LLC taxed as S Corp'] %}selected{% endif %}>Yes</option><option value="No" {% if (edit_corporate_profile.tax_treatment or current_profile.tax_treatment or '') in ['No','Default LLC'] %}selected{% endif %}>No</option></select></div><div class="subfield"><label>Nonprofit Indicator</label><select name="is_nonprofit"><option value="">No</option><option value="1" {% if edit_corporate_profile.is_nonprofit or current_profile.is_nonprofit %}selected{% endif %}>Yes</option></select></div></div></div>
+        <div class="field full"><div class="inline-2-compact"><div class="subfield"><label>Address 1</label><input name="address1" value="{{ edit_corporate_profile.address1 or current_profile.address1 or '' }}"></div><div class="subfield"><label>Suite / Unit</label><input name="suite_unit" value="{{ edit_corporate_profile.suite_unit or current_profile.suite_unit or '' }}"></div></div></div>
+        <div class="field full"><div class="inline-3-fields"><div class="subfield"><label>City</label><input name="city" value="{{ edit_corporate_profile.city or current_profile.city or '' }}" onblur="formatCityField(this)"></div><div class="subfield"><label>State</label><select name="state"><option value=""></option>{% for st in ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY'] %}<option value="{{ st }}" {% if (edit_corporate_profile.state or current_profile.state or '') == st %}selected{% endif %}>{{ st }}</option>{% endfor %}</select></div><div class="subfield"><label>ZIP</label><input name="zip_code" value="{{ edit_corporate_profile.zip_code or current_profile.zip_code or '' }}" inputmode="numeric" maxlength="5" pattern="[0-9]{5}" placeholder="33155" oninput="formatZipField(this)"></div></div></div>
+        <div class="field full"><a class="add-link" href="#" onclick="toggleMailingAddress(); return false;" id="mailingToggleLink">+ Mailing Address</a><div id="mailingBox" class="mailing-box"><div class="subsection"><div class="grid"><div class="field full"><div class="inline-2-compact"><div class="subfield"><label>Mailing Address 1</label><input name="mailing_address1" value="{{ edit_corporate_profile.mailing_address1 or '' }}"></div><div class="subfield"><label>Suite / Unit</label><input name="mailing_suite_unit" value="{{ edit_corporate_profile.mailing_suite_unit or '' }}"></div></div></div><div class="field full"><div class="inline-3-fields"><div class="subfield"><label>City</label><input name="mailing_city" value="{{ edit_corporate_profile.mailing_city or '' }}" onblur="formatCityField(this)"></div><div class="subfield"><label>State</label><select name="mailing_state"><option value=""></option>{% for st in ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY'] %}<option value="{{ st }}" {% if (edit_corporate_profile.mailing_state or '') == st %}selected{% endif %}>{{ st }}</option>{% endfor %}</select></div><div class="subfield"><label>ZIP</label><input name="mailing_zip" value="{{ edit_corporate_profile.mailing_zip or '' }}" inputmode="numeric" maxlength="5" pattern="[0-9]{5}" placeholder="33155" oninput="formatZipField(this)"></div></div></div></div></div></div></div>
+        <div class="field full"><div class="inline-phone"><div class="subfield"><label>Telephone</label><input name="business_phone" id="business_phone" value="{{ edit_corporate_profile.business_phone or current_profile.business_phone or current_profile.phone or '' }}" inputmode="numeric" maxlength="12" placeholder="305-555-1234" pattern="\d{3}-\d{3}-\d{4}" title="Use format 305-555-1234" oninput="formatPhoneField(this)"></div><div class="subfield"><label>Telephone Type</label><select name="business_phone_type">{% for t in ['Business Line','Direct','Mobile','Fax','Other'] %}<option value="{{ t }}" {% if (edit_corporate_profile.business_phone_type or current_profile.business_phone_type or '') == t %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></div><div class="subfield"><label>Extension</label><input name="business_phone_extension" value="{{ edit_corporate_profile.business_phone_extension or current_profile.business_phone_extension or 'Ext -' }}" inputmode="numeric" onfocus="clearExtDefault(this)" onblur="restoreExtDefault(this)"></div></div></div>
+        <div class="field full"><div class="inline-email-web"><div class="subfield"><label>Email</label><input type="email" name="email" value="{{ edit_corporate_profile.email or current_profile.email or '' }}" placeholder="name@company.com"></div><div class="subfield"><label>Website</label><input type="url" name="website" value="{{ edit_corporate_profile.website or current_profile.website or '' }}" placeholder="https://www.company.com"></div></div></div>
+        <div class="field"><label>Logo for Invoices / Branding</label><input type="file" name="logo_file" accept="image/*"><div class="field-help"><div class="logo-help-grid"><div class="logo-help-item"><span class="dot">◦</span><span>Recommended format:<br>PNG with transparent background</span></div><div class="logo-help-item"><span class="dot">◦</span><span>Accepted formats:<br>PNG, JPG/JPEG, WebP</span></div><div class="logo-help-item"><span class="dot">◦</span><span>Best size:<br>1600×600 for horizontal / 1200×1200 for square</span></div><div class="logo-help-item"><span class="dot">◦</span><span>Minimum width:<br>600 px recommended</span></div></div></div></div>
+        <div class="field full"><input type="hidden" name="contact_person" id="contact_person_hidden" value="{{ edit_corporate_profile.contact_person or current_profile.contact_person or '' }}"><div class="inline-contact"><div class="subfield"><label>Contact First Name</label><input name="contact_first_name" id="contact_first_name" value="{{ edit_corporate_profile.contact_first_name or current_profile.contact_first_name or '' }}"></div><div class="subfield"><label>MI</label><input name="contact_middle_name" id="contact_middle_name" value="{{ edit_corporate_profile.contact_middle_name or current_profile.contact_middle_name or '' }}"></div><div class="subfield"><label>Contact Last Name</label><input name="contact_last_name" id="contact_last_name" value="{{ edit_corporate_profile.contact_last_name or current_profile.contact_last_name or '' }}"></div></div></div>
+        <div class="field full"><div class="inline-phone"><div class="subfield"><label>Telephone</label><input name="contact_phone" id="contact_phone" value="{{ edit_corporate_profile.contact_phone or current_profile.contact_phone or '' }}" inputmode="numeric" maxlength="12" placeholder="305-555-1234" pattern="\d{3}-\d{3}-\d{4}" title="Use format 305-555-1234" oninput="formatPhoneField(this)"></div><div class="subfield"><label>Telephone Type</label><select name="contact_phone_type">{% for t in ['Business Line','Direct','Mobile','Home','Other'] %}<option value="{{ t }}" {% if (edit_corporate_profile.contact_phone_type or current_profile.contact_phone_type or '') == t %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></div><div class="subfield"><label>Extension</label><input name="contact_phone_extension" value="{{ edit_corporate_profile.contact_phone_extension or current_profile.contact_phone_extension or 'Ext -' }}" inputmode="numeric" onfocus="clearExtDefault(this)" onblur="restoreExtDefault(this)"></div></div></div>
+        <div class="field full"><div class="inline-accounting"><div class="subfield"><label>Accounting Year</label><input name="fiscal_year_label" value="{{ edit_corporate_profile.fiscal_year_label or current_profile.fiscal_year_label or 'January 1 to December 31' }}"></div><div class="subfield"><label>Accounting Method</label><select name="accounting_method"><option value="calendar_year" {% if (edit_corporate_profile.accounting_method or current_profile.accounting_method or 'calendar_year') == 'calendar_year' %}selected{% endif %}>Calendar Year</option><option value="fiscal_year" {% if (edit_corporate_profile.accounting_method or current_profile.accounting_method or '') == 'fiscal_year' %}selected{% endif %}>Fiscal Year</option></select></div></div></div>
+        <div class="field full" id="llc_section" style="display:none;"><label>LLC Managers / Members</label><div class="compact-note">Use one compact row per person. Add another only when needed.</div><div id="llc_role_list" class="role-table"></div><a class="add-link" onclick="addLlcRoleRow(); return false;">+ Add Another Manager / Member</a></div>
+        <div class="field full" id="corp_section" style="display:none;"><label>Corporate Officers</label><div class="compact-note">One compact row per officer.</div><div id="corp_role_list" class="role-table"></div><a class="add-link" onclick="addCorpRoleRow(); return false;">+ Add Another Officer</a></div>
+        <div class="field full" id="partnership_section" style="display:none;"><label>Partners / Notes</label><textarea name="managers" rows="2">{{ edit_corporate_profile.managers or current_profile.managers or '' }}</textarea></div>
+      </div>
+      <div class="modal-actions"><a class="btn btn-outline" href="{{ modal_return_target or current_return_target or '/ui/accounting-dashboard' }}">Cancel</a><button type="submit" class="btn">Save Corporate Profile</button></div>
+    </form>
+  </div>
+</div>
+{% endif %}
+{% endif %}
+
+    </main>
+  </div>
+<script>
+function digitsOnly(value){ return (value || '').replace(/\D+/g, ''); }
+function formatEinField(el){ if(!el) return; const digits = digitsOnly(el.value).slice(0, 9); el.value = digits.length > 2 ? `${digits.slice(0,2)}-${digits.slice(2)}` : digits; }
+function formatPhoneField(el){ if(!el) return; const digits = digitsOnly(el.value).slice(0, 10); if(digits.length > 6) el.value = `${digits.slice(0,3)}-${digits.slice(3,6)}-${digits.slice(6)}`; else if(digits.length > 3) el.value = `${digits.slice(0,3)}-${digits.slice(3)}`; else el.value = digits; }
+function formatZipField(el){ if(!el) return; el.value = digitsOnly(el.value).slice(0, 5); el.setCustomValidity(''); }
+function formatCityField(el){ if(!el) return; const raw = (el.value || '').trim(); if(!raw){ el.value = ''; return; } const smallWords = new Set(['and','or','the','of','de','la','las','los']); const titleCaseWord = word => word.split(/([-'])/).map((part, idx) => { if(part === '-' || part === "'") return part; const lower = part.toLowerCase(); if(idx > 0) return lower ? lower.charAt(0).toUpperCase() + lower.slice(1) : lower; if(smallWords.has(lower)) return lower; return lower ? lower.charAt(0).toUpperCase() + lower.slice(1) : lower; }).join(''); el.value = raw.split(/\s+/).map(titleCaseWord).join(' '); }
+function clearExtDefault(el){ if(el && (el.value || '').trim() === 'Ext -') el.value = ''; }
+function restoreExtDefault(el){ if(el && !(el.value || '').trim()) el.value = 'Ext -'; }
+function toggleMailingAddress(){ const box = document.getElementById('mailingBox'); const link = document.getElementById('mailingToggleLink'); if(!box) return; box.classList.toggle('open'); if(link) link.textContent = box.classList.contains('open') ? '− Mailing Address' : '+ Mailing Address'; }
+function toggleEntitySections(){ const entity = document.getElementById('entity_type')?.value || ''; const llc = document.getElementById('llc_section'); const corp = document.getElementById('corp_section'); const partnership = document.getElementById('partnership_section'); if(llc) llc.style.display = entity === 'LLC' ? '' : 'none'; if(corp) corp.style.display = entity === 'Corporation' ? '' : 'none'; if(partnership) partnership.style.display = entity === 'Partnership' ? '' : 'none'; }
+function buildRoleRow(kind, first='', middle='', last='', title=''){ const wrap = document.createElement('div'); wrap.className = 'role-row'; const options = kind === 'llc' ? ['Member','Manager','Managing Member','Other'] : ['President','Vice President','Treasurer','Secretary','Other']; wrap.innerHTML = `<input type="text" class="role-first" placeholder="First" value="${first}"><input type="text" class="role-middle" placeholder="MI" value="${middle}"><input type="text" class="role-last" placeholder="Last" value="${last}"><select class="role-title">${options.map(opt => `<option value="${opt}" ${title===opt?'selected':''}>${opt}</option>`).join('')}</select><button type="button" class="btn btn-outline small" onclick="this.parentElement.remove()">Delete</button>`; return wrap; }
+function addLlcRoleRow(first='', middle='', last='', title=''){ document.getElementById('llc_role_list')?.appendChild(buildRoleRow('llc', first, middle, last, title)); }
+function addCorpRoleRow(first='', middle='', last='', title=''){ document.getElementById('corp_role_list')?.appendChild(buildRoleRow('corp', first, middle, last, title)); }
+function beforeCorporateSubmit(){ document.querySelectorAll('input[name="city"], input[name="mailing_city"]').forEach(formatCityField); document.querySelectorAll('input[name="zip_code"], input[name="mailing_zip"]').forEach(formatZipField); formatPhoneField(document.getElementById('business_phone')); formatPhoneField(document.getElementById('contact_phone')); const businessZip = document.querySelector('input[name="zip_code"]'); const mailingZip = document.querySelector('input[name="mailing_zip"]'); for(const zipEl of [businessZip, mailingZip]){ if(zipEl && zipEl.value && !/^\d{5}$/.test(zipEl.value)){ zipEl.setCustomValidity('ZIP must be exactly 5 digits.'); zipEl.reportValidity(); zipEl.focus(); return false; } if(zipEl) zipEl.setCustomValidity(''); } const llc = [...document.querySelectorAll('#llc_role_list .role-row')].map(row => ({ first_name: row.querySelector('.role-first')?.value || '', middle_name: row.querySelector('.role-middle')?.value || '', last_name: row.querySelector('.role-last')?.value || '', title: row.querySelector('.role-title')?.value || '' })).filter(item => item.first_name || item.last_name); const corp = [...document.querySelectorAll('#corp_role_list .role-row')].map(row => ({ first_name: row.querySelector('.role-first')?.value || '', middle_name: row.querySelector('.role-middle')?.value || '', last_name: row.querySelector('.role-last')?.value || '', title: row.querySelector('.role-title')?.value || '' })).filter(item => item.first_name || item.last_name); const llcInput = document.getElementById('llc_managers_json'); const corpInput = document.getElementById('corp_officers_json'); if(llcInput) llcInput.value = JSON.stringify(llc); if(corpInput) corpInput.value = JSON.stringify(corp); const first = document.getElementById('contact_first_name')?.value || ''; const middle = document.getElementById('contact_middle_name')?.value || ''; const last = document.getElementById('contact_last_name')?.value || ''; const hidden = document.getElementById('contact_person_hidden'); if(hidden) hidden.value = [first, middle, last].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim(); return true; }
+function openModal(id){ document.getElementById(id)?.classList.add('open'); }
+document.addEventListener('DOMContentLoaded', () => {
+  ['business_phone','contact_phone'].forEach(id => {
+    const el = document.getElementById(id);
+    if(el){
+      formatPhoneField(el);
+      el.addEventListener('input', () => formatPhoneField(el));
+    }
+  });
+
+  document.querySelectorAll('input[name="city"], input[name="mailing_city"]').forEach(el => {
+    formatCityField(el);
+    el.addEventListener('blur', () => formatCityField(el));
+  });
+
+  document.querySelectorAll('input[name="zip_code"], input[name="mailing_zip"]').forEach(el => {
+    formatZipField(el);
+    el.addEventListener('input', () => formatZipField(el));
+  });
+
+  const ein = document.getElementById('ein');
+  if(ein){
+    formatEinField(ein);
+    ein.addEventListener('input', () => formatEinField(ein));
+  }
+
+  const corporateModal = document.getElementById('corporateModal');
+  if(!corporateModal) return;
+
+  toggleEntitySections();
+
+  try {
+    const llcData = JSON.parse(document.getElementById('llc_managers_json')?.value || '[]');
+    if(Array.isArray(llcData) && llcData.length) llcData.forEach(item => addLlcRoleRow(item.first_name || '', item.middle_name || '', item.last_name || '', item.title || ''));
+    else addLlcRoleRow();
+  } catch {
+    addLlcRoleRow();
+  }
+
+  try {
+    const corpData = JSON.parse(document.getElementById('corp_officers_json')?.value || '[]');
+    if(Array.isArray(corpData) && corpData.length) corpData.forEach(item => addCorpRoleRow(item.first_name || '', item.middle_name || '', item.last_name || '', item.title || ''));
+    else addCorpRoleRow();
+  } catch {
+    addCorpRoleRow();
+  }
+
+  if ({{ (open_editor == 'corporate' or (edit_corporate_profile and edit_corporate_profile.id))|tojson }}) {
+    corporateModal.classList.add('open');
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Referral List</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 28px; color:#111; }
+    h1,h2,h3 { margin-bottom: 6px; }
+    .muted { color:#555; font-size:12px; }
+    .card { border:1px solid #ddd; border-radius:8px; padding:14px; margin: 0 0 14px; page-break-inside: avoid; }
+    .row { margin: 4px 0; }
+    @media print { .no-print { display:none; } body { margin: 14px; } }
+  </style>
+</head>
+<body>
+  <div class="no-print" style="margin-bottom:16px;"><button onclick="window.print()">Print</button></div>
+  <h1>Referral List</h1>
+  <div class="row"><b>Client:</b> {{ profile.get('first_name') }} {{ profile.get('last_name') }}</div>
+  <div class="row"><b>Date:</b> {{ today_display }}</div>
+  <div class="row muted">The following service providers were recommended based on the client's needs.</div>
+  <hr>
+  {% if outbound_referrals %}
+    {% for r in outbound_referrals %}
+      <div class="card">
+        <h3>{{ r.partner_name }}</h3>
+        {% if r.company_name %}<div class="row"><b>Company:</b> {{ r.company_name }}</div>{% endif %}
+        {% if r.partner_type %}<div class="row"><b>What they do:</b> {{ r.partner_type }}</div>{% endif %}
+        {% if r.phone %}<div class="row"><b>Telephone:</b> {{ r.phone }}</div>{% endif %}
+        {% if r.email %}<div class="row"><b>Email:</b> {{ r.email }}</div>{% endif %}
+        {% if r.address_line1 or r.city or r.state or r.zip %}
+          <div class="row"><b>Address:</b>
+            {{ r.address_line1 }}{% if r.address_line2 %}, {{ r.address_line2 }}{% endif %}
+            {% if r.city or r.state or r.zip %}{{ ', ' if r.address_line1 or r.address_line2 else '' }}{{ r.city }}{{ ', ' if r.city and r.state else '' }}{{ r.state }} {{ r.zip }}{% endif %}
+          </div>
+        {% endif %}
+        {% if r.website %}<div class="row"><b>Website:</b> {{ r.website }}</div>{% endif %}
+        {% if r.notes %}<div class="row"><b>Notes:</b> {{ r.notes }}</div>{% endif %}
+      </div>
+    {% endfor %}
+  {% else %}
+    <p>No referral partners have been added for this client yet.</p>
+  {% endif %}
+</body>
+</html>

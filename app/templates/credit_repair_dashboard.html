@@ -1,0 +1,552 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Credit Repair Dashboard{% if current_profile and (current_profile.business_name or current_profile.name) %} — {{ current_profile.business_name or current_profile.name }}{% endif %}</title>
+  <style>
+    :root{--gold:{{ theme_runtime.palette.secondary if theme_runtime else '#d7af57' }};--gold-2:{{ theme_runtime.palette.text if theme_runtime else '#f1d38b' }};--gold-dark:{{ theme_runtime.palette.primary if theme_runtime else '#8b6323' }};--bg:#06111f;--panel:{{ theme_runtime.palette.surface if theme_runtime else 'rgba(8,18,33,.86)' }};--panel-soft:{{ theme_runtime.palette.surface_soft if theme_runtime else 'rgba(11,24,43,.72)' }};--border:{{ theme_runtime.palette.border if theme_runtime else 'rgba(212,171,82,.45)' }};--text:{{ theme_runtime.palette.text if theme_runtime else '#f3e5bc' }};--muted:{{ theme_runtime.palette.muted if theme_runtime else '#cab889' }};--shadow:0 18px 42px rgba(0,0,0,.34)}
+    *{box-sizing:border-box} body{margin:0;font-family:Inter,Arial,sans-serif;color:var(--text);background:#071220;min-height:100vh}
+    body::before{content:"";position:fixed;inset:0;background:url('/static/brand/themes/{{ current_theme or "royal_blue" }}.png') center/cover no-repeat fixed;z-index:-3}
+    body::after{content:"";position:fixed;inset:0;background:radial-gradient(circle at 78% 15%, rgba(245,208,119,.16), transparent 20%),linear-gradient(180deg, rgba(2,7,16,.35), rgba(2,7,16,.78));z-index:-2}
+    .shell{display:grid;grid-template-columns:280px 1fr;min-height:100vh}
+    .rail{padding:22px 18px;border-right:1px solid rgba(215,175,87,.16);background:linear-gradient(180deg, rgba(6,12,22,.95), rgba(6,12,22,.72));backdrop-filter:blur(7px)}
+    .brand-card{padding:6px 0 4px;border:0;background:transparent;box-shadow:none}
+    .brand-card img{width:84%;max-width:172px;height:auto;display:block;margin:0 auto}
+    .brand-tag{font-size:12px;line-height:1.35;color:var(--muted);text-align:center;margin-top:8px}
+    .rail-nav{display:flex;flex-direction:column;gap:8px;margin-top:18px}
+    .rail-section-title{margin:18px 2px 8px;font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--gold-2);font-weight:800}
+    .rail-quick{display:flex;flex-direction:column;gap:10px;margin-top:8px}
+    .rail-quick a{display:flex;align-items:center;justify-content:center;text-align:center;padding:12px 14px;border-radius:16px;border:1px solid rgba(215,175,87,.30);background:rgba(8,18,33,.72);color:var(--text);font-weight:800;font-size:14px;line-height:1.15;text-decoration:none}
+    .rail-quick a.primary{background:linear-gradient(180deg,#f3d88f,#c79131);color:#231605;border-color:rgba(241,211,139,.65)}
+    .rail-nav a{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:16px;border:1px solid rgba(215,175,87,.28);background:rgba(8,18,33,.72);color:var(--text);font-weight:700;font-size:14px;line-height:1.15}
+    .rail-nav a.active{background:linear-gradient(180deg, rgba(216,180,92,.18), rgba(216,180,92,.08));border-color:rgba(241,211,139,.7)}
+    .submenu{margin-left:28px;margin-top:10px;display:flex;flex-direction:column;gap:8px}
+    .submenu a{padding:8px 10px;font-size:12.5px;border-radius:14px}
+    .submenu .active-item{display:flex;align-items:center;justify-content:center;padding:10px 12px;border-radius:16px;border:1px solid rgba(241,211,139,.65);background:linear-gradient(180deg,#30210a,#161007);color:var(--text);font-weight:800;font-size:15px;line-height:1.15}
+    .main{padding:24px 28px 34px}
+    .topbar{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding-bottom:14px;border-bottom:1px solid rgba(215,175,87,.22)}
+    .title{font-size:50px;font-weight:800;line-height:1;margin:0}.subtitle{margin-top:10px;color:var(--gold-2);font-size:18px;font-weight:700}.mini{margin-top:8px;color:var(--muted);font-size:16px}
+    .topbar-right{display:flex;flex-direction:column;align-items:flex-end;gap:8px;min-width:272px}
+    .date-chip{border:1px solid rgba(217,179,93,.45);border-radius:18px;padding:10px 16px;background:linear-gradient(180deg,rgba(17,31,54,.96),rgba(8,14,24,.96));display:grid;grid-template-columns:auto 1px 1fr;align-items:center;column-gap:12px;min-width:272px;width:272px}
+    .date-time{font-size:26px;line-height:1;font-weight:900;letter-spacing:.03em;color:#fff1c6;font-variant-numeric:tabular-nums;white-space:nowrap}
+    .date-sep{width:1px;height:38px;background:rgba(217,179,93,.30)}
+    .date-meta{display:flex;flex-direction:column;gap:2px;min-width:0}
+    .date-weekday{font-size:14px;color:#f4e5b7;font-weight:800;line-height:1.05}
+    .date-text{font-size:13px;color:var(--soft);text-align:left;line-height:1.2}
+    .user-chip{display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:18px;border:1px solid var(--border);background:rgba(7,18,34,.58);min-width:272px;width:272px}
+    .avatar{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,#f0d188,#c99732);color:#241603;font-weight:800}
+    .user-name{font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .toolbar{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px}
+    .btn,.btn-outline{display:inline-flex;align-items:center;justify-content:center;padding:11px 16px;border-radius:14px;font-weight:800;border:1px solid var(--border);text-decoration:none;color:inherit}
+    .btn{background:linear-gradient(180deg,#f3d88f,#c79131);color:#231605}.btn-outline{background:rgba(6,15,28,.72)}
+    .flash{padding:14px 16px;border-radius:18px;margin-top:16px;font-weight:700}.flash.success{background:rgba(34,197,94,.14);border:1px solid rgba(134,239,172,.35);color:#d7ffdb}.flash.error{background:rgba(239,68,68,.14);border:1px solid rgba(254,202,202,.35);color:#ffd8d8}
+    .panel{margin-top:12px;padding:18px 20px;border-radius:24px;border:1px solid var(--border);background:var(--panel);box-shadow:var(--shadow)}
+    .top-gap-tight{margin-top:8px}
+    .panel-head{display:flex;justify-content:space-between;gap:14px;align-items:center;flex-wrap:wrap}.panel-title{font-size:26px;font-weight:800;margin:0}.muted{color:var(--muted)}
+    .profile-summary{display:grid;grid-template-columns:72px minmax(0,1fr);gap:14px;align-items:flex-start}
+    .profile-logo,.fallback-logo{width:72px;height:72px;border-radius:18px;border:1px solid rgba(215,175,87,.28);background:rgba(255,255,255,.06);padding:8px;object-fit:contain}.fallback-logo{display:none;align-items:center;justify-content:center;font-size:28px;font-weight:800;color:var(--gold-2)}
+    .meta-grid{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:6px 18px;margin-top:8px}.meta-item{display:grid;grid-template-columns:118px 1fr;gap:8px}.meta-label{font-weight:800;color:#f0d188}.meta-value{color:#f6ead0;word-break:break-word}
+    .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}.summary-card{padding:18px;border-radius:18px;border:1px solid rgba(215,175,87,.25);background:rgba(255,255,255,.04)}.summary-card .label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:700}.summary-card .value{font-size:26px;font-weight:800;margin-top:8px}.summary-card .sub{margin-top:6px;color:var(--muted);font-size:13px}
+    .search-row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;justify-content:center;max-width:760px;margin:0 auto}.field{display:flex;flex-direction:column;gap:6px;flex:1;min-width:280px}.field label{font-size:13px;font-weight:700;color:#f0d188}.field input{width:100%;padding:12px 14px;border-radius:14px;border:1px solid rgba(215,175,87,.38);background:rgba(255,255,255,.95);color:#111827}.search-actions{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}.footer-motto{margin:18px auto 0;max-width:620px;padding:12px 18px;border-radius:16px;border:1px solid rgba(241,211,139,.45);background:linear-gradient(180deg, rgba(48,33,10,.92), rgba(22,16,7,.92));text-align:center;font-weight:900;letter-spacing:.04em;color:#f7e7ba;text-transform:uppercase}
+    .table-wrap{overflow:auto} table{width:100%;border-collapse:collapse;font-size:14px} th,td{padding:11px 12px;border-bottom:1px solid rgba(148,163,184,.22);vertical-align:top;text-align:left} th a{color:#f0d188;font-size:12px;text-transform:uppercase;letter-spacing:.05em;text-decoration:none}.status-pill,.active-pill{display:inline-flex;padding:5px 10px;border-radius:999px;font-size:12px;font-weight:800;border:1px solid rgba(215,175,87,.24)}.status-pill{background:rgba(255,255,255,.06)}.active-pill.on{background:rgba(34,197,94,.12);color:#baf0bf}.active-pill.off{background:rgba(239,68,68,.10);color:#ffd3d3}.row-actions{display:flex;gap:8px;flex-wrap:wrap}.small{padding:8px 11px;font-size:13px;border-radius:12px}
+    .business-profile-panel{padding-top:16px;padding-bottom:14px}.client-search-panel .panel-head{margin-bottom:10px}
+
+    /* v6.2.13 Credit Repair Dashboard calendar + dated work queue */
+    .cr-calendar-panel{padding:18px 20px 20px}
+    .cr-calendar-head{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:center;margin-bottom:12px}
+    .cr-calendar-title{text-align:center}
+    .cr-calendar-month{font-size:34px;line-height:1;font-weight:950;color:#fff4c2;letter-spacing:.02em}
+    .cr-calendar-subtitle{font-size:13px;color:var(--muted);font-weight:800;margin-top:5px}
+    .cr-calendar-left,.cr-calendar-right{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .cr-calendar-right{justify-content:flex-end}
+    .calendar-view-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .calendar-view-pill{display:inline-flex;align-items:center;justify-content:center;min-width:78px;padding:8px 10px;border-radius:999px;border:1px solid rgba(215,175,87,.32);background:rgba(7,18,34,.72);color:var(--text);font-size:12px;font-weight:900;text-decoration:none}
+    .calendar-view-pill.active{background:linear-gradient(180deg,#f3d88f,#c79131);color:#231605;border-color:#d6b15e}
+    .calendar-legend{display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap;margin:10px 0 12px}
+    .calendar-legend-item{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:800;border:1px solid rgba(255,255,255,.22);border-radius:999px;padding:5px 9px;background:rgba(255,255,255,.04)}
+    .calendar-legend-dot{width:12px;height:12px;border-radius:999px;display:inline-block}
+    .client-month-calendar{width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed;border:1px solid rgba(255,255,255,.2);border-radius:14px;overflow:hidden;background:rgba(10,18,32,.25)}
+    .client-month-calendar th{padding:10px 8px;text-align:center;border-bottom:1px solid rgba(255,255,255,.35);font-size:13px;background:rgba(15,23,42,.55);color:#fff4c2}
+    .client-month-calendar td{height:142px;min-height:142px;vertical-align:top;padding:8px;border-right:1px solid rgba(255,255,255,.18);border-bottom:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.055)}
+    .client-month-calendar td.blank{background:rgba(255,255,255,.015)}
+    .client-month-calendar td.today{outline:3px solid rgba(96,165,250,.95);outline-offset:-3px;background:rgba(96,165,250,.16)!important;box-shadow:0 0 0 2px rgba(59,130,246,.22) inset}
+    .calendar-day-number{display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:900;margin-bottom:5px;color:#fff6d2;background:rgba(15,23,42,.45);border-radius:8px;padding:3px 6px}
+    .calendar-day-link{color:#fff6d2;text-decoration:none}
+    .calendar-day-link:hover{text-decoration:underline}
+    .calendar-day-holiday{font-size:10px;font-weight:800;color:#fecaca;background:rgba(127,29,29,.55);border:1px solid rgba(248,113,113,.35);border-radius:999px;padding:2px 6px;margin-left:4px}
+    .calendar-day-events{display:flex;flex-direction:column;gap:4px}
+    .calendar-event-details{border-radius:8px;overflow:hidden}
+    .calendar-event-details summary{list-style:none;cursor:pointer}
+    .calendar-event-details summary::-webkit-details-marker{display:none}
+    .calendar-event-pill{display:block;border-radius:8px;padding:4px 6px;font-size:11px;line-height:1.18;font-weight:800;white-space:normal;overflow:hidden;text-overflow:ellipsis;border:1px solid rgba(255,255,255,.18)}
+    .calendar-event-pill.appointment{background:#1d4ed8;color:#eff6ff}
+    .calendar-event-pill.redispute{background:#b45309;color:#fff7ed}
+    .calendar-event-pill.followup{background:#047857;color:#ecfdf5}
+    .calendar-event-pill.presentation{background:#7c3aed;color:#f5f3ff}
+    .calendar-event-pill.other{background:#334155;color:#f8fafc}
+    .calendar-event-meta{font-size:11px;line-height:1.35;background:rgba(15,23,42,.96);border:1px solid rgba(255,255,255,.18);border-radius:8px;margin-top:3px;padding:7px;color:#fff9dc}
+    .calendar-week-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;margin-top:10px}
+    .calendar-week-day{min-height:220px;border:1px solid rgba(255,255,255,.24);border-radius:12px;padding:10px;background:rgba(255,255,255,.04)}
+    .calendar-week-day.today{border-color:#60a5fa;box-shadow:0 0 0 2px rgba(96,165,250,.28) inset;background:rgba(96,165,250,.10)}
+    .calendar-week-day h4{margin:0 0 8px;font-size:13px;color:#fff4c2}
+    .calendar-day-list{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+    .calendar-day-title-row{display:flex;justify-content:space-between;gap:12px;align-items:center;border:1px solid rgba(215,175,87,.22);background:rgba(255,255,255,.04);border-radius:14px;padding:10px 12px;margin-bottom:10px}
+    .cr-work-filter-grid{display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));gap:12px;margin-top:16px}
+    .cr-work-filter-card{display:block;text-decoration:none;color:inherit;border:1px solid rgba(255,255,255,.22);border-radius:18px;padding:14px 16px;background:rgba(255,255,255,.05);box-shadow:0 10px 24px rgba(0,0,0,.18)}
+    .cr-work-filter-card.active{box-shadow:0 0 0 2px rgba(244,199,109,.35) inset}
+    .cr-work-filter-card.appointments{border-color:rgba(96,165,250,.58);background:rgba(29,78,216,.18)}
+    .cr-work-filter-card.redisputes{border-color:rgba(251,146,60,.58);background:rgba(180,83,9,.18)}
+    .cr-work-filter-card.followups{border-color:rgba(52,211,153,.58);background:rgba(4,120,87,.18)}
+    .cr-work-filter-card .label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;font-weight:900;color:#fff4c2}
+    .cr-work-filter-card .value{font-size:30px;font-weight:950;margin-top:6px}
+    .cr-work-filter-card .sub{font-size:12px;color:var(--muted);margin-top:4px}
+    .queue-section{margin-top:16px;border:1px solid rgba(215,175,87,.24);border-radius:18px;overflow:hidden;background:rgba(255,255,255,.035)}
+    .queue-section-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px 14px;background:rgba(15,23,42,.62);border-bottom:1px solid rgba(215,175,87,.22)}
+    .queue-section-head h3{margin:0;font-size:18px;color:#fff4c2}
+    .queue-table{width:100%;border-collapse:collapse;font-size:13px}
+    .queue-table th,.queue-table td{padding:10px 11px;border-bottom:1px solid rgba(148,163,184,.20);vertical-align:top}
+    .queue-table th{color:#f0d188;text-transform:uppercase;letter-spacing:.05em;font-size:11px}
+    .sort-head{display:inline-flex;align-items:center;gap:6px}
+    .sort-icons{display:inline-flex;flex-direction:column;gap:1px;line-height:1}
+    .sort-icon-btn{border:0;background:transparent;color:#f0d188;cursor:pointer;font-size:12px;line-height:10px;padding:1px 4px;border-radius:4px;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
+    .sort-icon-btn:hover,.sort-icon-btn.active-sort{background:rgba(240,209,136,.16);color:#fff4c2}
+    .queue-client-link{color:#fff4c2;font-weight:900;text-decoration:none}
+    .queue-client-link:hover{text-decoration:underline}
+    .queue-detail{font-size:12px;color:var(--muted);margin-top:4px;max-width:520px}
+    .queue-status{display:inline-flex;border-radius:999px;padding:4px 8px;font-size:11px;font-weight:900;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18)}
+    .queue-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+    .queue-actions form{margin:0;display:inline-flex}
+    .dashboard-queue-btn{min-width:62px;height:26px;display:inline-flex;align-items:center;justify-content:center;padding:5px 8px;line-height:1;white-space:nowrap;border-radius:8px;font-weight:900;font-size:11px;border:1px solid #d6b15e;background:linear-gradient(180deg,#f3d88f,#c79131);color:#231605!important;text-decoration:none;cursor:pointer}
+    .dashboard-queue-btn.secondary{background:rgba(7,18,34,.72);color:#fff4c2!important;border-color:rgba(215,175,87,.40)}
+    .queue-empty{padding:14px;color:var(--muted);font-weight:700}
+
+@media (max-width:1120px){.shell{grid-template-columns:1fr}.rail{border-right:0;border-bottom:1px solid rgba(215,175,87,.16)}.main{padding:20px}.title{font-size:40px}.topbar{flex-direction:column;align-items:flex-start}.topbar-right{align-items:flex-start}.date-chip,.user-chip{width:272px;min-width:272px}.profile-summary{grid-template-columns:1fr}.meta-grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand-card">
+        <img src="/static/brand/creditsapientia_logo.png" alt="{{ software_name }}">
+        <div class="brand-tag">{{ software_tagline }}</div>
+      </div>
+      <nav class="rail-nav">
+        <a href="/ui/lobby">← Back to Lobby</a>
+        <div class="submenu">
+          <span class="active-item">Credit Repair Dashboard</span>
+          <a href="/ui/presentations">Presentations</a>
+          <a href="/ui/marketing">Marketing</a>
+          <a href="/ui/reports">Reports</a>
+          <a href="/ui/education">Education</a>
+          <a href="/ui/compliance">Compliance &amp; Legal</a>
+          <a href="/ui/credit-repair-settings?section=credit_repair_configuration{% if current_profile and current_profile.id %}&profile_id={{ current_profile.id|urlencode }}{% endif %}">Credit Repair Settings</a>
+          <a href="/ui/help">Help</a>
+          <a href="/ui/logout">Logout</a>
+        </div>
+        <div class="rail-section-title">Quick Actions</div>
+        <div class="rail-quick">
+          <a class="primary" href="/ui/client/new{% if current_profile and current_profile.id %}?profile_id={{ current_profile.id|urlencode }}{% endif %}">Create New Client</a>
+          {% if current_profile and current_profile.id and (current_profile.mode or current_profile.module_mode or '') == 'credit_repair_accounting' %}<a href="/ui/accounting-dashboard?profile_id={{ current_profile.id|urlencode }}">Go to Accounting Dashboard</a>{% endif %}
+          <a href="/ui/global-settings?section=appearance">Workspace Theme</a>
+        </div>
+      </nav>
+    </aside>
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h1 class="title">Credit Repair Dashboard</h1>
+          <div class="subtitle">Review, dispute, document, and track client progress from one workspace.</div>
+          <div class="mini">Operations snapshot, client search, and current business context.</div>
+        </div>
+        <div class="topbar-right">
+          <div class="date-chip">
+            <div class="date-time" id="todayTimeLabel">--:--</div>
+            <div class="date-sep"></div>
+            <div class="date-meta">
+              <div class="date-weekday" id="todayWeekday">Tuesday</div>
+              <div class="date-text" id="todayDateInline">April 14, 2026</div>
+            </div>
+          </div>
+          <div class="user-chip">
+            <div class="avatar">{{ (request.cookies.get('crm_user_name') or 'U')[:1] }}</div>
+            <div><div class="user-name">{{ request.cookies.get('crm_user_name') or 'User' }}</div><div class="muted" style="font-size:13px;">{{ (request.cookies.get('crm_user_role') or 'Administrator')|title }}</div></div>
+          </div>
+        </div>
+      </div>
+
+      {% if message %}<div class="flash success">{{ message }}</div>{% endif %}
+      {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+
+      {% if current_profile and current_profile.id %}
+      <section class="panel business-profile-panel top-gap-tight">
+        <div class="panel-head"><h2 class="panel-title">Business Profile Summary</h2><div class="toolbar" style="margin-top:0;"><a class="btn-outline small" href="/ui/lobby?edit_corporate_id={{ current_profile.id|urlencode }}&open_editor=corporate&return_to={{ ('/ui/credit-repair-dashboard?profile_id=' ~ (current_profile.id or ''))|urlencode }}">Edit Business Info</a><form method="post" action="/ui/profile/toggle-active" style="display:inline;"><input type="hidden" name="profile_type" value="corporate"><input type="hidden" name="profile_id" value="{{ current_profile.id }}"><input type="hidden" name="desired_state" value="{% if current_profile.is_active %}0{% else %}1{% endif %}"><button class="btn-outline small" type="submit" style="{% if current_profile.is_active %}border-color:rgba(248,113,113,.45);color:#ffd6d6;{% else %}border-color:rgba(134,239,172,.45);color:#d7ffdb;{% endif %}">{% if current_profile.is_active %}Deactivate Business{% else %}Activate Business{% endif %}</button></form><form method="post" action="/ui/profile/delete" style="display:inline;" onsubmit="return confirm('Delete this business record? This cannot be undone.');"><input type="hidden" name="profile_type" value="corporate"><input type="hidden" name="profile_id" value="{{ current_profile.id }}"><button class="btn-outline small" type="submit" style="border-color:rgba(248,113,113,.45);color:#ffd6d6;">Delete Business</button></form></div></div>
+        <div class="profile-summary" style="margin-top:10px;">
+          <div>
+            {% if current_profile.logo_url %}
+              <img class="profile-logo" src="{{ current_profile.logo_url }}" alt="{{ current_profile.name }} logo" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+              <div class="fallback-logo">{{ (current_profile.business_name or current_profile.name or 'B')[:1] }}</div>
+            {% else %}
+              <div class="fallback-logo" style="display:flex;">{{ (current_profile.business_name or current_profile.name or 'B')[:1] }}</div>
+            {% endif %}
+          </div>
+          <div>
+            <div style="font-size:28px;font-weight:800;">{{ current_profile.business_name or current_profile.name }}</div>
+            {% if current_profile.dba_name %}<div class="muted" style="margin-top:4px;">DBA: {{ current_profile.dba_name }}</div>{% endif %}
+            <div class="meta-grid">
+              <div class="meta-item"><div class="meta-label">Entity Type</div><div class="meta-value">{{ current_profile.structure_label or current_profile.entity_type or '—' }}</div></div>
+              <div class="meta-item"><div class="meta-label">Established</div><div class="meta-value">{{ current_profile.start_date or '—' }}</div></div>
+              <div class="meta-item"><div class="meta-label">Address</div><div class="meta-value" style="white-space:pre-line;">{{ current_profile.display_address or '—' }}</div></div>
+              <div class="meta-item"><div class="meta-label">Business Phone</div><div class="meta-value">{{ current_profile.display_business_phone or '—' }}</div></div>
+              <div class="meta-item"><div class="meta-label">Business Email</div><div class="meta-value">{{ current_profile.email or '—' }}</div></div>
+              <div class="meta-item"><div class="meta-label">Website</div><div class="meta-value">{% if current_profile.website %}<a href="{{ current_profile.website }}" target="_blank" rel="noopener" style="color:#f0d188;">{{ current_profile.website }}</a>{% else %}—{% endif %}</div></div>
+              <div class="meta-item"><div class="meta-label">Contact Name</div><div class="meta-value">{{ current_profile.contact_person or '—' }}</div></div>
+              
+            </div>
+          </div>
+        </div>
+      </section>
+      {% endif %}
+
+      <section class="panel top-gap-tight">
+        <div class="panel-head"><h2 class="panel-title">Operations Snapshot</h2><div class="muted">Credit repair and accounting combined for this business.</div></div>
+        <div class="summary-grid" style="margin-top:16px;">
+          <a class="summary-card" href="/ui/credit-repair-dashboard?focus=active_clients{% if current_profile and current_profile.id %}&profile_id={{ current_profile.id|urlencode }}{% endif %}"><div class="label">Active Clients</div><div class="value">{{ dashboard_summary.active_clients }}</div><div class="sub">Current company clients.</div></a>
+          <a class="summary-card" href="/ui/credit-repair-dashboard?focus=prospects{% if current_profile and current_profile.id %}&profile_id={{ current_profile.id|urlencode }}{% endif %}"><div class="label">Prospects</div><div class="value">{{ dashboard_summary.prospects }}</div><div class="sub">Pending intake and follow-up.</div></a>
+          <a class="summary-card" href="/ui/credit-repair-dashboard?focus=unpaid_invoices{% if current_profile and current_profile.id %}&profile_id={{ current_profile.id|urlencode }}{% endif %}"><div class="label">Unpaid Invoices</div><div class="value">{{ dashboard_summary.open_invoices_count }}</div><div class="sub">Open balance {{ dashboard_summary.open_invoices_amount }}</div></a>
+          <a class="summary-card" href="/ui/credit-repair-dashboard?focus=followups_due{% if current_profile and current_profile.id %}&profile_id={{ current_profile.id|urlencode }}{% endif %}"><div class="label">Follow-Ups Due</div><div class="value">{{ dashboard_summary.followups_due_7d }}</div><div class="sub">Due in the next 7 days.</div></a>
+          <a class="summary-card" href="/ui/credit-repair-dashboard?focus=pending_doc_review{% if current_profile and current_profile.id %}&profile_id={{ current_profile.id|urlencode }}{% endif %}"><div class="label">Pending Review</div><div class="value">{{ dashboard_summary.pending_doc_review }}</div><div class="sub">Documents waiting for review.</div></a>
+          <a class="summary-card" href="/ui/credit-repair-dashboard?focus=appointments_next_7d{% if current_profile and current_profile.id %}&profile_id={{ current_profile.id|urlencode }}{% endif %}"><div class="label">Appointments</div><div class="value">{{ dashboard_summary.appointments_next_7d }}</div><div class="sub">Scheduled in the next 7 days.</div></a>
+        </div>
+      </section>
+
+
+      <section class="panel cr-calendar-panel top-gap-tight">
+        <div class="panel-head">
+          <h2 class="panel-title">Credit Repair Dashboard Calendar</h2>
+          <div class="muted">Appointments, redispute reminders, and follow-up/tickler work queues by client and date.</div>
+        </div>
+        {% if calendar_warning %}
+          <div class="flash error">{{ calendar_warning }}</div>
+        {% endif %}
+
+        <div class="cr-calendar-head">
+          <div class="cr-calendar-left">
+            {% if credit_dashboard_calendar.view_mode == 'month' %}
+              <a class="calendar-view-pill" href="/ui/credit-repair-dashboard?calendar_view=month&calendar_month={{ credit_dashboard_calendar.prev_month }}&work_queue={{ work_queue }}">◀ Previous Month</a>
+            {% elif credit_dashboard_calendar.view_mode == 'week' %}
+              <a class="calendar-view-pill" href="/ui/credit-repair-dashboard?calendar_view=week&calendar_date={{ credit_dashboard_calendar.prev_date }}&work_queue={{ work_queue }}">◀ Previous Week</a>
+            {% else %}
+              <a class="calendar-view-pill" href="/ui/credit-repair-dashboard?calendar_view=day&calendar_date={{ credit_dashboard_calendar.prev_date }}&work_queue={{ work_queue }}">◀ Previous Day</a>
+            {% endif %}
+          </div>
+          <div class="cr-calendar-title">
+            <div class="cr-calendar-month">{{ credit_dashboard_calendar.title }}</div>
+            <div class="cr-calendar-subtitle">Today: {{ credit_dashboard_work_queue.today_label }}</div>
+          </div>
+          <div class="cr-calendar-right">
+            {% if credit_dashboard_calendar.view_mode == 'month' %}
+              <a class="calendar-view-pill" href="/ui/credit-repair-dashboard?calendar_view=month&calendar_month={{ credit_dashboard_calendar.next_month }}&work_queue={{ work_queue }}">Next Month ▶</a>
+            {% elif credit_dashboard_calendar.view_mode == 'week' %}
+              <a class="calendar-view-pill" href="/ui/credit-repair-dashboard?calendar_view=week&calendar_date={{ credit_dashboard_calendar.next_date }}&work_queue={{ work_queue }}">Next Week ▶</a>
+            {% else %}
+              <a class="calendar-view-pill" href="/ui/credit-repair-dashboard?calendar_view=day&calendar_date={{ credit_dashboard_calendar.next_date }}&work_queue={{ work_queue }}">Next Day ▶</a>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="calendar-view-toolbar" style="justify-content:center;">
+          <a class="calendar-view-pill {% if credit_dashboard_calendar.view_mode == 'month' %}active{% endif %}" href="/ui/credit-repair-dashboard?calendar_view=month&calendar_month={{ credit_dashboard_calendar.month_value }}&work_queue={{ work_queue }}">Monthly</a>
+          <a class="calendar-view-pill {% if credit_dashboard_calendar.view_mode == 'week' %}active{% endif %}" href="/ui/credit-repair-dashboard?calendar_view=week&calendar_date={{ credit_dashboard_calendar.selected_date }}&work_queue={{ work_queue }}">Weekly</a>
+          <a class="calendar-view-pill {% if credit_dashboard_calendar.view_mode == 'day' %}active{% endif %}" href="/ui/credit-repair-dashboard?calendar_view=day&calendar_date={{ credit_dashboard_calendar.selected_date }}&work_queue={{ work_queue }}">Daily</a>
+        </div>
+
+        <div class="calendar-legend" aria-label="Calendar color key">
+          {% for legend in credit_dashboard_calendar.calendar_settings.legend %}
+            <span class="calendar-legend-item"><span class="calendar-legend-dot" style="background:{{ legend.color }}"></span>{{ legend.label }}</span>
+          {% endfor %}
+        </div>
+
+        {% if credit_dashboard_calendar.view_mode == 'day' %}
+          <div class="calendar-day-title-row">
+            <strong>{{ credit_dashboard_calendar.selected_date_label }}</strong>
+            <span>{% if credit_dashboard_calendar.selected_holiday %}{{ credit_dashboard_calendar.selected_holiday.name }}{% if credit_dashboard_calendar.selected_holiday.closed %} — Closed{% else %} — Open/optional{% endif %}{% else %}No national holiday recorded for this day.{% endif %}</span>
+          </div>
+          <div class="calendar-day-list">
+            {% for ev in credit_dashboard_calendar.day_events %}
+              <details class="calendar-event-details" open>
+                <summary><span class="calendar-event-pill {{ ev.css }}">{{ ev.time }} {% if ev.time %}·{% endif %} {{ ev.client_name }} · {{ ev.kind }}</span></summary>
+                <div class="calendar-event-meta">
+                  <strong>{{ ev.title }}</strong><br>
+                  {{ ev.detail }}<br>
+                  <a class="calendar-day-link" href="/ui/client/{{ ev.client_id }}{% if ev.kind == 'Redispute' %}?tab=disputes{% else %}?tab=calendar{% endif %}">Open client</a>
+                </div>
+              </details>
+            {% endfor %}
+            {% if not credit_dashboard_calendar.day_events %}
+              <div class="queue-empty">No active calendar items for this day.</div>
+            {% endif %}
+          </div>
+        {% elif credit_dashboard_calendar.view_mode == 'week' %}
+          <div class="calendar-week-grid">
+            {% for day in credit_dashboard_calendar.week_days %}
+              <div class="calendar-week-day {% if day.is_today %}today{% endif %}">
+                <h4><a class="calendar-day-link" href="/ui/credit-repair-dashboard?calendar_view=day&calendar_date={{ day.date }}&work_queue={{ work_queue }}">{{ day.label }}</a>{% if day.holiday %} <span class="calendar-day-holiday">{{ day.holiday.name }}</span>{% endif %}</h4>
+                <div class="calendar-day-events">
+                  {% for ev in day.events %}
+                    <details class="calendar-event-details">
+                      <summary><span class="calendar-event-pill {{ ev.css }}">{{ ev.time }} {% if ev.time %}·{% endif %} {{ ev.client_name }} · {{ ev.kind }}</span></summary>
+                      <div class="calendar-event-meta">
+                        <strong>{{ ev.title }}</strong><br>{{ ev.detail }}<br>
+                        <a class="calendar-day-link" href="/ui/client/{{ ev.client_id }}{% if ev.kind == 'Redispute' %}?tab=disputes{% else %}?tab=calendar{% endif %}">Open client</a>
+                      </div>
+                    </details>
+                  {% endfor %}
+                  {% if not day.events %}<span class="muted">No active items.</span>{% endif %}
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <table class="client-month-calendar" aria-label="Credit Repair Dashboard monthly calendar">
+            <thead>
+              <tr><th>Sunday</th><th>Monday</th><th>Tuesday</th><th>Wednesday</th><th>Thursday</th><th>Friday</th><th>Saturday</th></tr>
+            </thead>
+            <tbody>
+              {% for week in credit_dashboard_calendar.weeks %}
+                <tr>
+                  {% for day in week %}
+                    {% if day.blank %}
+                      <td class="blank"></td>
+                    {% else %}
+                      <td class="{% if day.is_today %}today{% endif %}">
+                        <div class="calendar-day-number">
+                          <a class="calendar-day-link" href="/ui/credit-repair-dashboard?calendar_view=day&calendar_date={{ day.date }}&work_queue={{ work_queue }}">{{ day.day }}</a>
+                          {% if day.holiday %}<span class="calendar-day-holiday">{{ day.holiday.name }}</span>{% endif %}
+                        </div>
+                        <div class="calendar-day-events">
+                          {% for ev in day.events[:4] %}
+                            <details class="calendar-event-details">
+                              <summary><span class="calendar-event-pill {{ ev.css }}">{{ ev.time }} {% if ev.time %}·{% endif %} {{ ev.client_name }} · {{ ev.kind }}</span></summary>
+                              <div class="calendar-event-meta">
+                                <strong>{{ ev.title }}</strong><br>{{ ev.detail }}<br>
+                                <a class="calendar-day-link" href="/ui/client/{{ ev.client_id }}{% if ev.kind == 'Redispute' %}?tab=disputes{% else %}?tab=calendar{% endif %}">Open client</a>
+                              </div>
+                            </details>
+                          {% endfor %}
+                          {% if day.events|length > 4 %}
+                            <a class="calendar-day-link" href="/ui/credit-repair-dashboard?calendar_view=day&calendar_date={{ day.date }}&work_queue={{ work_queue }}">+{{ day.events|length - 4 }} more</a>
+                          {% endif %}
+                        </div>
+                      </td>
+                    {% endif %}
+                  {% endfor %}
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% endif %}
+
+        <div class="cr-work-filter-grid" aria-label="Credit repair calendar work queue filters">
+          <a class="cr-work-filter-card appointments {% if work_queue == 'appointments' %}active{% endif %}" href="/ui/credit-repair-dashboard?work_queue=appointments&calendar_view={{ credit_dashboard_calendar.view_mode }}&calendar_month={{ credit_dashboard_calendar.month_value }}&calendar_date={{ credit_dashboard_calendar.selected_date }}">
+            <div class="label">Appointments</div>
+            <div class="value">{{ credit_dashboard_work_queue.counts.appointments }}</div>
+            <div class="sub">Click to list appointment work by date.</div>
+          </a>
+          <a class="cr-work-filter-card redisputes {% if work_queue == 'redisputes' %}active{% endif %}" href="/ui/credit-repair-dashboard?work_queue=redisputes&calendar_view={{ credit_dashboard_calendar.view_mode }}&calendar_month={{ credit_dashboard_calendar.month_value }}&calendar_date={{ credit_dashboard_calendar.selected_date }}">
+            <div class="label">Redispute Reminders</div>
+            <div class="value">{{ credit_dashboard_work_queue.counts.redisputes }}</div>
+            <div class="sub">Click to list clients needing redispute work.</div>
+          </a>
+          <a class="cr-work-filter-card followups {% if work_queue == 'followups' %}active{% endif %}" href="/ui/credit-repair-dashboard?work_queue=followups&calendar_view={{ credit_dashboard_calendar.view_mode }}&calendar_month={{ credit_dashboard_calendar.month_value }}&calendar_date={{ credit_dashboard_calendar.selected_date }}">
+            <div class="label">Follow-Ups / Ticklers</div>
+            <div class="value">{{ credit_dashboard_work_queue.counts.followups }}</div>
+            <div class="sub">Click to list pending follow-up tasks.</div>
+          </a>
+        </div>
+
+        <div class="queue-section">
+          <div class="queue-section-head">
+            <h3>{{ credit_dashboard_work_queue.selected_label }} Work Queue</h3>
+            <div class="muted">{{ credit_dashboard_work_queue.total_selected }} active item(s). Previous dates are oldest first.</div>
+          </div>
+
+          {% for group_key, group_label in [('previous','Previous Dates / Overdue — Oldest First'), ('today','Today'), ('upcoming','Upcoming')] %}
+            <div class="queue-section" style="margin:12px;">
+              <div class="queue-section-head">
+                <h3>{{ group_label }}</h3>
+                <div class="muted">{{ credit_dashboard_work_queue.group_counts[group_key] }} item(s)</div>
+              </div>
+              {% set group_rows = credit_dashboard_work_queue.groups[group_key] %}
+              {% if group_rows %}
+                <div class="table-wrap">
+                  <table class="queue-table" id="dashboardQueue{{ group_key|capitalize }}">
+                    <thead>
+                      <tr>
+                        <th><span class="sort-head">Date <span class="sort-icons"><button type="button" class="sort-icon-btn" data-sort-table="dashboardQueue{{ group_key|capitalize }}" data-sort-col="0" data-sort-type="date" data-sort-dir="asc">▲</button><button type="button" class="sort-icon-btn" data-sort-table="dashboardQueue{{ group_key|capitalize }}" data-sort-col="0" data-sort-type="date" data-sort-dir="desc">▼</button></span></span></th>
+                        <th><span class="sort-head">Client <span class="sort-icons"><button type="button" class="sort-icon-btn" data-sort-table="dashboardQueue{{ group_key|capitalize }}" data-sort-col="1" data-sort-type="text" data-sort-dir="asc">▲</button><button type="button" class="sort-icon-btn" data-sort-table="dashboardQueue{{ group_key|capitalize }}" data-sort-col="1" data-sort-type="text" data-sort-dir="desc">▼</button></span></span></th>
+                        <th><span class="sort-head">Work Item <span class="sort-icons"><button type="button" class="sort-icon-btn" data-sort-table="dashboardQueue{{ group_key|capitalize }}" data-sort-col="2" data-sort-type="text" data-sort-dir="asc">▲</button><button type="button" class="sort-icon-btn" data-sort-table="dashboardQueue{{ group_key|capitalize }}" data-sort-col="2" data-sort-type="text" data-sort-dir="desc">▼</button></span></span></th>
+                        <th><span class="sort-head">Status <span class="sort-icons"><button type="button" class="sort-icon-btn" data-sort-table="dashboardQueue{{ group_key|capitalize }}" data-sort-col="3" data-sort-type="text" data-sort-dir="asc">▲</button><button type="button" class="sort-icon-btn" data-sort-table="dashboardQueue{{ group_key|capitalize }}" data-sort-col="3" data-sort-type="text" data-sort-dir="desc">▼</button></span></span></th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for item in group_rows %}
+                        <tr>
+                          <td data-sort="{{ item.sort_date }}">{{ item.due_label }}{% if item.time %}<br><span class="muted">{{ item.time }}</span>{% endif %}</td>
+                          <td data-sort="{{ item.client_name }}"><a class="queue-client-link" href="/ui/client/{{ item.client_id }}">{{ item.client_name }}</a></td>
+                          <td data-sort="{{ item.title }}">
+                            <strong>{{ item.title }}</strong>
+                            {% if item.bureau or item.round_number %}<div class="queue-detail">Bureau: {{ item.bureau or '—' }} · Round: {{ item.round_number or '—' }}</div>{% endif %}
+                            {% if item.detail %}<div class="queue-detail">{{ item.detail }}</div>{% endif %}
+                          </td>
+                          <td data-sort="{{ item.status }}"><span class="queue-status">{{ item.status }}</span></td>
+                          <td>
+                            <div class="queue-actions">
+                              <a class="dashboard-queue-btn" href="{{ item.action_primary_href }}">{{ item.action_primary_label }}</a>
+                              <a class="dashboard-queue-btn secondary" href="/ui/client/{{ item.client_id }}?tab=calendar">Reschedule/Edit</a>
+                              {% if item.category == 'appointments' %}
+                                <form method="post" action="/ui/complete-appointment"><input type="hidden" name="client_id" value="{{ item.client_id }}"><input type="hidden" name="appointment_id" value="{{ item.id }}"><input type="hidden" name="active_tab" value="calendar"><input type="hidden" name="return_to" value="{{ dashboard_calendar_return_url }}"><button class="dashboard-queue-btn" type="submit">Complete</button></form>
+                                <form method="post" action="/ui/delete-appointment"><input type="hidden" name="client_id" value="{{ item.client_id }}"><input type="hidden" name="appointment_id" value="{{ item.id }}"><input type="hidden" name="active_tab" value="calendar"><input type="hidden" name="return_to" value="{{ dashboard_calendar_return_url }}"><button class="dashboard-queue-btn" type="submit">Delete</button></form>
+                              {% elif item.category == 'redisputes' %}
+                                <form method="post" action="/ui/complete-redispute-event"><input type="hidden" name="client_id" value="{{ item.client_id }}"><input type="hidden" name="event_id" value="{{ item.id }}"><input type="hidden" name="active_tab" value="calendar"><input type="hidden" name="return_to" value="{{ dashboard_calendar_return_url }}"><button class="dashboard-queue-btn" type="submit">Complete</button></form>
+                                <form method="post" action="/ui/delete-redispute-event"><input type="hidden" name="client_id" value="{{ item.client_id }}"><input type="hidden" name="event_id" value="{{ item.id }}"><input type="hidden" name="active_tab" value="calendar"><input type="hidden" name="return_to" value="{{ dashboard_calendar_return_url }}"><button class="dashboard-queue-btn" type="submit">Delete</button></form>
+                              {% elif item.category == 'followups' %}
+                                <form method="post" action="/ui/complete-followup"><input type="hidden" name="client_id" value="{{ item.client_id }}"><input type="hidden" name="followup_id" value="{{ item.id }}"><input type="hidden" name="active_tab" value="calendar"><input type="hidden" name="return_to" value="{{ dashboard_calendar_return_url }}"><button class="dashboard-queue-btn" type="submit">Complete</button></form>
+                                <form method="post" action="/ui/delete-followup"><input type="hidden" name="client_id" value="{{ item.client_id }}"><input type="hidden" name="followup_id" value="{{ item.id }}"><input type="hidden" name="active_tab" value="calendar"><input type="hidden" name="return_to" value="{{ dashboard_calendar_return_url }}"><button class="dashboard-queue-btn" type="submit">Delete</button></form>
+                              {% endif %}
+                            </div>
+                          </td>
+                        </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              {% else %}
+                <div class="queue-empty">No {{ credit_dashboard_work_queue.selected_label|lower }} in this date group.</div>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="panel client-search-panel top-gap-tight">
+        <div class="panel-head" style="justify-content:center;"><h2 class="panel-title">Client Search</h2></div>
+        <form class="search-row" method="get" action="/ui/credit-repair-dashboard" style="margin-top:14px;">
+          {% if current_profile and current_profile.id %}<input type="hidden" name="profile_id" value="{{ current_profile.id }}">{% endif %}
+          <div class="field"><label>Search by name, phone, email, workflow status, active/inactive, or last 4</label><input type="text" name="q" value="{{ search_query or '' }}"></div>
+          <div class="search-actions"><button class="btn" type="submit">Search</button>
+          {% if search_query %}<a class="btn-outline" href="/ui/credit-repair-dashboard{% if current_profile and current_profile.id %}?profile_id={{ current_profile.id|urlencode }}{% endif %}">Clear</a>{% endif %}<a class="btn-outline" href="/ui/client/new{% if current_profile and current_profile.id %}?profile_id={{ current_profile.id|urlencode }}{% endif %}">Create New Client</a></div>
+        </form>
+      </section>
+
+      {% if search_query or focus_key %}
+      <section class="panel table-wrap">
+        <div class="panel-head"><h2 class="panel-title">{% if search_query %}Search Results{% else %}{{ focus_label }}{% endif %}</h2><div class="muted">{% if search_query %}{{ results_count }} result(s){% else %}{{ focus_count }} item(s){% endif %}</div></div>
+        <table id="currentCompanyClientsTable" style="margin-top:14px;">
+          <thead>
+            <tr>
+              <th><span class="sort-head">Name <span class="sort-icons"><button type="button" class="sort-icon-btn" data-sort-table="currentCompanyClientsTable" data-sort-col="0" data-sort-type="text" data-sort-dir="asc">▲</button><button type="button" class="sort-icon-btn" data-sort-table="currentCompanyClientsTable" data-sort-col="0" data-sort-type="text" data-sort-dir="desc">▼</button></span></span></th>
+              <th><span class="sort-head">Workflow Status <span class="sort-icons"><button type="button" class="sort-icon-btn" data-sort-table="currentCompanyClientsTable" data-sort-col="1" data-sort-type="text" data-sort-dir="asc">▲</button><button type="button" class="sort-icon-btn" data-sort-table="currentCompanyClientsTable" data-sort-col="1" data-sort-type="text" data-sort-dir="desc">▼</button></span></span></th>
+              <th><span class="sort-head">Contact <span class="sort-icons"><button type="button" class="sort-icon-btn" data-sort-table="currentCompanyClientsTable" data-sort-col="2" data-sort-type="text" data-sort-dir="asc">▲</button><button type="button" class="sort-icon-btn" data-sort-table="currentCompanyClientsTable" data-sort-col="2" data-sort-type="text" data-sort-dir="desc">▼</button></span></span></th>
+              <th><span class="sort-head">Last Activity <span class="sort-icons"><button type="button" class="sort-icon-btn" data-sort-table="currentCompanyClientsTable" data-sort-col="3" data-sort-type="date" data-sort-dir="asc">▲</button><button type="button" class="sort-icon-btn" data-sort-table="currentCompanyClientsTable" data-sort-col="3" data-sort-type="date" data-sort-dir="desc">▼</button></span></span></th>
+              <th><span class="sort-head">Active <span class="sort-icons"><button type="button" class="sort-icon-btn" data-sort-table="currentCompanyClientsTable" data-sort-col="4" data-sort-type="number" data-sort-dir="asc">▲</button><button type="button" class="sort-icon-btn" data-sort-table="currentCompanyClientsTable" data-sort-col="4" data-sort-type="number" data-sort-dir="desc">▼</button></span></span></th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in (search_results if search_query else focus_results) %}
+            <tr>
+              <td data-sort="{{ row.display_name or '' }}"><strong>{{ row.display_name }}</strong></td>
+              <td data-sort="{{ row.status or '' }}"><span class="status-pill">{{ row.status or '—' }}</span></td>
+              <td data-sort="{{ (row.phone or '') ~ ' ' ~ (row.email or '') }}">{{ row.phone }}{% if row.email %}<br><span class="muted">{{ row.email }}</span>{% endif %}</td>
+              <td data-sort="{{ row.last_activity or '' }}">{{ row.last_activity or '—' }}</td>
+              <td data-sort="{% if row.is_active %}1{% else %}0{% endif %}"><span class="active-pill {% if row.is_active %}on{% else %}off{% endif %}">{% if row.is_active %}Active{% else %}Inactive{% endif %}</span></td>
+              <td><div class="row-actions"><a class="btn-outline small" href="/ui/client/{{ row.id }}{% if current_profile and current_profile.id %}?profile_id={{ current_profile.id|urlencode }}{% endif %}">Open</a><a class="btn-outline small" href="/ui/client/{{ row.id }}{% if current_profile and current_profile.id %}?profile_id={{ current_profile.id|urlencode }}{% endif %}">Edit</a><a class="btn-outline small" href="/ui/client/{{ row.id }}{% if current_profile and current_profile.id %}?profile_id={{ current_profile.id|urlencode }}{% endif %}">Merge</a></div></td>
+            </tr>
+            {% endfor %}
+            {% if not (search_results if search_query else focus_results) %}
+            <tr><td colspan="6" class="muted">No matching records were found.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </section>
+      {% endif %}
+
+      <div class="footer-motto">Intelligence. Strategy. Better Outcomes.</div>
+    </main>
+  </div>
+
+  <script>
+    (function(){
+      function rawCellValue(row, colIndex){
+        const cell = row.children[colIndex];
+        if(!cell) return '';
+        return (cell.getAttribute('data-sort') || cell.innerText || cell.textContent || '').trim();
+      }
+      function comparableValue(row, colIndex, valueType){
+        const raw = rawCellValue(row, colIndex);
+        if(valueType === 'date'){
+          if(/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0,10);
+          const parsed = Date.parse(raw);
+          return Number.isNaN(parsed) ? '9999-12-31' : new Date(parsed).toISOString().slice(0,10);
+        }
+        if(valueType === 'number'){
+          const n = parseFloat(String(raw).replace(/[^0-9.\-]/g,''));
+          return Number.isNaN(n) ? 0 : n;
+        }
+        return raw.toLowerCase();
+      }
+      window.sortDashboardTable = function(tableId, colIndex, valueType, direction){
+        const table = document.getElementById(tableId);
+        if(!table || !table.tBodies || !table.tBodies[0]) return false;
+        const tbody = table.tBodies[0];
+        const rows = Array.from(tbody.rows).filter(row => row.children && row.children.length > colIndex);
+        const dir = direction === 'desc' ? 'desc' : 'asc';
+        const type = valueType || 'text';
+        rows.sort((a,b)=>{
+          const va = comparableValue(a, colIndex, type);
+          const vb = comparableValue(b, colIndex, type);
+          let result = 0;
+          if(type === 'text'){
+            result = String(va).localeCompare(String(vb), undefined, {numeric:true, sensitivity:'base'});
+          }else if(va < vb){ result = -1; }
+          else if(va > vb){ result = 1; }
+          return dir === 'asc' ? result : -result;
+        });
+        rows.forEach(row => tbody.appendChild(row));
+        document.querySelectorAll('[data-sort-table="' + tableId + '"]').forEach(btn => btn.classList.remove('active-sort'));
+        return true;
+      };
+      window.sortDashboardQueueTable = window.sortDashboardTable;
+      document.addEventListener('click', function(event){
+        const trigger = event.target.closest('[data-sort-table]');
+        if(!trigger) return;
+        event.preventDefault();
+        const tableId = trigger.getAttribute('data-sort-table');
+        const colIndex = parseInt(trigger.getAttribute('data-sort-col') || '0', 10);
+        const valueType = trigger.getAttribute('data-sort-type') || 'text';
+        const direction = trigger.getAttribute('data-sort-dir') || 'asc';
+        const didSort = window.sortDashboardTable(tableId, colIndex, valueType, direction);
+        if(didSort) trigger.classList.add('active-sort');
+      });
+    })();
+  </script>
+
+  <script>
+    (function(){
+      const tz = 'America/New_York';
+      const todayDateInline = document.getElementById('todayDateInline');
+      const weekdayEl = document.getElementById('todayWeekday');
+      const timeEl = document.getElementById('todayTimeLabel');
+      function updateClock(){
+        const now = new Date();
+        if(timeEl) timeEl.textContent = new Intl.DateTimeFormat('en-US',{timeZone:tz,hour:'numeric',minute:'2-digit'}).format(now);
+        if(weekdayEl) weekdayEl.textContent = new Intl.DateTimeFormat('en-US',{timeZone:tz,weekday:'long'}).format(now);
+        if(todayDateInline) todayDateInline.textContent = new Intl.DateTimeFormat('en-US',{timeZone:tz,month:'long',day:'numeric',year:'numeric'}).format(now);
+      }
+      updateClock();
+      setInterval(updateClock,30000);
+    })();
+  </script>
+</body>
+</html>

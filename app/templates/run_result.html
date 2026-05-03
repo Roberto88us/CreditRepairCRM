@@ -9,10 +9,79 @@
     code { background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
     table { border-collapse: collapse; width: 100%; }
     th, td { border-bottom: 1px solid #eee; padding: 10px; text-align: left; }
-  </style>
+  
+/* --- CreditSapientia themed form/layout overrides --- */
+:root{
+  --cs-gold: {{ theme_runtime.palette.secondary if theme_runtime else '#d7af57' }};
+  --cs-gold-soft: {{ theme_runtime.palette.text if theme_runtime else '#f1d38b' }};
+  --cs-primary: {{ theme_runtime.palette.primary if theme_runtime else '#0a1a2f' }};
+  --cs-panel: {{ theme_runtime.palette.surface if theme_runtime else 'rgba(8,18,33,.88)' }};
+  --cs-border: {{ theme_runtime.palette.border if theme_runtime else 'rgba(212,171,82,.45)' }};
+  --cs-text: {{ theme_runtime.palette.text if theme_runtime else '#f3e5bc' }};
+  --cs-muted: {{ theme_runtime.palette.muted if theme_runtime else '#cab889' }};
+}
+body{
+  margin:0 auto !important;
+  padding:24px 18px 36px !important;
+  max-width:1280px !important;
+  font-family:Inter,Arial,sans-serif !important;
+  color:var(--cs-text) !important;
+  background:#071220 !important;
+  min-height:100vh;
+  position:relative;
+}
+body::before{
+  content:"";
+  position:fixed;
+  inset:0;
+  background:url('/static/brand/themes/{{ current_theme or "cosmic_03_royal_blue_elegance" }}.png') center/cover no-repeat fixed;
+  z-index:-3;
+}
+body::after{
+  content:"";
+  position:fixed;
+  inset:0;
+  background:radial-gradient(circle at 78% 15%, rgba(245,208,119,.16), transparent 20%),linear-gradient(180deg, rgba(2,7,16,.35), rgba(2,7,16,.82));
+  z-index:-2;
+}
+.box,.card{
+  background:var(--cs-panel) !important;
+  border:1px solid var(--cs-border) !important;
+  border-radius:18px !important;
+  box-shadow:0 18px 42px rgba(0,0,0,.34) !important;
+  color:var(--cs-text) !important;
+}
+h1,h2,h3,label,b,strong{color:var(--cs-text) !important}
+.muted,.small{color:var(--cs-muted) !important}
+input,select,textarea{
+  background:rgba(255,255,255,.94) !important;
+  color:#111827 !important;
+  border:1px solid rgba(215,175,87,.38) !important;
+  border-radius:12px !important;
+}
+button,.btn{
+  background:linear-gradient(180deg,#f3d88f,#c79131) !important;
+  color:#231605 !important;
+  border:1px solid rgba(215,175,87,.42) !important;
+  border-radius:14px !important;
+  font-weight:800 !important;
+  box-shadow:0 10px 20px rgba(0,0,0,.16) !important;
+}
+button.secondary,.btn-secondary,.btn-gray,.btn-outline{
+  background:rgba(6,15,28,.72) !important;
+  color:var(--cs-text) !important;
+  border:1px solid var(--cs-border) !important;
+}
+.btn-danger,.danger-btn{background:linear-gradient(180deg,#8d1e1e,#5a0e0e) !important;color:#fff !important}
+.error{background:rgba(127,29,29,.24) !important;border:1px solid rgba(254,202,202,.35) !important;color:#ffe0e0 !important}
+.success{background:rgba(34,197,94,.14) !important;border:1px solid rgba(134,239,172,.35) !important;color:#d7ffdb !important}
+table{background:transparent;color:var(--cs-text)} th,td{border-bottom:1px solid rgba(148,163,184,.18) !important}
+a{color:var(--cs-gold-soft)}
+
+</style>
 </head>
 <body>
-  <a href="/" style="margin-right:12px;">Home</a>
+  <a class="btn btn-outline" href="/ui/lobby" style="margin-right:12px;">Lobby</a>
   <a href="javascript:history.back()">← Back to Client</a>
 
   <h1>Round {{ round_number }} Completed</h1>
