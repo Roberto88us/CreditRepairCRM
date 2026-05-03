@@ -6,8 +6,54 @@ on:
   pull_request:
 
 jobs:
-  pytest:
+  unit:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run unit tests
+        run: python -m pytest -q -m "not integration"
+
+  integration:
+    if: ${{ vars.RUN_INTEGRATION_TESTS == 'true' }}
+    needs: unit
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: creditrepair
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d creditrepair"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DB_HOST: ${{ vars.INTEGRATION_DB_HOST || '127.0.0.1' }}
+      DB_PORT: ${{ vars.INTEGRATION_DB_PORT || '5432' }}
+      DB_NAME: ${{ vars.INTEGRATION_DB_NAME || 'creditrepair' }}
+      DB_USER: ${{ vars.INTEGRATION_DB_USER || 'postgres' }}
+      DB_PASSWORD: ${{ secrets.INTEGRATION_DB_PASSWORD || 'postgres' }}
+      SECRET_KEY: ${{ secrets.INTEGRATION_SECRET_KEY || 'ci-integration-secret' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,7 +66,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
-      - name: Run tests
-        run: python -m pytest -q
+      - name: Run integration tests
+        run: python -m pytest -q -m integration

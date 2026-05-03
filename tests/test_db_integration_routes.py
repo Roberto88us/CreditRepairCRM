@@ -4,7 +4,6 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from fastapi.templating import Jinja2Templates
 
 import main
 
@@ -46,6 +45,12 @@ def _create_client(cur, *, first_name: str, last_name: str, email: str) -> str:
     return cur.fetchone()[0]
 
 
+def _fetch_accounting_setting(cur, key: str) -> str | None:
+    cur.execute("SELECT setting_value FROM accounting_settings WHERE setting_key = %s", (key,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
 @pytest.fixture(scope="session")
 def db_conn():
     try:
@@ -55,11 +60,6 @@ def db_conn():
     conn.autocommit = True
     yield conn
     conn.close()
-
-
-@pytest.fixture(autouse=True)
-def app_template_paths(monkeypatch):
-    monkeypatch.setattr(main, "templates", Jinja2Templates(directory=str(main.PROJECT_ROOT / "app" / "templates")))
 
 
 @pytest.fixture(scope="session")
@@ -283,3 +283,95 @@ def test_process_round_with_pdfs_persists_meta(authed_client: TestClient, db_con
         if client_id:
             with db_conn.cursor() as cur:
                 _best_effort_cleanup_client(cur, client_id)
+
+
+@pytest.mark.integration
+def test_settings_save_registration_updates_system_settings(authed_client: TestClient) -> None:
+    keys = [
+        "license_key",
+        "registration_name",
+        "registration_company",
+        "registration_address",
+        "registration_phone",
+        "registration_email",
+        "registration_website",
+    ]
+    original = {key: main.system_setting(key, "") for key in keys}
+    try:
+        payload = {
+            "license_key": f"INT-{uuid4().hex[:12]}",
+            "registration_name": "Integration Owner",
+            "registration_company": "Integration Company",
+            "registration_address": "100 Integration Ave",
+            "registration_phone": "305-555-0101",
+            "registration_email": "integration-settings@example.com",
+            "registration_website": "https://integration.example.com",
+        }
+        response = authed_client.post(
+            "/ui/settings/save-registration",
+            data=payload,
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        location = response.headers.get("location", "")
+        assert location.startswith("/ui/global-settings")
+        assert "message=" in location
+
+        for key, value in payload.items():
+            assert main.system_setting(key, "") == value
+    finally:
+        for key, value in original.items():
+            main.save_system_setting(key, value)
+
+
+@pytest.mark.integration
+def test_accounting_save_settings_updates_accounting_settings(authed_client: TestClient, db_conn) -> None:
+    with db_conn.cursor() as cur:
+        main.ensure_accounting_settings_table(cur)
+        original_tax = _fetch_accounting_setting(cur, "sales_tax_rate")
+        original_message = _fetch_accounting_setting(cur, "invoice_default_message")
+
+    try:
+        response = authed_client.post(
+            "/ui/accounting/save-settings",
+            data={
+                "sales_tax_rate": "7.5",
+                "invoice_default_message": "Integration invoice message",
+                "selected_section": "dashboard",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        location = response.headers.get("location", "")
+        assert location.startswith("/ui/accounting-dashboard")
+        assert "message=" in location
+
+        with db_conn.cursor() as cur:
+            tax = _fetch_accounting_setting(cur, "sales_tax_rate")
+            message = _fetch_accounting_setting(cur, "invoice_default_message")
+            assert tax == "7.5000"
+            assert message == "Integration invoice message"
+    finally:
+        with db_conn.cursor() as cur:
+            main.ensure_accounting_settings_table(cur)
+            cur.execute(
+                """
+                INSERT INTO accounting_settings (setting_key, setting_value, updated_at)
+                VALUES ('sales_tax_rate', %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (setting_key)
+                DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = CURRENT_TIMESTAMP
+                """,
+                (original_tax if original_tax is not None else "0",),
+            )
+            if original_message is None:
+                cur.execute("DELETE FROM accounting_settings WHERE setting_key = 'invoice_default_message'")
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO accounting_settings (setting_key, setting_value, updated_at)
+                    VALUES ('invoice_default_message', %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (setting_key)
+                    DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (original_message,),
+                )
