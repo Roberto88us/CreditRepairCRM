@@ -1,0 +1,30 @@
+# Secrets and local environment
+app/.env
+*.env
+!.env.example
+app/.env.example
+
+# Python cache and bytecode
+__pycache__/
+*/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Local logs and temp files
+*.log
+*.tmp
+*.temp
+~$*
+
+# Runtime/generated CRM artifacts (keep local only)
+uploads/
+letters/
+backups/
+
+# Local desktop/runtime docs not part of source
+CreditSapientia_CRM_PRD.doc
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
